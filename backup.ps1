@@ -19,6 +19,7 @@ if ($destinationRoot.Equals($Base, [StringComparison]::OrdinalIgnoreCase) -or
 $dest = Join-Path $destinationRoot ('afterflight-backup-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '-' + [Guid]::NewGuid().ToString('N').Substring(0,8))
 $locks = @()
 $quiet = $false
+$entry = (Get-Location).Path
 try {
   try {
     foreach ($name in @('watcher.lock', '.maintenance.lock')) {
@@ -51,6 +52,7 @@ try {
   }
   $files = @(SourceFiles | Where-Object { $_.Extension -ne '.tmp' } | Sort-Object FullName -Unique)
   New-Item -ItemType Directory -Path $dest | Out-Null
+  Push-Location -LiteralPath $Base
   $rows = @()
   $stable = $true
   # Which check failed, not just that one did. "Source changed during backup"
@@ -58,7 +60,14 @@ try {
   # appeared - and those want different answers from whoever reads it.
   $unstable = @()
   foreach ($item in $files) {
-    $rel = $item.FullName.Substring($Base.Length).TrimStart('\')
+    # Not Substring($Base.Length). $Base and the paths Get-ChildItem returns
+    # can be different spellings of the same place - a short 8.3 name against
+    # the long one, which is what a temp directory often gives you - and then
+    # the lengths disagree, the cut lands mid-path, and every relative path
+    # carries debris on the front. Resolving through the provider compares
+    # locations rather than string lengths.
+    $rel = (Resolve-Path -LiteralPath $item.FullName -Relative).TrimStart('.').TrimStart('\')
+    if ($rel -like '..*') { throw "File outside the source tree: $($item.FullName)" }
     $target = Join-Path $dest $rel
     New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
     $before = (FileHash $item.FullName)
@@ -118,5 +127,8 @@ snapshot, even if the source hashes happened to remain stable.
   Write-Host "Backup: $dest"
   Write-Host "$($rows.Count) files; consistency: $status; source stable: $stable"
 } finally {
+  # Both in the finally: a throw above must not leave the caller's location
+  # changed, and the locks must go whatever happened.
+  if ((Get-Location).Path -ne $entry) { Pop-Location -ErrorAction SilentlyContinue }
   foreach ($stream in $locks) { $stream.Dispose() }
 }
