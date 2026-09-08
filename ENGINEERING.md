@@ -550,8 +550,8 @@ Optional and offline. Create `places.json`:
 
 ```json
 [
-  { "name": "KGNB Granby",  "lat": 40.0886, "lon": -105.9129, "radius_nm": 3 },
-  { "name": "North Inlet",  "lat": 40.2570, "lon": -105.7990, "radius_nm": 3 }
+  { "name": "Home strip",   "lat": 40.0000, "lon": -105.0000, "radius_nm": 3 },
+  { "name": "The lake",     "lat": 40.2500, "lon": -105.5000, "radius_nm": 3 }
 ]
 ```
 
@@ -629,7 +629,7 @@ nowhere, with no track, no endpoints, and nothing to look at. It was removed.
 What replaced it is smaller and actually answers a question the logbook cannot:
 each end of a leg's route is a link to a **dropped pin** at that point, using
 the `maps/search/?api=1&query=lat,lon` form, which does show a marker. A leg
-that ends at `40.0084, -105.0486` is a field, a strip or somebody's pasture,
+that ends at a bare coordinate is a field, a strip or somebody's pasture,
 and only a real map knows which - and this logbook shows raw coordinates
 whenever `places.json` has no name for a point. The link lives on the
 coordinates themselves rather than in a button somewhere else. The flight path
@@ -1134,7 +1134,7 @@ Asking the sim for each referential in turn, with the aircraft at a known spot:
 |---|---|---|
 | 0 | `(-0.66, -0.15, 3.24)` | Aircraft datum, meters |
 | 1 | `(-0.40, 0.32, 1.86)` | Eyepoint, meters |
-| **2** | `(40.25699, -105.79898, 2591.91)` | **World: latitude, longitude, altitude in METERS** |
+| **2** | `(lat, lon, 2591.91)` | **World: latitude, longitude, altitude in METERS** |
 
 2591.91 m = 8503 ft, exactly the aircraft's altitude. There is **no SimObject
 referential** - the camera cannot be attached to an AI object, which is why
@@ -1142,9 +1142,9 @@ every attempt to target the ghost failed. World is the answer instead: the
 watcher computes a lat/lon offset from the ghost's live position and places the
 camera there, pointing back at it.
 
-Verified: replaying the Granby takeoff while parked 12 nm away at Grand Lake put
-the camera at `(40.08825, -105.91320, 2514 m)` - Granby - with FOV reading back
-0.800, our value.
+Verified: replaying a takeoff while parked 12 nm from the airfield put the
+camera at the airfield, at the altitude the clip held, with FOV reading back
+0.800 - our value.
 
 Note the clip's altitude is in **feet** and the World referential wants
 **meters**.
@@ -1289,8 +1289,8 @@ ghost flies through it, panning to follow - which is what you want for a
 takeoff, where a fixed stare would lose the aircraft in seconds. Moving a knob
 re-plants the tripod. Follow mode moves the camera itself.
 
-Verified over a takeoff: position constant at (40.08825, -105.91320, 2515 m)
-while pitch went 18.15 -> 14.78 and heading tracked around 28 degrees.
+Verified over a takeoff: position held constant to the metre while pitch went
+18.15 -> 14.78 and heading tracked around 28 degrees.
 
 ## Ghost playback: what the sim does to a driven object
 

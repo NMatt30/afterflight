@@ -493,7 +493,7 @@
 
   // The end of a leg, linked to whatever is actually there. This is the
   // question the logbook cannot answer on its own: a leg that ends at
-  // "40.0084, -105.0486" is a field, a strip or somebody's pasture, and only
+  // A bare coordinate is a field, a strip or somebody's pasture, and only
   // a real map knows which. Named points link too - the name came from
   // places.json, not from knowing anything about the place.
   function placeLink(text, side) {

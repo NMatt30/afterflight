@@ -675,7 +675,7 @@ def resolve_att_unit(points, att_unit=None):
     """Decide a clip's heading unit once, from the whole clip.
 
     Only heading was ever recorded in radians. Pitch and bank have always been
-    degrees, even in clips written before att_unit existed - a Granby-era clip
+    degrees, even in a clip written before att_unit existed - such a clip
     carries heading 0.14-6.28 alongside pitch -5.8..+3.4 and bank -3.6..+1.8.
     Converting those as radians would turn 5.7 degrees of pitch into 327, so
     this resolves heading only and pitch/bank are passed through untouched.
@@ -2188,10 +2188,10 @@ def maybe_resume_from_disk(s, snap):
     lon = s.get("lon")
     ac = s.get("aircraft")
     # A hardcoded resume for one flight at one pad used to sit here: spawn
-    # within RESUME_JUMP_NM of Grand Lake with that specific un-ended meta on
-    # disk and you were attached to a sortie from 30 August. The generic resume
-    # below plus sortie_id do the same job without being able to capture an
-    # unrelated spawn into the wrong outing.
+    # within RESUME_JUMP_NM of a particular helipad with that specific
+    # un-ended meta on disk and you were attached to a sortie from weeks
+    # earlier. The generic resume below plus sortie_id do the same job without
+    # being able to capture an unrelated spawn into the wrong outing.
     snap = snap or {}
     snap_ac = snap.get("aircraft")
     fid = snap.get("flight_id")

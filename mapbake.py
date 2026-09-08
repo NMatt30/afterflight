@@ -433,7 +433,7 @@ def bake_track_png(points, out_path, width=900, height=600, label=None, max_poin
     # the map already shows.
     # Prefer the caller's takeoff/landing over the ends of the recording. A
     # sortie that merged a reconnect can begin its track well before the first
-    # takeoff - measured at half a mile on a Grand Canyon sortie - which put
+    # takeoff - measured at half a mile on one sortie - which put
     # START somewhere the aircraft never departed from, while the legend and
     # route names used the leg events. One source of truth now.
     first = project(*(start_at if start_at else
