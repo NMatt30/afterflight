@@ -1,0 +1,697 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AfterFlight</title>
+<link rel="icon" type="image/svg+xml" href="/app-icon.svg">
+<style>
+  :root {
+    --bg: #0e1116;
+    /* Card against page was 1.08:1 - technically lighter, not readably so, and
+       an expanded flight lost its edges entirely. 1.21:1 here, with the border
+       lifted from 1.28:1 to 1.65:1 against the card. */
+    --panel: #1c2430;
+    --panel-2: #232c3a;
+    --line: #3a4757;
+    --text: #e6ecf3;
+    --muted: #93a1b2;
+    --accent: #5eb3ff;
+    --ok: #56d381;
+    --warn: #e8c468;
+    --err: #ff7a7a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 "Segoe UI", system-ui, -apple-system, sans-serif;
+  }
+  a { color: var(--accent); }
+  .muted { color: var(--muted); }
+  .pad { padding: 24px; }
+
+  header.top {
+    position: sticky; top: 0; z-index: 20;
+    background: rgba(14,17,22,.94);
+    backdrop-filter: blur(6px);
+    border-bottom: 1px solid var(--line);
+    padding: 14px 24px;
+    display: flex; flex-wrap: wrap; gap: 16px; align-items: center;
+  }
+  header.top h1 { font-size: 17px; margin: 0; letter-spacing: .2px; }
+  /* The gap either side of the mark comes from the header's own flex gap,
+     which is 16px and too wide to read as one lockup with the title. */
+  .brand { display: flex; align-items: center; gap: 9px; }
+  .brand img { width: 25px; height: 25px; display: block; flex: none; }
+  .spacer { flex: 1; }
+  .live { font-size: 13px; padding: 4px 10px; border-radius: 999px;
+          border: 1px solid var(--line); color: var(--muted); }
+  .live.ok  { color: var(--ok);   border-color: #24422f; }
+  .live.warn{ color: var(--warn); border-color: #453a1e; }
+  .live.err { color: var(--err);  border-color: #4a2626; }
+
+  /* Shown while the watcher is rebuilding. The page keeps whatever data it
+     already has underneath - a rebuild replaces the index, it does not
+     invalidate what is on screen - so this is a strip, not an interstitial.
+     The exception is a first run with nothing to show, handled in the JS. */
+  /* Must come with the display rule, exactly as .modal[hidden] and
+     .ack[hidden] do below. An author rule setting display beats the UA
+     stylesheet's [hidden] { display: none }, so without this the element
+     renders however el.hidden is set - the attribute is applied and has
+     no visible effect whatsoever. */
+  /* [hidden] has to win. An author rule that sets display beats the UA
+     stylesheet's [hidden] { display: none }, so any element carrying a
+     display rule ignores the attribute completely. That has now bitten
+     three times here - .rebuilding, .replay-progress and .chase-row - and
+     it fails silently: el.hidden reads back true while the element is
+     still on screen, so the code and the DOM both look correct.
+
+     Worse than a stuck element, it strands stale content: syncProgress
+     sets hidden and returns WITHOUT updating the text, so a bar that
+     never hides keeps showing the last time it rendered. One guard here
+     ends it, instead of every future display rule having to remember. */
+  [hidden] { display: none !important; }
+
+  .rebuilding[hidden] { display: none; }
+  .rebuilding { display: flex; align-items: center; gap: 10px;
+    padding: 8px 16px; background: #1f2a1f; color: var(--ok);
+    border-bottom: 1px solid #24422f; font-size: 13px; }
+  .rebuilding .spin { width: 13px; height: 13px; flex: none; border-radius: 50%;
+    border: 2px solid #2c5138; border-top-color: var(--ok);
+    animation: spin 0.8s linear infinite; }
+  .rebuilding .why { color: var(--muted); }
+
+  /* Month navigation is one control, not a strip. A chip per month was fine
+     at two months and took a whole sticky row at sixteen - measured at 147px
+     of filter bar across three rows, which put the first flight below half
+     the viewport permanently. This stays one slot at any number of years. */
+  /* Past the chip threshold the strip holds a single select instead, so it
+     must stop behaving like a scrolling strip. */
+  .chips.as-select { flex: 0 0 auto; overflow: visible; }
+  .chips.as-select select { max-width: 260px; }
+  .monthnav { display: flex; align-items: center; gap: 2px; flex: 0 0 auto;
+              position: relative; }
+  .mn-arrow { background: transparent; border: 1px solid var(--line);
+              color: var(--muted); border-radius: 6px; width: 26px; height: 28px;
+              font-size: 15px; line-height: 1; cursor: pointer; font-family: inherit; }
+  .mn-arrow:hover:not(:disabled) { border-color: var(--accent); color: var(--text); }
+  .mn-arrow:disabled { opacity: 0.3; cursor: default; }
+  .mn-label { background: var(--panel-2); border: 1px solid var(--accent);
+              color: var(--text); border-radius: 999px; padding: 4px 14px;
+              font-size: 12.5px; cursor: pointer; font-family: inherit;
+              display: inline-flex; align-items: center; gap: 7px; min-width: 132px;
+              justify-content: center; }
+  .mn-label .n { font-size: 11px; color: var(--muted); background: var(--bg);
+                 border-radius: 999px; padding: 0 6px; font-variant-numeric: tabular-nums; }
+  .mn-label.searching-now { border-color: var(--line); color: var(--muted); }
+
+  /* The picker. Every month of every year at once, so moving two years back
+     is one click rather than twenty-four. */
+  .month-pop { position: absolute; top: 34px; left: 0; z-index: 40;
+               background: var(--panel); border: 1px solid var(--line);
+               border-radius: 10px; padding: 12px; min-width: 268px;
+               box-shadow: 0 12px 32px rgba(0,0,0,.5);
+               max-height: 60vh; overflow-y: auto; }
+  .mp-year + .mp-year { margin-top: 12px; }
+  .mp-year h4 { margin: 0 0 6px; font-size: 11px; color: var(--muted);
+                font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+  .mp-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+  .mp-cell { background: transparent; border: 1px solid transparent; color: var(--text);
+             border-radius: 6px; padding: 5px 2px; font-size: 12px; cursor: pointer;
+             font-family: inherit; display: flex; flex-direction: column;
+             align-items: center; gap: 1px; }
+  .mp-cell .n { font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .mp-cell:hover:not(:disabled) { border-color: var(--accent); }
+  .mp-cell.on { background: var(--accent); color: #0e1116; }
+  .mp-cell.on .n { color: #0e1116; opacity: 0.7; }
+  /* A month with no flying is shown rather than hidden, so the gaps in a
+     year are visible - but it is not somewhere you can navigate to. */
+  .mp-cell:disabled { color: var(--muted); opacity: 0.32; cursor: default; }
+
+  /* Shown only while a flight is being recorded, so the two switches can be
+     set before the flight is written rather than only afterwards. */
+  .inflight { display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 8px 16px; background: #1b2430; color: var(--text);
+    border-bottom: 1px solid #26374a; font-size: 13px; }
+  .inflight .dot { width: 8px; height: 8px; border-radius: 50%; flex: none;
+    background: var(--ok); animation: pulse 2s ease-in-out infinite; }
+  .inflight .what { color: var(--muted); }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+  /* One switch. Used in the in-flight bar and on every flight's footer, so
+     the control a pilot learns in the air is the same one in the logbook. */
+  .sw { display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
+        font-size: 12px; color: var(--text); user-select: none; }
+  .sw input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .sw .track { width: 30px; height: 17px; border-radius: 999px; flex: none;
+    background: var(--panel-2); border: 1px solid var(--line);
+    position: relative; transition: background 0.12s, border-color 0.12s; }
+  .sw .track::after { content: ""; position: absolute; top: 2px; left: 2px;
+    width: 11px; height: 11px; border-radius: 50%; background: var(--muted);
+    transition: transform 0.12s, background 0.12s; }
+  .sw input:checked + .track { background: var(--accent); border-color: var(--accent); }
+  .sw input:checked + .track::after { transform: translateX(13px); background: #0e1116; }
+  .sw input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .sw input:disabled + .track { opacity: 0.5; }
+  .sw.busy { opacity: 0.6; pointer-events: none; }
+  .flight-switches { display: inline-flex; align-items: center; gap: 14px; }
+
+  /* Export links. Quiet by design: they are an occasional errand, not
+     something to compete with Replay for attention. */
+  .exports { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+             font-size: 11.5px; color: var(--muted); }
+  .exports a { color: var(--muted); text-decoration: none; padding: 2px 8px;
+               border: 1px solid var(--line); border-radius: 999px;
+               font-family: system-ui, sans-serif; }
+  .exports a:hover { border-color: var(--accent); color: var(--text); }
+  .exports .lbl { opacity: 0.75; }
+  .leg-actions .exports { margin-top: 4px; justify-content: center; }
+  .sortie-id .sw { font-family: system-ui, sans-serif; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  /* Respect a user who has asked the OS for less motion. */
+  @media (prefers-reduced-motion: reduce) {
+    .rebuilding .spin { animation: none; border-top-color: #2c5138; }
+  }
+  button {
+    background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 6px;
+    padding: 6px 12px; font-size: 13px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .4; cursor: default; }
+
+  .summary {
+    display: flex; flex-wrap: wrap; gap: 28px;
+    padding: 18px 24px; border-bottom: 1px solid var(--line);
+  }
+  .summary .total { display: flex; flex-direction: column; }
+  .summary .total .v { font-size: 21px; font-variant-numeric: tabular-nums; }
+  .summary .total .k { font-size: 11px; color: var(--muted); text-transform: uppercase;
+                       letter-spacing: .8px; }
+  main { padding: 20px 24px; display: flex; flex-direction: column; gap: 22px; }
+
+  /* ---- filter bar ---- */
+  .filters {
+    position: sticky; top: 57px; z-index: 18;
+    display: flex; flex-wrap: wrap; gap: 12px 18px; align-items: center;
+    padding: 12px 24px; background: rgba(14,17,22,.94); backdrop-filter: blur(6px);
+    border-bottom: 1px solid var(--line);
+  }
+  /* One row, always. Wrapping chips grew the sticky header without bound -
+     fifteen airframes at 900px took three rows and put the first flight below
+     half the viewport, permanently, because the header is sticky. Scroll the
+     strip sideways instead so header height is independent of hangar size. */
+  .chips { display: flex; flex-wrap: nowrap; gap: 6px;
+           flex: 1 1 auto; min-width: 0; overflow-x: auto;
+           padding-bottom: 2px; scrollbar-width: thin;
+           scrollbar-color: var(--line) transparent; }
+  .chips::-webkit-scrollbar { height: 6px; }
+  .chips::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
+  .chips::-webkit-scrollbar-track { background: transparent; }
+  .chip {
+    flex: 0 0 auto;
+    display: inline-flex; align-items: center; gap: 7px;
+    background: transparent; border: 1px solid var(--line); color: var(--muted);
+    border-radius: 999px; padding: 4px 12px; font-size: 12.5px; cursor: pointer;
+    font-family: inherit;
+  }
+  .chip:hover { border-color: var(--accent); color: var(--text); }
+  .chip.on { background: var(--panel-2); border-color: var(--accent); color: var(--text); }
+  .chip .n { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums;
+             background: var(--bg); border-radius: 999px; padding: 0 6px; }
+  /* Never squashed by the chip strip, and never pushed off the row. */
+  .filter-right { display: flex; align-items: center; gap: 10px; margin-left: auto;
+                  flex: 0 0 auto; flex-wrap: wrap; }
+  .filters input[type=search], .filters select {
+    background: var(--panel); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 9px; font-size: 12.5px; font-family: inherit;
+  }
+  .filters input[type=search] { min-width: 210px; }
+  .count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  /* ---- day groups ---- */
+  .daygroup { display: flex; flex-direction: column; gap: 8px; }
+  .dayhead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px;
+             padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+  .dayhead h2 { margin: 0; font-size: 15px; font-weight: 600; }
+  /* A day's own summary, in the page summary's language one size down:
+     value over label, so a row of numbers does not have to be decoded. */
+  .daytotals { margin-left: auto; display: flex; flex-wrap: wrap;
+               gap: 6px 20px; align-items: flex-end; }
+  .dstat { display: flex; flex-direction: column; }
+  .dstat .v { font-size: 15px; font-variant-numeric: tabular-nums; }
+  .dstat .k { font-size: 10px; color: var(--muted); text-transform: uppercase;
+              letter-spacing: .8px; }
+  .dayframes { flex-basis: 100%; font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+  /* Day groups need real air between them: the heading sat directly against
+     the previous day's last flight, so the rule under it read as that row's
+     underline rather than as the start of a new day. */
+  #sorties { display: flex; flex-direction: column; gap: 30px; }
+
+  /* ---- collapsed flight row ---- */
+  .sortie { display: flex; flex-direction: column; }
+  .sortie-head {
+    width: 100%; display: grid; align-items: center; gap: 14px;
+    grid-template-columns: 14px minmax(72px,auto) minmax(160px,1fr) minmax(90px,auto) auto auto;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 11px 14px; text-align: left; color: var(--text); cursor: pointer;
+    font-family: inherit; font-size: 13.5px;
+  }
+  .sortie-head:hover { border-color: var(--accent); }
+  .sortie.open .sortie-head { border-radius: 8px 8px 0 0; border-bottom-color: transparent; }
+  .twist { color: var(--muted); transition: transform .12s ease; display: inline-block; }
+  .sortie.open .twist { transform: rotate(90deg); }
+  .col { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .col .t { font-variant-numeric: tabular-nums; }
+  .col .sub { font-size: 11.5px; color: var(--muted); }
+  .col.who .t { font-weight: 600; }
+  .col.who .route { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .col.num { text-align: right; }
+  .col.grades, .col.flags { flex-direction: row; gap: 5px; align-items: center; }
+  .tag.open { color: var(--ok); border-color: #24422f; }
+  .tag.clips { color: var(--accent); border-color: #24405c; }
+  .sortie-body { border: 1px solid var(--line); border-top: none;
+                 border-radius: 0 0 8px 8px; background: var(--panel);
+                 box-shadow: 0 6px 18px rgba(0,0,0,.28); }
+  /* Square off the join so an open flight reads as one card, not two. */
+  .sortie.open .sortie-head { border-radius: 8px 8px 0 0; }
+  @media (max-width: 820px) {
+    .sortie-head { grid-template-columns: 14px 1fr auto; }
+    .col.grades, .col.flags { grid-column: 2 / -1; }
+  }
+
+  .tag { border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; font-size: 11px; }
+
+  .sortie-map { padding: 12px 20px; border-bottom: 1px solid var(--line); }
+  .trackmap { display: block; width: 100%; height: 190px; background: var(--panel-2);
+              border: 1px solid var(--line); border-radius: 8px; }
+  .trackmap.wide { height: 260px; }
+  .trackmap.empty { display: flex; align-items: center; justify-content: center;
+                    color: var(--muted); font-size: 12px; }
+  /* Baked PNGs carry the OSM basemap. Show the whole map - never crop the
+     track out of frame - and let the natural aspect decide the height. */
+  /* Beats the fixed heights on .trackmap / .trackmap.wide above.
+
+     No max-height: a cap plus object-fit:contain is a letterbox. The cap
+     existed to stop a portrait map running off the page, and mapbake now
+     clamps every canvas to MAP_ASPECT_MIN..MAX, so the tallest an image
+     can be is width / 1.60. Height:auto then matches the box to the image
+     exactly and there are no bars at any window size. If that clamp is
+     ever loosened to allow portrait again, this cap has to come back. */
+  img.trackmap, img.trackmap.wide { height: auto; object-fit: contain; }
+  .map-figure { display: block; }
+  .map-figure:hover img.trackmap { border-color: var(--accent); }
+  .map-link { display: inline-block; margin-top: 6px; font-size: 12px; }
+
+  .legs { display: flex; flex-direction: column; }
+  .leg { border-top: 1px solid var(--line); padding: 16px 20px; }
+  .leg:first-child { border-top: none; }
+  .leg-head { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .leg-no { font-weight: 600; }
+  .route { color: var(--muted); font-size: 13px; }
+  .route.coords { font-variant-numeric: tabular-nums; font-size: 12px; }
+  /* Underlined only on hover: every leg has two of these, and two permanent
+     links in the header would read as the loudest thing on the row. */
+  .route .place { color: inherit; text-decoration: none;
+                  border-bottom: 1px dotted var(--line); }
+  .route .place:hover { color: var(--text); border-bottom-color: var(--accent); }
+
+  .grade { display: inline-flex; align-items: center; justify-content: center;
+           min-width: 22px; height: 22px; padding: 0 6px; border-radius: 5px;
+           font-size: 12px; font-weight: 700; background: var(--panel-2);
+           border: 1px solid var(--line); }
+  .grade-a { color: #0e1116; background: var(--ok); border-color: var(--ok); }
+  .grade-b { color: #0e1116; background: #9fd6a8; border-color: #9fd6a8; }
+  .grade-c { color: #0e1116; background: var(--warn); border-color: var(--warn); }
+  .grade-d { color: #0e1116; background: #e79a5e; border-color: #e79a5e; }
+  .grade-e { color: #0e1116; background: #e87a6a; border-color: #e87a6a; }
+  .grade-f { color: #fff;    background: #b3382f; border-color: #b3382f; }
+  .grade-none { color: var(--muted); }
+  /* An uncalibrated grade. Dashed rather than a different color: the letter
+     still means what it says, it is the threshold behind it that is untested,
+     and recoloring would read as a worse grade. */
+  #version.stale { color: var(--warn); }
+  /* .grade-e is gone: the ladder is A B C D F now. The rule stays for a
+     moment so a page held open across the change does not render an
+     unstyled pill. */
+
+  /* The number behind the letter. Quieter than the letter on purpose - it
+     is the detail you look for once the letter has told you where to look. */
+  .grade .score { font-style: normal; font-weight: 600; font-size: 10px;
+                  margin-left: 4px; opacity: .72; letter-spacing: 0; }
+
+  .phases { display: inline-flex; align-items: flex-end; gap: 10px;
+            margin-left: 4px; }
+  .phase { display: inline-flex; flex-direction: column; align-items: center;
+           gap: 2px; }
+  .phase-label { font-size: 9px; letter-spacing: .06em; text-transform: uppercase;
+                 color: var(--muted); line-height: 1; }
+  .phase .grade { min-width: 30px; height: 19px; font-size: 11px; }
+  .phase .grade .score { font-size: 9px; margin-left: 3px; }
+
+  /* How-grading-works panel. Everything in it is rendered from /grading,
+     which the watcher generates from the grading profile - so the words
+     here cannot drift away from the thresholds actually applied. */
+  /* The sheet is a flex column capped at 84vh, so the body must be the
+     part that scrolls - exactly as #settings-body does. Without this the
+     content simply ran off the bottom of the panel and over the page.
+     min-height:0 is the part that is easy to miss: a flex item will not
+     shrink below its content without it, so overflow-y never engages. */
+  #grading-body { overflow-y: auto; flex: 1; min-height: 0;
+                  margin: 0 0 14px; padding-right: 14px;
+                  scrollbar-gutter: stable; }
+
+  .gx-lead { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+  /* One tab per aircraft type. The tabs are built from whatever /grading
+     returns, so adding a profile in grading.py adds a tab here with no
+     change to this file. */
+  .gx-tabs { display: flex; gap: 6px; margin: 0 0 14px; flex-wrap: wrap; }
+  .gx-tab { padding: 5px 11px; border-radius: 6px; font-size: 12px;
+            background: var(--panel-2); border: 1px solid var(--line);
+            color: var(--text); cursor: pointer; }
+  .gx-tab[aria-selected="true"] { background: var(--accent); border-color: var(--accent);
+                                  color: #0e1116; font-weight: 600; }
+  /* The standard a phase's numbers came from. Quieter than the blurb it
+     follows: provenance you can check, not something to read every time. */
+  .gx-source { margin: 2px 0 10px; font-size: 11.5px; color: var(--muted);
+               border-left: 2px solid var(--line); padding-left: 10px; }
+  .gx-warn { border-left: 2px solid var(--warn); padding-left: 10px;
+             color: var(--warn); font-size: 12px; margin: 0 0 14px; }
+  .gx-scale { display: flex; gap: 6px; margin: 0 0 18px; flex-wrap: wrap;
+              align-items: center; }
+  .gx-phase { border-top: 1px solid var(--line); padding: 12px 0 4px; }
+  .gx-head { display: flex; align-items: baseline; gap: 8px; }
+  .gx-head h3 { margin: 0; font-size: 14px; }
+  .gx-weight { font-size: 11px; color: var(--muted); }
+  .gx-blurb { color: var(--muted); font-size: 12px; margin: 3px 0 9px; }
+  .gx-metric { display: grid; grid-template-columns: 160px 1fr;
+               gap: 2px 12px; font-size: 12px; margin: 0 0 8px; }
+  .gx-metric b { font-weight: 600; }
+  .gx-why { color: var(--muted); }
+  .gx-band { color: var(--muted); font-size: 11px; }
+  .gx-note { border-left: 2px solid var(--accent); padding-left: 10px;
+             color: var(--muted); font-size: 12px; margin: 16px 0 0; }
+  .gx-limits { margin: 10px 0 0; padding-left: 18px; color: var(--muted);
+               font-size: 12px; }
+  .gx-limits li { margin: 0 0 5px; }
+
+  .leg-body { display: grid; grid-template-columns: minmax(220px, 1.2fr) auto auto;
+              gap: 20px; align-items: start; margin-top: 12px; }
+  @media (max-width: 900px) { .leg-body { grid-template-columns: 1fr; } }
+  .leg-stats { display: grid; grid-template-columns: auto auto; gap: 2px 14px;
+               font-size: 13px; }
+  .stat { display: contents; }
+  .stat .k { color: var(--muted); }
+  .stat .v { font-variant-numeric: tabular-nums; text-align: right; }
+  .leg-actions { display: flex; flex-direction: column; gap: 6px; align-items: stretch;
+                 min-width: 150px; }
+  .bounce { font-size: 11px; letter-spacing: .3px; padding: 1px 7px;
+            border-radius: 999px; border: 1px solid #b07a2a; color: #e0a44a;
+            background: rgba(176,122,42,.12); white-space: nowrap; }
+  .replay-status { font-size: 12px; color: var(--muted); min-height: 16px; }
+
+  .passenger { margin-top: 14px; padding: 12px 14px; background: var(--panel-2);
+               border-left: 2px solid var(--accent); border-radius: 0 6px 6px 0; }
+  .pax-label { font-size: 10px; text-transform: uppercase; letter-spacing: .9px;
+               color: var(--muted); margin-bottom: 4px; }
+  .passenger p { margin: 0; font-size: 14px; }
+
+  /* Sits at the top of an open flight, so the rule goes underneath it. */
+  .sortie-id { padding: 8px 20px; font-size: 11px; color: var(--muted);
+               border-bottom: 1px solid var(--line); font-family: ui-monospace, Consolas, monospace;
+               display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+  /* Third in the sticky stack, under the header (57px) and the filter bar.
+     --filters-h is measured at runtime, since the filter row wraps on a narrow
+     window and a hardcoded offset would leave a gap or overlap. */
+  .chasebar { position: sticky; top: calc(57px + var(--filters-h, 49px)); z-index: 15;
+              background: rgba(21,26,34,.96); backdrop-filter: blur(6px);
+              border-bottom: 1px solid var(--line); padding: 10px 24px;
+              display: flex; flex-wrap: wrap; gap: 18px; align-items: center; }
+  .chase-title { font-size: 11px; text-transform: uppercase; letter-spacing: .9px;
+                 color: var(--muted); }
+  .chase-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+  .chase-row input[type=range] { width: 120px; }
+  .chase-row input[type=text] { width: 150px; background: var(--panel); color: var(--text);
+    border: 1px solid var(--line); border-radius: 5px; padding: 2px 6px; font: inherit; }
+  .chase-row input[type=number] { width: 62px; background: var(--panel); color: var(--text);
+                                  border: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; }
+  .chase-status { font-size: 12px; color: var(--muted); margin-left: auto; }
+  .modehint { font-size: 11px; color: var(--muted); text-transform: uppercase;
+              letter-spacing: .6px; border: 1px solid var(--line);
+              border-radius: 4px; padding: 0 5px; }
+  /* Where playback has reached, so a held or long clip is not a guess. */
+  .replay-progress { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+  .rp-bar { position: relative; width: 96px; height: 5px; border-radius: 3px;
+            background: var(--line); overflow: hidden; }
+  .rp-fill { position: absolute; inset: 0 auto 0 0; width: 0;
+             background: var(--accent); border-radius: 3px; }
+  .rp-time { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums;
+             white-space: nowrap; }
+  .lockrow { gap: 7px; }
+  .lockrow input { margin: 0; }
+  #bearing-row[hidden] { display: none; }
+  .chasebar select { background: var(--panel); color: var(--text);
+                     border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px;
+                     font-size: 12px; }
+  /* ---- removal ---- */
+  .danger { border-color: #5a2b28; color: var(--err); }
+  .danger:hover:not(:disabled) { border-color: var(--err); background: #2a1a19; }
+  .btn-quiet { background: transparent; border-color: transparent; color: var(--muted);
+               padding: 3px 8px; font-size: 12px; }
+  .btn-quiet:hover:not(:disabled) { color: var(--err); border-color: var(--line); }
+  .leg-head .btn-quiet { margin-left: auto; }
+
+  .modal { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center;
+           background: rgba(6,8,11,.72); padding: 24px; }
+  .modal[hidden] { display: none; }
+  .sheet { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+           padding: 22px 24px; max-width: 480px; width: 100%;
+           box-shadow: 0 18px 50px rgba(0,0,0,.5); }
+  .sheet h2 { margin: 0 0 10px; font-size: 17px; }
+  .sheet p { margin: 0 0 12px; color: var(--text); }
+  .sheet ul { margin: 0 0 18px; padding-left: 18px; color: var(--muted); font-size: 13.5px; }
+  .sheet li { margin: 4px 0; }
+  .sheet-actions { display: flex; justify-content: flex-end; gap: 10px; }
+
+  /* ---- settings ---- */
+  .sheet.wide { max-width: 640px; width: 92vw; max-height: 84vh; display: flex;
+                flex-direction: column; }
+  #settings-body { overflow-y: auto; flex: 1; margin: 0 0 14px;
+                   padding-right: 14px; scrollbar-gutter: stable; }
+  .sgroup { margin-bottom: 20px; }
+  .sgroup h3 { margin: 0 0 8px; font-size: 12px; letter-spacing: .08em;
+               text-transform: uppercase; color: var(--muted); }
+  .srow { display: grid; grid-template-columns: 1fr 130px; gap: 10px;
+          align-items: center; padding: 7px 0; border-top: 1px solid var(--line); }
+  .srow:first-of-type { border-top: none; }
+  .srow .slabel { font-size: 13.5px; }
+  .srow .snote { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .srow .sdefault { display: block; margin-top: 3px;
+                    color: var(--muted); font-size: 11.5px; }
+  .srow input[type=number], .srow select {
+      width: 100%; background: var(--panel); color: var(--text);
+      border: 1px solid var(--line); border-radius: 5px; padding: 4px 6px; font: inherit; }
+  .srow input[type=checkbox] { justify-self: start; width: 18px; height: 18px; }
+  .srow.changed .slabel { color: var(--accent, #6ea8ff); font-weight: 600; }
+  #settings-derived { color: var(--muted); font-size: 12.5px; margin: 0 0 10px; }
+  #settings-error { color: #e07a7a; font-size: 13px; min-height: 18px; margin: 0 0 8px; }
+  /* [hidden] sets display:none in the UA sheet, and any author display rule
+     beats it - without this the acknowledgement showed on every dialog,
+     including the reversible ones. */
+  .ack[hidden] { display: none; }
+  .ack { display: flex; gap: 9px; align-items: flex-start; margin: 0 0 18px;
+         padding: 10px 12px; border: 1px solid #5a2b28; border-radius: 6px;
+         background: #241715; font-size: 13px; cursor: pointer; }
+  .ack input { margin-top: 3px; }
+  .sheet .files { max-height: 150px; overflow-y: auto; margin: 0 0 16px;
+                  padding: 10px 12px; background: var(--bg); border: 1px solid var(--line);
+                  border-radius: 6px; font-family: ui-monospace, Consolas, monospace;
+                  font-size: 11.5px; color: var(--muted); }
+  .sheet .files div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  #open-removed .n { font-size: 11px; margin-left: 6px; padding: 0 6px;
+                     border-radius: 999px; background: var(--panel-2);
+                     color: var(--muted); font-variant-numeric: tabular-nums; }
+  .hidden-row { display: flex; align-items: center; gap: 12px; padding: 9px 16px;
+                border-top: 1px solid var(--line); font-size: 13px; }
+  .hidden-row:first-child { border-top: none; }
+  .hidden-row .what { color: var(--muted); }
+  .hidden-row .what { flex: 1; }
+  .hidden-row button { margin-left: 0; }
+  .hidden-row .spacer-x { margin-left: auto; }
+
+  footer { padding: 18px 24px 40px; color: var(--muted); font-size: 12px; }
+  #maps-note { color: var(--warn); font-size: 12px; }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">
+    <img src="/app-icon.svg" alt="" width="25" height="25">
+    <h1>AfterFlight</h1>
+  </div>
+  <span id="live" class="live">starting…</span>
+  <span class="spacer"></span>
+  <button id="refresh" type="button">Refresh</button>
+  <button id="rebuild" type="button">Rebuild logbook</button>
+  <button id="open-removed" type="button" hidden>Removed</button>
+  <button id="open-grading" type="button">How grading works</button>
+  <button id="open-settings" type="button">Settings</button>
+</header>
+
+<div id="rebuilding" class="rebuilding" role="status" aria-live="polite" hidden>
+  <span class="spin" aria-hidden="true"></span>
+  <span id="rebuilding-text">Refreshing the logbook…</span>
+</div>
+
+<div id="inflight" class="inflight" hidden>
+  <span class="dot" aria-hidden="true"></span>
+  <span id="inflight-what" class="what">Recording</span>
+  <label class="sw" title="Letter grades, scores and phase grades for this flight.">
+    <input type="checkbox" id="live-rating" checked>
+    <span class="track"></span>Rate this flight
+  </label>
+  <label class="sw" title="The written passenger assessment for this flight.">
+    <input type="checkbox" id="live-passenger" checked>
+    <span class="track"></span>Passenger notes
+  </label>
+</div>
+
+<div class="summary">
+  <div class="total"><span class="v" id="t-sorties">&mdash;</span><span class="k">Flights</span></div>
+  <div class="total"><span class="v" id="t-days">&mdash;</span><span class="k">Days</span></div>
+  <div class="total"><span class="v" id="t-landings">&mdash;</span><span class="k">Landings</span></div>
+  <div class="total"><span class="v" id="t-distance">&mdash;</span><span class="k">Distance</span></div>
+  <div class="total"><span class="v" id="t-airborne">&mdash;</span><span class="k">Airborne</span></div>
+</div>
+
+<div class="filters">
+  <div id="airframe-filter" class="chips"></div>
+  <!-- Only the open month's flights are fetched, so the page load does not
+       grow with the whole history. -->
+  <div class="monthnav">
+    <button type="button" id="month-prev" class="mn-arrow" title="Previous month with flights">&lsaquo;</button>
+    <button type="button" id="month-open" class="mn-label" aria-haspopup="true" aria-expanded="false"></button>
+    <button type="button" id="month-next" class="mn-arrow" title="Next month with flights">&rsaquo;</button>
+    <div id="month-pop" class="month-pop" hidden></div>
+  </div>
+  <div class="filter-right">
+    <input type="search" id="search" placeholder="Search aircraft, route, date&hellip;" autocomplete="off">
+
+    <select id="sort-order" title="Which end of the logbook to show first">
+      <option value="desc">Newest first</option>
+      <option value="asc">Oldest first</option>
+    </select>
+    <button type="button" id="expand-all" title="Open or close every flight shown">Expand all</button>
+    <span id="result-count" class="count"></span>
+  </div>
+</div>
+
+<!-- One camera panel for whichever ghost is playing. -->
+<div class="chasebar chase-panel">
+  <span class="chase-title">Replay camera</span>
+  <label class="chase-row lockrow" title="Off: the camera stays planted where you put it and the aircraft flies past — the cinematic flyby. On: it travels with the aircraft, holding your angle, which is what you want for a whole approach. Either way it only ever moves the replay camera, never your aircraft.">
+    <!-- Checked to match the shipped default. The first /state poll
+         corrects it if the chase_follow setting has been changed. -->
+    <input type="checkbox" id="chase-lock" checked>
+    <span>Follow the ghost</span>
+    <span class="modehint" id="chase-modehint">following</span>
+  </label>
+  <label class="chase-row" id="bearing-row">
+    <select id="chase-bearing" title="Whether the locked vantage turns with the aircraft or holds its compass angle.">
+      <option value="aircraft">turns with the aircraft</option>
+      <option value="world">holds its bearing</option>
+    </select>
+  </label>
+  <button type="button" id="recenter" title="Put the camera back on the ghost">Recenter on ghost</button>
+  <label class="chase-row">Distance
+    <input type="range" data-chase="distance" min="5" max="300" step="1" value="45">
+    <input type="number" data-chase="distance" min="5" max="300" step="1" value="45"> m
+  </label>
+  <label class="chase-row">Height
+    <input type="range" data-chase="height" min="0" max="120" step="0.5" value="15">
+    <input type="number" data-chase="height" min="0" max="120" step="0.5" value="15"> m
+  </label>
+  <label class="chase-row">Orbit
+    <input type="range" data-chase="orbit" min="0" max="360" step="1" value="20">
+    <input type="number" data-chase="orbit" min="0" max="360" step="1" value="20"> °
+  </label>
+  <span class="replay-progress" id="replay-progress" hidden>
+    <span class="rp-bar"><span class="rp-fill"></span></span>
+    <span class="rp-time">0:00 / 0:00</span>
+  </span>
+  <span class="chase-status"></span>
+</div>
+
+<main>
+  <p id="maps-note" hidden></p>
+  <div id="sorties"><div class="muted pad">Loading&hellip;</div></div>
+</main>
+
+
+<div id="removed-panel" class="modal" hidden>
+  <div class="sheet wide" role="dialog" aria-modal="true" aria-labelledby="removed-title">
+    <h2 id="removed-title">Removed</h2>
+    <p class="muted">Hidden from the logbook and from every total. The
+      recordings are still on disk until they are deleted here.</p>
+    <div id="hidden-list"></div>
+    <div class="sheet-actions">
+      <button type="button" id="removed-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<div id="grading-panel" class="modal" hidden>
+  <div class="sheet wide" role="dialog" aria-modal="true" aria-labelledby="grading-title">
+    <h2 id="grading-title">How grading works</h2>
+    <div id="grading-body"></div>
+    <div class="sheet-actions">
+      <button type="button" id="grading-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<div id="settings-panel" class="modal" hidden>
+  <div class="sheet wide" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <h2 id="settings-title">Settings</h2>
+    <p id="settings-derived"></p>
+    <div id="settings-body"></div>
+    <p id="settings-error"></p>
+    <div class="sheet-actions">
+      <button type="button" id="settings-reset">Reset all to defaults</button>
+      <button type="button" id="settings-cancel">Cancel</button>
+      <button type="button" id="settings-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="confirm" class="modal" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <h2 id="confirm-title">Remove</h2>
+    <p id="confirm-body"></p>
+    <ul id="confirm-points"></ul>
+    <label id="confirm-ack" class="ack" hidden>
+      <input type="checkbox" id="confirm-ack-box">
+      <span>I understand this cannot be undone.</span>
+    </label>
+    <div class="sheet-actions">
+      <button type="button" id="confirm-cancel">Cancel</button>
+      <button type="button" id="confirm-ok" class="danger">Remove</button>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <span id="version" title="Application version, refined from git when the repo is present">—</span> ·
+  Written by the watcher at 127.0.0.1:8742 · logbook rebuilt <span id="updated">—</span> ·
+  Replay and chase need MSFS running on this PC. Recording carries on whether this tab is open or not.
+</footer>
+
+<script src="replay.js"></script>
+<script src="logbook.js"></script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+{
+  "dependencies": [],
+  "content_type": "MISC",
+  "title": "AfterFlight",
+  "manufacturer": "",
+  "creator": "AfterFlight",
+  "package_version": "0.1.0",
+  "minimum_game_version": "1.1.9",
+  "minimum_compatibility_version": "1.8.0.7",
+  "builder": "Microsoft Flight Simulator 2024",
+  "package_order_hint": "UI_PATCH",
+  "release_notes": {
+    "neutral": {
+      "LastUpdate": "Live EFB telemetry for AfterFlight.",
+      "OlderHistory": ""
+    }
+  }
+}

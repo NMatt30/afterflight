@@ -1,0 +1,58 @@
+# Flight recordings, the derived logbook, and caches.
+#
+# Regenerable from nothing but the recordings, and the recordings themselves are
+# personal flight history - 57 MB of it. Git keeps blobs for ever, so committing
+# this once would bloat the repo permanently even after a later delete.
+sessions/
+logbook.json
+logbook.cache.json
+current.json
+last_event.json
+events.jsonl
+excluded.json
+flight_prefs.json
+# The watcher writes every state file atomically: write .tmp, then
+# os.replace. A `git add -A` racing one fails on a file that has already
+# been renamed away.
+*.tmp
+notify_state.json
+
+# Runtime state
+watcher.log
+watcher.lock
+watcher.pid
+*.log
+# Rotated logs: watcher.log.1 and friends, which *.log does not match.
+*.log.*
+
+# The game's SimConnect DLL. Staged by install.ps1 from the sim's own install -
+# it is Microsoft's binary, redistributable by installer and not by commit. This
+# is the one entry that would make a public repo a problem, so it stays out from
+# the first commit rather than being removed later with history surgery.
+native/
+
+# Third-party EFB package kept only as an API reference, not our code.
+efb-ref/
+
+# Stale one-shot patch staging. Superseded by deploy_efb.py, and it still holds
+# an old copy of watcher.py that would clobber the current one if it were ever
+# replayed.
+_patch_in/
+
+# Working backups. Git is what replaces these.
+*.bak
+*.bak-*
+
+__pycache__/
+*.py[cod]
+
+# Your saved settings - overrides only, and machine-specific.
+settings.json
+
+# Your own calibration notes, if you keep any. The source states the
+# standard a threshold comes from; anything about which of YOUR flights
+# went into it is yours and stays out of git.
+CALIBRATION.md
+
+# Serializes CLI builds, watcher maintenance, and quiet backups.
+.maintenance.lock

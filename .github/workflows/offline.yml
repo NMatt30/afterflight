@@ -1,0 +1,30 @@
+name: Windows offline checks
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        python: ['3.10', '3.12']
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          architecture: x64
+      - name: Install optional map renderer
+        run: python -m pip install Pillow
+      - name: Offline regressions and self-tests
+        shell: pwsh
+        run: |
+          $tests = @('test_safety.py', 'test_supervision.py', 'test_grading.py', 'test_cache.py', 'test_replay.py', 'test_integrity.py', 'sampler.py', 'flightprefs.py', 'passenger.py', 'trackexport.py', 'settings.py')
+          foreach ($test in $tests) {
+            python -B $test
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          python -m compileall -q .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

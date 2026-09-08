@@ -1,0 +1,8 @@
+# Default: normalize text in the repo, let the checkout suit the platform.
+* text=auto
+
+# The EFB package is the exception. layout.json records every file's exact byte
+# size and MSFS validates them, so any line-ending conversion on checkout would
+# change those sizes and leave a package the sim refuses to load - with nothing
+# to say why. Keep these bytes byte-for-byte.
+efb-pkg/** -text
