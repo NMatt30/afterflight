@@ -263,6 +263,21 @@ def summarize_track(flight_id, track):
     return rec
 
 
+def _rel_to_base(path):
+    """A path relative to BASE, or an absolute one when that is impossible.
+
+    os.path.relpath raises on Windows when the two are on different drives,
+    which is not a hypothetical: a CI runner checks the repository out on D:
+    and hands tempfile a directory on C:, and the whole build died on a
+    ValueError rather than on anything to do with flying. An absolute path is
+    a perfectly good answer to "where is this file" - it is only longer.
+    """
+    try:
+        return os.path.relpath(path, BASE).replace(os.sep, "/")
+    except ValueError:
+        return os.path.abspath(path).replace(os.sep, "/")
+
+
 def scan_flights(force=False):
     """One record per session .jsonl, with track stats. Cached on mtime+size."""
     cache = read_json(CACHE_JSON) or {}
@@ -297,7 +312,7 @@ def scan_flights(force=False):
             # The cached rec already carries everything the meta contributed,
             # because the signature above says the meta has not moved.
             fresh[flight_id] = {"sig": sig, "rec": rec}
-            rec["jsonl"] = os.path.relpath(jsonl_path, BASE).replace("\\", "/")
+            rec["jsonl"] = _rel_to_base(jsonl_path)
             flights.append(rec)
             continue
 
@@ -318,7 +333,7 @@ def scan_flights(force=False):
         # a Cessna does not hover, and hid the gap completely.
         rec["category"] = meta.get("category")
         rec["vs0"] = meta.get("vs0")
-        rec["jsonl"] = os.path.relpath(jsonl_path, BASE).replace("\\", "/")
+        rec["jsonl"] = _rel_to_base(jsonl_path)
         flights.append(rec)
 
     try:
@@ -1926,7 +1941,7 @@ def plan_purge(entry):
                  for rel in entry.get("purge_files") or [])
     files = list({os.path.normcase(os.path.abspath(f)): os.path.abspath(f)
                   for f in files if os.path.isfile(f)}.values())
-    rels = [os.path.relpath(f, BASE).replace(os.sep, "/") for f in files]
+    rels = [_rel_to_base(f) for f in files]
     return {"scope": scope, "sortie_id": sortie_id, "leg_key": entry.get("leg_key"),
             "files": rels, "bytes": _size_of(files), "notes": notes}
 

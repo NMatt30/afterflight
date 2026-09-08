@@ -339,6 +339,40 @@ def test_the_basemap_log_says_when_it_was_cache_only():
                      % (bad,))
 
 
+# --------------------------------------------------------------------------
+# 5. a path that cannot be made relative is still a path
+# --------------------------------------------------------------------------
+
+def test_a_session_on_another_drive_does_not_kill_the_build():
+    """os.path.relpath raises across Windows drive letters.
+
+    Not hypothetical: a CI runner checks the repository out on D: and gives
+    tempfile a directory on C:, and the entire build failed on a ValueError
+    that had nothing to do with flying. An absolute path answers "where is
+    this file" perfectly well; it is only longer.
+    """
+    t = Tree()
+    keep_base = logbook_build.BASE
+    logbook_build.BASE = "D:" + os.sep + "somewhere-else"
+    try:
+        t.track()
+        t.meta(40.0)
+        recs = logbook_build.scan_flights()
+        assert recs, "scan_flights found nothing across drives"
+        assert recs[0].get("jsonl"), "the flight record has no path"
+    finally:
+        logbook_build.BASE = keep_base
+        t.close()
+
+
+def test_a_path_under_base_is_still_recorded_relative():
+    """The fallback must not turn every path absolute."""
+    here = os.path.join(BASE, "sessions", "x.jsonl")
+    got = logbook_build._rel_to_base(here)
+    assert got == "sessions/x.jsonl", (
+        "expected a relative path under BASE, got %r" % (got,))
+
+
 def main():
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]
