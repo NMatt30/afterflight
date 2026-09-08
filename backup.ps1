@@ -53,6 +53,10 @@ try {
   New-Item -ItemType Directory -Path $dest | Out-Null
   $rows = @()
   $stable = $true
+  # Which check failed, not just that one did. "Source changed during backup"
+  # is the same sentence whether a file was rewritten under us, vanished, or
+  # appeared - and those want different answers from whoever reads it.
+  $unstable = @()
   foreach ($item in $files) {
     $rel = $item.FullName.Substring($Base.Length).TrimStart('\')
     $target = Join-Path $dest $rel
@@ -61,19 +65,31 @@ try {
     Copy-Item -LiteralPath $item.FullName -Destination $target
     $hash = (FileHash $target)
     $after = (FileHash $item.FullName)
-    if ($before -ne $after -or $hash -ne $before) { $stable = $false }
+    if ($before -ne $after) { $stable = $false; $unstable += "rewritten while copying: $rel" }
+    elseif ($hash -ne $before) { $stable = $false; $unstable += "copy does not match source: $rel" }
     $rows += [ordered]@{path=$rel; bytes=(Get-Item -LiteralPath $target).Length; sha256=$hash; source_sha256=$before}
   }
   foreach ($row in $rows) {
     $source = Join-Path $Base $row.path
-    if (-not (Test-Path -LiteralPath $source) -or
-        (FileHash $source) -ne $row.source_sha256) { $stable = $false }
+    if (-not (Test-Path -LiteralPath $source)) {
+      $stable = $false; $unstable += "disappeared after copying: $($row.path)"
+    } elseif ((FileHash $source) -ne $row.source_sha256) {
+      $stable = $false; $unstable += "changed after copying: $($row.path)"
+    }
   }
   $afterNames = @(SourceFiles | Where-Object { $_.Extension -ne '.tmp' } | ForEach-Object FullName | Sort-Object -Unique)
-  if (($files.FullName -join "`n") -ne ($afterNames -join "`n")) { $stable = $false }
+  if (($files.FullName -join "`n") -ne ($afterNames -join "`n")) {
+    $stable = $false
+    $added = @($afterNames | Where-Object { $files.FullName -notcontains $_ })
+    $gone  = @($files.FullName | Where-Object { $afterNames -notcontains $_ })
+    foreach ($a in $added) { $unstable += "appeared during backup: $a" }
+    foreach ($g in $gone)  { $unstable += "removed during backup: $g" }
+    if (-not $added -and -not $gone) { $unstable += "file list reordered between passes" }
+  }
   $status = if ($quiet -and $stable) { 'quiescent' } else { 'live-uncoordinated' }
   $manifest = [ordered]@{schema=1; created_at=[DateTime]::UtcNow.ToString('o');
-    consistency=$status; source_stable=$stable; full=[bool]$Full; files=$rows}
+    consistency=$status; source_stable=$stable; unstable=$unstable;
+    full=[bool]$Full; files=$rows}
   $manifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $dest 'manifest.json') -Encoding UTF8
   @"
 AfterFlight backup
@@ -94,7 +110,10 @@ snapshot, even if the source hashes happened to remain stable.
 "@ | Set-Content -LiteralPath (Join-Path $dest 'RESTORE.txt') -Encoding UTF8
   if ($Verify) {
     & (Join-Path $PSScriptRoot 'verify-backup.ps1') -Backup $dest
-    if (-not $stable) { throw "Source changed during backup; see $dest\manifest.json" }
+    if (-not $stable) {
+      throw ("Source changed during backup: " + ($unstable -join "; ") +
+             " - see $dest\manifest.json")
+    }
   }
   Write-Host "Backup: $dest"
   Write-Host "$($rows.Count) files; consistency: $status; source stable: $stable"
