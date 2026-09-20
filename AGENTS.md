@@ -173,6 +173,12 @@ Data lives in `sessions/` and is **not** in git: flight tracks, clips, maps,
 
 ## Traps that will cost you time
 
+- **The privacy guard only sees tracked files.** `test_safety`'s check for
+  usernames, machine names and flight ids runs over `git ls-files`, so a new
+  file passes it while untracked and can fail on the commit that adds it. Run
+  the safety suite *after* `git add`. Fixture flight ids belong in the 19xx
+  form `test_cache.py` uses: that is outside the guard's `flt-20...` pattern by
+  construction, where an allowlist entry is one more thing to go stale.
 - **A valid aircraft is not a flight.** `is_valid` asks for a title and a
   plausible lat/lon, and the sim answers both while its own menus are up, with
   the chosen aircraft parked at the departure position. Choosing an aircraft
