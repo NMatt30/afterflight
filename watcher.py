@@ -99,6 +99,22 @@ FLIGHT_ARM_MAX = int(FLIGHT_ARM_SEC / POLL_SEC) + 16
 # been turning.
 FLIGHT_ARM_MOVE_M = 50.0
 FLIGHT_ARM_WINDOW_SEC = 60.0
+# Being somewhere else is not the same as having gone there.
+#
+# Picking a different parking spot moves the aircraft without it travelling:
+# the position changes in a single sample and the sim never reports any ground
+# speed for it. Displacement alone cannot tell that from a taxi, and the
+# continuity check above only catches repositions of more than RESUME_JUMP_NM -
+# so a change of stand, which is a few hundred metres, landed squarely between
+# the two and minted a flight.
+#
+# A step is therefore checked against the speed the sim says the aircraft was
+# doing. This is corroboration, not a speed gate: the displacement test still
+# has to pass on its own, so wind that rocks an aircraft where it stands still
+# arms nothing - it never nets 50 m. The floor keeps ordinary parked jitter,
+# measured in single metres per minute, from reading as a reposition.
+FLIGHT_ARM_REPOSITION_FLOOR_M = 5.0
+FLIGHT_ARM_REPOSITION_MARGIN = 1.5
 RECONNECT_SEC = 5.0
 CONNECT_TIMEOUT = 15.0
 BOUNCE_SEC = 2.0
@@ -2258,6 +2274,7 @@ class PendingFlight:
         # asks a question about the last sixty seconds.
         self._win = deque()
         self.dropped = 0
+        self.repositions = 0
 
     def continues(self, s):
         """False when this sample belongs to a different aircraft or place.
@@ -2284,6 +2301,41 @@ class PendingFlight:
                 return False
         return True
 
+    def _repositioned(self, prev, now):
+        """True when a step is further than the reported speed can account for.
+
+        Slew says so outright. Otherwise the test is arithmetic: how far the
+        aircraft moved between two held points against how far the faster of
+        the two ground speed readings could have carried it. A reposition
+        covers its distance with the ground speed reading at zero, which no
+        amount of taxiing does.
+
+        A missing reading cannot corroborate anything, and the safe answer
+        when a promotion is at stake is the one that does not start a flight.
+        """
+        if now.get("slew") is True:
+            return True
+        try:
+            dt = float(now.get("t")) - float(prev.get("t"))
+        except (TypeError, ValueError):
+            return True
+        if dt <= 0:
+            return False
+        if not (finite(prev.get("lat")) and finite(prev.get("lon"))
+                and finite(now.get("lat")) and finite(now.get("lon"))):
+            return True
+        try:
+            step_m = haversine_nm(prev["lat"], prev["lon"],
+                                  now["lat"], now["lon"]) * 1852.0
+        except Exception:
+            return True
+        speeds = [float(p["gs"]) for p in (prev, now) if finite(p.get("gs"))]
+        if not speeds:
+            return True
+        # knots -> m/s, with margin for accelerating between two readings.
+        reach = max(speeds) * 0.514444 * dt * FLIGHT_ARM_REPOSITION_MARGIN
+        return step_m > max(reach, FLIGHT_ARM_REPOSITION_FLOOR_M)
+
     def feed(self, s):
         """Buffer a point. Returns why this is a flight now, or None.
 
@@ -2297,6 +2349,13 @@ class PendingFlight:
         snap["peaks"] = dict(pk) if pk else {}
         if pk:
             pk.clear()
+        # Moved without travelling: a new stand, not a taxi. The held points
+        # describe the old spot and the track would open with a teleport, so
+        # they go, and the candidate starts again here.
+        if self.ring and self._repositioned(self.ring[-1], snap):
+            self.repositions += 1
+            self.ring.clear()
+            self._win.clear()
         if len(self.ring) == self.ring.maxlen:
             self.dropped += 1
         self.ring.append(snap)
