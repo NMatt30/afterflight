@@ -576,7 +576,7 @@ class Tree(object):
 
 
 def row(i, lat=LAT0, alt=500.0, gs=0.0, on_ground=True):
-    return {"ts": "2099-01-01T%02d:%02d:%02d+00:00" % (i // 3600, (i // 60) % 60, i % 60),
+    return {"ts": "1999-01-01T%02d:%02d:%02d+00:00" % (i // 3600, (i // 60) % 60, i % 60),
             "lat": lat, "lon": LON0, "alt": alt, "vs": 0.0, "gs": gs,
             "heading": 90.0, "airspeed": gs, "on_ground": on_ground}
 
@@ -591,8 +591,8 @@ def test_the_builder_leaves_out_a_sortie_that_never_moved():
     """
     t = Tree()
     try:
-        t.flight("flt-20990101T000000Z", [row(i) for i in range(200)])
-        t.flight("flt-20990101T020000Z",
+        t.flight("flt-19990101T000000Z", [row(i) for i in range(200)])
+        t.flight("flt-19990101T020000Z",
                  [row(i, lat=north_of(30.0 * i), alt=500.0 + 40.0 * i,
                       gs=140.0, on_ground=(i < 5)) for i in range(400)])
         doc = logbook_build.build(bake_maps=False, allow_network=False, force=True)
@@ -604,9 +604,9 @@ def test_the_builder_leaves_out_a_sortie_that_never_moved():
                 for s in json.load(open(os.path.join(months, name),
                                         encoding="utf-8")).get("sorties", []):
                     ids.add(s["sortie_id"])
-        assert "flt-20990101T000000Z" not in ids, (
+        assert "flt-19990101T000000Z" not in ids, (
             "the frozen sortie reached the logbook: %s" % sorted(ids))
-        assert "flt-20990101T020000Z" in ids, (
+        assert "flt-19990101T020000Z" in ids, (
             "the flight that actually flew was dropped too: %s" % sorted(ids))
         assert doc is not None
     finally:
@@ -617,8 +617,8 @@ def test_the_builder_leaves_out_a_cached_empty_sortie():
     """Second pass, so the frozen sortie is served from the cache."""
     t = Tree()
     try:
-        t.flight("flt-20990101T000000Z", [row(i) for i in range(200)])
-        t.flight("flt-20990101T020000Z",
+        t.flight("flt-19990101T000000Z", [row(i) for i in range(200)])
+        t.flight("flt-19990101T020000Z",
                  [row(i, lat=north_of(30.0 * i), alt=500.0 + 40.0 * i,
                       gs=140.0, on_ground=(i < 5)) for i in range(400)])
         logbook_build.build(bake_maps=False, allow_network=False, force=True)
@@ -631,10 +631,10 @@ def test_the_builder_leaves_out_a_cached_empty_sortie():
                 for s in json.load(open(os.path.join(months, name),
                                         encoding="utf-8")).get("sorties", []):
                     ids.add(s["sortie_id"])
-        assert "flt-20990101T020000Z" in ids, (
+        assert "flt-19990101T020000Z" in ids, (
             "the flight that flew is missing, so this test would pass however "
             "the filter behaved: %s" % sorted(ids))
-        assert "flt-20990101T000000Z" not in ids, (
+        assert "flt-19990101T000000Z" not in ids, (
             "a cached empty sortie came back into the logbook: %s" % sorted(ids))
     finally:
         t.close()
