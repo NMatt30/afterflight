@@ -149,6 +149,7 @@ default, placed near the other tunables at the top of its module.
 | `clipfile.py` | Where a clip lives on disk and how to read one. The only place that knows the layout. |
 | `test_integrity.py` | Disposable fixtures for cache, persistence, deletion and backup recovery. |
 | `test_replay.py` | Pose lookup during replay, against the scan it replaced. |
+| `test_arming.py` | When a reported aircraft becomes a flight, and what a rebuild publishes. |
 | `backup.ps1` | Copies what git deliberately does not, with a SHA-256 manifest and consistency status. |
 | `verify-backup.ps1` | Verifies a backup manifest and every archived file hash. |
 | `logbook.html` / `logbook.js` | The UI. Renders `logbook.json`; writes nothing directly. |
@@ -172,6 +173,19 @@ Data lives in `sessions/` and is **not** in git: flight tracks, clips, maps,
 
 ## Traps that will cost you time
 
+- **A valid aircraft is not a flight.** `is_valid` asks for a title and a
+  plausible lat/lon, and the sim answers both while its own menus are up, with
+  the chosen aircraft parked at the departure position. Choosing an aircraft
+  therefore used to mint a flight, and a session spent choosing several minted
+  one each. A fresh aircraft is now held as a `PendingFlight` - points in a
+  ring, nothing on disk - until it is seen to move 50 m in 60 s or to leave the
+  ground, and only then is the ring replayed into a track. `arm_or_begin` is
+  the whole decision and `test_arming.py` drives it.
+  **Do not gate this on a speed.** Airspeed on a parked aircraft is the wind,
+  and ground speed jitters to within a hair of 1 kt while the aircraft settles
+  on its gear. Displacement over a *sliding* window is the form that works; a
+  running total from where the candidate armed lets slow drift accumulate past
+  any threshold given a long enough sit in the menus.
 - **The watcher holds modules in memory.** Editing `logbook_build.py` or
   `grading.py` does nothing until you restart the watcher — and a stale watcher
   will happily overwrite a new-format `logbook.json` with the old shape.
@@ -249,6 +263,7 @@ py -3 test_supervision.py   # the tray notices a dead or wedged watcher
 py -3 test_grading.py       # which profile grades what, and can the UI explain it
 py -3 test_cache.py         # what a rebuild reuses, and what a delete claims
 py -3 test_replay.py        # the ghost is placed where the aircraft was
+py -3 test_arming.py        # a menu is not a flight; a parked aircraft is not one either
 py -3 test_integrity.py     # locks, partial deletes, backup round trip
 py -3 sampler.py            # offline self-test: state block layout and peaks
 py -3 flightprefs.py        # offline self-test: the per-flight switches

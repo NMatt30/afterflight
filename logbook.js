@@ -1597,6 +1597,12 @@
         syncPauseButtons(false, false);
         var hz = (j.sampler || {}).sample_hz;
         setLive("recording " + (cur.aircraft || "") + (hz ? " · " + hz + " Hz" : ""), "ok");
+      } else if (cur.state === "arming") {
+        // Not idle. The watcher is holding points for an aircraft that has
+        // not moved yet, and saying "idle" here reads as a fault - which is
+        // how the empty-flight bug looked from the other side.
+        syncPauseButtons(false, false);
+        setLive((cur.aircraft || "aircraft") + " ready — recording starts when it moves", "ok");
       } else {
         syncPauseButtons(false, false);
         setLive("connected, idle", "ok");

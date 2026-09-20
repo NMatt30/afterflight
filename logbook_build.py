@@ -616,6 +616,35 @@ def is_real_leg(leg, to_e, ld_e):
     return bool(moved or flew)
 
 
+def is_real_sortie(sortie):
+    """False for a sortie the aircraft never went anywhere on.
+
+    The sim reports a valid aircraft at a valid position while its own menus
+    are still up, with the chosen aircraft parked at the departure position. A
+    watcher without the arming gate recorded one of these every time an
+    aircraft was picked: some minutes of a stationary aeroplane, no takeoff, no
+    distance. They look like flights in every field except the one that
+    matters.
+
+    The gate in the watcher stops new ones. This is what keeps the ones already
+    on disk out of the logbook, and it deletes nothing - the track stays where
+    it is and the sortie reappears if this ever says yes.
+
+    Anything with a leg, anything that moved, anything that was airborne, and
+    anything edited is kept. Edited especially: a sortie emptied by the user is
+    empty because they emptied it, and hiding it would hide their own work.
+    """
+    if sortie.get("legs"):
+        return True
+    if sortie.get("edited"):
+        return True
+    if (sortie.get("distance_nm") or 0.0) >= MIN_REAL_LEG_NM:
+        return True
+    if (sortie.get("airborne_s") or 0.0) >= MIN_REAL_LEG_SEC:
+        return True
+    return False
+
+
 def pair_legs(events):
     """Takeoff paired with the next landing, chronologically."""
     legs = []
@@ -1754,6 +1783,15 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
             carry_maps_forward(sortie, prev_doc)
         sorties_out.append(sortie)
         fresh_sorties[sortie_id] = {"sig": sig, "doc": sortie}
+
+    # After both paths, not inside the build: a sortie reused from the cache
+    # never reaches the code above, and the empty ones already on disk are
+    # exactly the ones that will be cached.
+    empty = [s.get("sortie_id") for s in sorties_out if not is_real_sortie(s)]
+    if empty:
+        sorties_out = [s for s in sorties_out if is_real_sortie(s)]
+        say("%d sortie(s) with no flying in them left out of the logbook: %s"
+            % (len(empty), ", ".join(str(x) for x in empty)))
 
     sorties_out.sort(key=sortie_order_key, reverse=True)
     for s in sorties_out:
