@@ -69,6 +69,36 @@ SAMPLE_SEC = 0.1
 # to hold at least that much or the start of the approach is already gone.
 BUFFER_SEC = 60.0
 BUFFER_MAX = int(BUFFER_SEC / SAMPLE_SEC) + 16
+
+# A valid aircraft at a plausible position is not yet a flight. The sim answers
+# both while the menus are up, with the selected aircraft parked at the
+# departure position, so a session spent choosing an aircraft used to mint one
+# empty flight per visit to the menu.
+#
+# So a fresh aircraft is held as a candidate and its points ring-buffered until
+# something proves the sim is actually flying it. On promotion the ring is
+# replayed into the track, which is why a cold-and-dark start keeps its prefix.
+#
+# FLIGHT_ARM_SEC is how much of that prefix survives: the ring turns for as
+# long as the sim sits in a menu, at about 3 KB per point and one point per
+# POLL_SEC.
+FLIGHT_ARM_SEC = 1200.0
+FLIGHT_ARM_MAX = int(FLIGHT_ARM_SEC / POLL_SEC) + 16
+# What counts as going somewhere: net displacement over a window, not speed.
+#
+# Speed cannot do this job. AIRSPEED INDICATED on a parked aircraft reads the
+# wind, so a breezy day would arm every menu. GROUND VELOCITY is
+# ground-referenced and so immune to that, but measured across 12 hours of
+# genuinely stationary aircraft it still peaks at 0.99 kt of jitter - no room
+# under a 1 kt threshold. Net displacement has no such problem: wind rocks an
+# aircraft on its gear and that nets to nothing over a minute. The worst 60 s
+# drift in the same 12 hours was 3.6 m, so 50 m clears it by about 14x.
+#
+# The window slides rather than accumulating from where the candidate was
+# armed, so drift cannot add up its way past the line however long the ring has
+# been turning.
+FLIGHT_ARM_MOVE_M = 50.0
+FLIGHT_ARM_WINDOW_SEC = 60.0
 RECONNECT_SEC = 5.0
 CONNECT_TIMEOUT = 15.0
 BOUNCE_SEC = 2.0
@@ -2211,8 +2241,93 @@ def maybe_resume_from_disk(s, snap):
     return None
 
 
+class PendingFlight:
+    """An aircraft the sim is reporting but has not yet been seen to fly.
+
+    Holds the points in a ring instead of writing them, and says when they are
+    worth keeping. Nothing here touches the disk: a candidate that never
+    promotes leaves no track, no meta and no recording claim, which is the
+    whole point - those are what turned a trip through the menus into a logbook
+    entry.
+    """
+
+    def __init__(self, s):
+        self.aircraft = s.get("aircraft")
+        self.ring = deque(maxlen=FLIGHT_ARM_MAX)
+        # Separate from the ring: the ring is twenty minutes deep and this
+        # asks a question about the last sixty seconds.
+        self._win = deque()
+        self.dropped = 0
+
+    def continues(self, s):
+        """False when this sample belongs to a different aircraft or place.
+
+        The same test a reconnect uses. A candidate that fails it is discarded
+        rather than extended, so the menu preview position cannot ride into the
+        track of the flight that spawns afterwards.
+        """
+        if not is_valid(s):
+            return False
+        ac = s.get("aircraft")
+        if ac and self.aircraft and ac != self.aircraft:
+            return False
+        if not self.ring:
+            return True
+        last = self.ring[-1]
+        if (finite(last.get("lat")) and finite(last.get("lon"))
+                and finite(s.get("lat")) and finite(s.get("lon"))):
+            try:
+                if haversine_nm(last["lat"], last["lon"],
+                                s["lat"], s["lon"]) > RESUME_JUMP_NM:
+                    return False
+            except Exception:
+                return False
+        return True
+
+    def feed(self, s):
+        """Buffer a point. Returns why this is a flight now, or None.
+
+        Takes the peaks with it. The accumulator is emptied by whoever records
+        a point, and while there is no flight nobody does - so without this the
+        first real point of every flight would carry a g reading accumulated
+        across the whole time the sim sat in its menus.
+        """
+        snap = dict(s)
+        pk = s.get("peaks")
+        snap["peaks"] = dict(pk) if pk else {}
+        if pk:
+            pk.clear()
+        if len(self.ring) == self.ring.maxlen:
+            self.dropped += 1
+        self.ring.append(snap)
+
+        # Airborne settles it on its own, and has to: a helicopter can lift off
+        # from its spawn without ever travelling 50 m along the ground.
+        if s.get("on_ground") is False:
+            return "airborne"
+
+        t = snap.get("t")
+        lat, lon = snap.get("lat"), snap.get("lon")
+        if not (finite(t) and finite(lat) and finite(lon)):
+            return None
+        self._win.append((float(t), float(lat), float(lon)))
+        while len(self._win) > 1 and (t - self._win[0][0]) > FLIGHT_ARM_WINDOW_SEC:
+            self._win.popleft()
+        t0, lat0, lon0 = self._win[0]
+        try:
+            moved_m = haversine_nm(lat0, lon0, lat, lon) * 1852.0
+        except Exception:
+            return None
+        if moved_m >= FLIGHT_ARM_MOVE_M and (t - t0) > 0:
+            return "moved %.0f m in %.0f s" % (moved_m, t - t0)
+        return None
+
+    def history(self):
+        return list(self.ring)
+
+
 class Flight:
-    def __init__(self, s, sortie_id=None, lift_at=None):
+    def __init__(self, s, sortie_id=None, lift_at=None, history=None):
         self.flight_id = new_flight_id()
         # The outing this fragment belongs to. A reconnect mints a new
         # flight_id, so without this the same continuous flight appears under
@@ -2223,11 +2338,15 @@ class Flight:
         # When this outing first left the ground. Survives a reconnect so the
         # EFB's flight timer does not restart mid-sortie.
         self.lift_at = lift_at
-        self.started_at = now_iso()
+        # A promoted candidate began when its oldest held point did, not when
+        # it proved itself - otherwise every cold-and-dark start would be
+        # stamped at the moment the aircraft first rolled.
+        first = history[0] if history else s
+        self.started_at = first.get("ts") or now_iso()
         self.aircraft = s.get("aircraft")
         self.distance_nm = 0.0
-        self.last_lat = s.get("lat")
-        self.last_lon = s.get("lon")
+        self.last_lat = first.get("lat")
+        self.last_lon = first.get("lon")
         self.last_ts = time.time()
         self.landing_rate_fpm = None
         self.category = None
@@ -2237,8 +2356,28 @@ class Flight:
         self.jsonl = os.path.join(SESSIONS, self.flight_id + ".jsonl")
         self.meta_path = os.path.join(SESSIONS, self.flight_id + ".meta.json")
         persistence.claim_recording(self.jsonl)
-        self._record_point(s)
+        # One meta write at the end rather than one per point: a full ring is
+        # 1200 points and _save_meta rewrites the whole file each time.
+        for held in (history or [s]):
+            self._absorb(held)
+            self._record_point(held)
         self._save_meta(ended=False, reason=None)
+
+    def _absorb(self, s):
+        """Fold a point into the running totals. Shared by the replay and update."""
+        if not self.category and s.get("category"):
+            self.category = s.get("category")
+        if self.vs0 is None and finite(s.get("vs0")):
+            self.vs0 = float(s["vs0"])
+        if (finite(s.get("lat")) and finite(s.get("lon"))
+                and finite(self.last_lat) and finite(self.last_lon)):
+            d = haversine_nm(self.last_lat, self.last_lon, s["lat"], s["lon"])
+            if d < 20.0:
+                self.distance_nm += d
+        self.last_lat = s.get("lat")
+        self.last_lon = s.get("lon")
+        if s.get("aircraft"):
+            self.aircraft = s.get("aircraft")
 
     @classmethod
     def restore(cls, flight_id, s):
@@ -2337,20 +2476,8 @@ class Flight:
             log("meta write failed %s %s" % (self.flight_id, repr(e)))
 
     def update(self, s):
-        now = time.time()
-        if not self.category and s.get("category"):
-            self.category = s.get("category")
-        if self.vs0 is None and finite(s.get("vs0")):
-            self.vs0 = float(s["vs0"])
-        if finite(s.get("lat")) and finite(s.get("lon")) and finite(self.last_lat) and finite(self.last_lon):
-            d = haversine_nm(self.last_lat, self.last_lon, s["lat"], s["lon"])
-            if d < 20.0:
-                self.distance_nm += d
-        self.last_lat = s.get("lat")
-        self.last_lon = s.get("lon")
-        self.last_ts = now
-        if s.get("aircraft"):
-            self.aircraft = s.get("aircraft")
+        self._absorb(s)
+        self.last_ts = time.time()
         self._record_point(s)
         self._save_meta(ended=False, reason=None)
 
@@ -5038,12 +5165,24 @@ def start_replay(body):
     return out
 
 
-def _begin_new_flight(s, tracker, sortie_id=None, lift_at=None):
+def _begin_new_flight(s, tracker, sortie_id=None, lift_at=None, history=None,
+                      why=None):
     """Start a fragment. With sortie_id it continues an outing, not begins one."""
     tracker.finish()
     tracker.reset()
-    flight = Flight(s, sortie_id=sortie_id, lift_at=lift_at)
+    flight = Flight(s, sortie_id=sortie_id, lift_at=lift_at, history=history)
     tracker.attach(flight)
+    # reset() above cleared the tracker's ground memory, and takeoff detection
+    # is exactly "was on the ground, now is not". The sample that promotes a
+    # candidate can be the one that leaves the ground - a helicopter lifting
+    # straight up - so starting the tracker blank there loses the takeoff that
+    # started the flight. Seed it from the point before, which the ring still
+    # holds. Two are needed: one is the promoting sample itself.
+    if history and len(history) >= 2:
+        prior = history[-2]
+        tracker.prev_on_ground = prior.get("on_ground")
+        tracker.last_lat = prior.get("lat")
+        tracker.last_lon = prior.get("lon")
     if sortie_id:
         # Continuity held, so this is not a new outing. Saying flight_start
         # here is what made one flight look like several in the event log.
@@ -5054,8 +5193,43 @@ def _begin_new_flight(s, tracker, sortie_id=None, lift_at=None):
     else:
         write_event("flight_start", flight.flight_id, flight.aircraft,
                     sortie_id=flight.sortie_id)
-        log("flight_start %s aircraft=%s" % (flight.flight_id, flight.aircraft))
+        log("flight_start %s aircraft=%s armed_by=%s held=%s started_at=%s"
+            % (flight.flight_id, flight.aircraft, why or "immediate",
+               len(history or ()), flight.started_at))
     return flight
+
+
+def arm_or_begin(s, tracker, pending, resume_snap):
+    """Decide what a valid sample with no flight running means.
+
+    Returns (flight, pending), exactly one of which is set. A flight already
+    under way is never held back - it has proved itself once and a watcher
+    restart is not a reason to make it prove itself again. Only a genuinely
+    fresh aircraft is held.
+
+    Its own function because the detect loop cannot be driven without a
+    SimConnect session, and a decision that can only be exercised by flying is
+    a decision that ships untested. The last round of lifecycle bugs here were
+    all in code a test never reached.
+    """
+    restored = maybe_resume_from_disk(s, resume_snap)
+    if restored is not None:
+        return _keep_existing_flight(restored, tracker, s, "disk resume"), None
+
+    # A reconnect that cannot resume the fragment can still belong to the same
+    # outing: same aircraft, no spawn jump, and the previous sortie known.
+    carry = carry_sortie_id(s, resume_snap)
+    if carry:
+        return _begin_new_flight(
+            s, tracker, sortie_id=carry,
+            lift_at=(resume_snap or {}).get("lift_at")), None
+
+    if pending is None or not pending.continues(s):
+        pending = PendingFlight(s)
+    why = pending.feed(s)
+    if not why:
+        return None, pending
+    return _begin_new_flight(s, tracker, history=pending.history(), why=why), None
 
 
 def _keep_existing_flight(flight, tracker, s, why):
@@ -5081,6 +5255,9 @@ def run_connected(sm, flight=None, tracker=None, resume_snap=None):
         tracker = ClipTracker()
         LIVE_TRACKER[0] = tracker
     announced_keep = False
+    # An aircraft the sim is reporting that has not yet been seen to fly. None
+    # whenever a flight is running: the two are alternatives, never both.
+    pending = None
     if flight is not None:
         tracker.attach(flight)
         announced_keep = True
@@ -5179,27 +5356,21 @@ def run_connected(sm, flight=None, tracker=None, resume_snap=None):
                 try:
                     if valid:
                         stale = 0
-                        if flight is None:
-                            restored = maybe_resume_from_disk(s, resume_snap)
-                            if restored is not None:
-                                flight = _keep_existing_flight(restored, tracker, s, "disk resume")
-                            else:
-                                # A reconnect that cannot resume the fragment can
-                                # still belong to the same outing: same aircraft,
-                                # no spawn jump, and the previous sortie known.
-                                carry = carry_sortie_id(s, resume_snap)
-                                flight = _begin_new_flight(
-                                    s, tracker, sortie_id=carry,
-                                    lift_at=(resume_snap or {}).get("lift_at") if carry else None)
-                        elif not same_sortie(flight, s):
+                        if flight is not None and not same_sortie(flight, s):
+                            # Back to the menus and out again in something else.
+                            # The old flight is over; the new aircraft is only a
+                            # candidate, or picking one would mint an empty
+                            # flight exactly as a fresh connection used to.
                             log(
-                                "new spawn: aircraft/position jump vs surviving %s; minting new flight"
-                                % flight.flight_id
+                                "new spawn: aircraft/position jump vs surviving %s; "
+                                "ending it and arming a candidate" % flight.flight_id
                             )
                             tracker.finish()
                             flight.end("new_spawn_or_aircraft")
-                            flight = _begin_new_flight(s, tracker)
-                        else:
+                            flight = None
+                            tracker.reset()
+                            pending = None
+                        if flight is not None:
                             if announced_keep:
                                 announced_keep = False
                                 log(
@@ -5207,17 +5378,38 @@ def run_connected(sm, flight=None, tracker=None, resume_snap=None):
                                     % (flight.flight_id, flight.started_at)
                                 )
                             flight.update(s)
-                        extra["leg"] = tracker.leg
-                        write_current("in_flight", flight.flight_id, flight.started_at, s,
-                                      extra=extra, sortie_id=getattr(flight, "sortie_id", None),
-                                      lift_at=getattr(flight, "lift_at", None))
+                        else:
+                            flight, pending = arm_or_begin(
+                                s, tracker, pending, resume_snap)
+                            # Spent either way: consulting it again would read
+                            # the meta off the disk once a second for as long as
+                            # a candidate is held.
+                            resume_snap = None
+                        if flight is not None:
+                            extra["leg"] = tracker.leg
+                            write_current("in_flight", flight.flight_id, flight.started_at, s,
+                                          extra=extra, sortie_id=getattr(flight, "sortie_id", None),
+                                          lift_at=getattr(flight, "lift_at", None))
+                        else:
+                            extra["armed_points"] = len(pending.ring) if pending else 0
+                            extra["armed_dropped"] = pending.dropped if pending else 0
+                            write_current("arming", None, None, s, extra=extra)
                     else:
                         stale += 1
-                        if flight is not None and stale >= 3:
-                            tracker.finish()
-                            flight.end("invalid_aircraft_or_position")
-                            flight = None
-                            tracker.reset()
+                        # Nobody empties the accumulator while there is nothing
+                        # to record, so without this the next point kept would
+                        # carry a g reading from a stretch with no aircraft in
+                        # it at all.
+                        peak_acc.clear()
+                        if stale >= 3:
+                            if flight is not None:
+                                tracker.finish()
+                                flight.end("invalid_aircraft_or_position")
+                                flight = None
+                                tracker.reset()
+                            # Same rule for a candidate: the aircraft it was
+                            # holding points for is gone.
+                            pending = None
                         write_current(
                             "idle",
                             flight.flight_id if flight else None,

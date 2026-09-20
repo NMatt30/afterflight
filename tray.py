@@ -436,6 +436,14 @@ class Tray(object):
             self.state = "recording"
             self.tip = "%s\nrecording %s\nleg %s" % (
                 APP_NAME, cur.get("aircraft") or "", (d.get("clips") or {}).get("leg"))
+        elif cur.get("state") == "arming":
+            # Deliberately the connected icon: the watcher is working, it is
+            # holding points for an aircraft that has not moved yet. Without
+            # this the tray says "idle" while the sim sits on a runway, which
+            # reads as a fault.
+            self.state = "connected"
+            self.tip = "%s\n%s ready, holding until it moves" % (
+                APP_NAME, cur.get("aircraft") or "aircraft")
         else:
             self.state = "connected"
             self.tip = APP_NAME + "\nconnected, idle"
