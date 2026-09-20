@@ -192,6 +192,13 @@ Data lives in `sessions/` and is **not** in git: flight tracks, clips, maps,
   on its gear. Displacement over a *sliding* window is the form that works; a
   running total from where the candidate armed lets slow drift accumulate past
   any threshold given a long enough sit in the menus.
+  **And being somewhere else is not having gone there.** Picking a different
+  parking spot moves the aircraft without it travelling, and the continuity
+  check only catches repositions over `RESUME_JUMP_NM` - so a change of stand
+  sat between that and the 50 m trigger and minted a flight. Each step is now
+  checked against the ground speed the sim reported for it. That is
+  corroboration and not a speed gate: displacement still has to pass on its
+  own, so wind arms nothing.
 - **The watcher holds modules in memory.** Editing `logbook_build.py` or
   `grading.py` does nothing until you restart the watcher — and a stale watcher
   will happily overwrite a new-format `logbook.json` with the old shape.

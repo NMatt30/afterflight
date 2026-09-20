@@ -466,6 +466,29 @@ def test_the_decision_never_holds_back_a_reconnect():
             "the resumed fragment did not rejoin its sortie")
 
 
+def test_the_decision_drops_the_ring_when_the_aircraft_changes():
+    """Swapping airframe without moving.
+
+    The reposition check inside feed() cannot see this - the aircraft has not
+    gone anywhere, it has become something else - so continues() is the only
+    thing standing between one airframe's held points and another's track.
+    """
+    with NoDisk():
+        tracker, pending, flight = FakeTracker(), None, None
+        for t in range(0, 120):
+            flight, pending = watcher.arm_or_begin(
+                sample(t), tracker, pending, None)
+        assert len(pending.ring) == 120
+        flight, pending = watcher.arm_or_begin(
+            sample(120, aircraft="A Different Type"), tracker, pending, None)
+        assert flight is None
+        assert pending.aircraft == "A Different Type", (
+            "the candidate still names the previous airframe")
+        assert len(pending.ring) == 1, (
+            "%d point(s) recorded for one airframe were kept for another"
+            % len(pending.ring))
+
+
 def test_the_decision_drops_the_ring_on_a_spawn_jump():
     """Menu preview, then a spawn somewhere else.
 
@@ -486,6 +509,118 @@ def test_the_decision_drops_the_ring_on_a_spawn_jump():
         assert flight is None
         assert len(pending.ring) == 1, (
             "the ring kept %d points across a spawn jump" % len(pending.ring))
+
+
+def test_a_new_parking_spot_is_not_a_flight():
+    """Changing your mind about where to start.
+
+    The aircraft is somewhere else without having gone there: the position
+    changes in one sample and the sim reports no ground speed for it. The
+    continuity check only catches repositions bigger than RESUME_JUMP_NM, so
+    everything from a stand away to most of an airport used to land between
+    that and the 50 m trigger, and minted a flight every time.
+    """
+    for nm, label in ((120.0, "another airport"), (4.0, "across this airport"),
+                      (1.0, "another ramp"), (0.3, "the next stand"),
+                      (0.05, "one stand over")):
+        with NoDisk():
+            tracker, pending, flight = FakeTracker(), None, None
+            for t in range(0, 120):
+                flight, pending = watcher.arm_or_begin(
+                    sample(t), tracker, pending, None)
+            assert flight is None, "armed before moving at all (%s)" % label
+            far = LAT0 + nm / NM_PER_DEG
+            for t in range(120, 240):
+                flight, pending = watcher.arm_or_begin(
+                    sample(t, lat=far), tracker, pending, None)
+                if flight is not None:
+                    break
+            assert flight is None, (
+                "a reposition of %.2f nm (%s) started a flight" % (nm, label))
+
+
+def test_slew_is_a_reposition():
+    """Slewing is moving the aircraft, not flying it.
+
+    Deliberately slewed at a rate the reported ground speed would account for,
+    so the arithmetic alone cannot reject it. Only the slew flag can, which is
+    the point: a big obvious teleport would have let this pass whatever the
+    flag did.
+    """
+    p = watcher.PendingFlight(sample(0))
+    p.feed(sample(0))
+    why = None
+    d = 0.0
+    for t in range(1, 120):
+        d += 20.0                                  # 20 m a second, gs says 60 kt
+        s = sample(t, lat=north_of(d), gs=60.0)    # 60 kt reaches 46 m - plenty
+        s["slew"] = True
+        why = p.feed(s)
+        if why:
+            break
+    assert why is None, "slewing armed a flight (%s)" % why
+    assert p.repositions > 0, "slew was never recognised as a reposition"
+
+
+def test_a_step_with_no_speed_reading_cannot_arm():
+    """A missing reading must never read as a good one.
+
+    Nothing corroborates the distance, so the answer that does not invent a
+    flight is the safe one - the same rule the landing grade follows when a
+    touchdown rate cannot be recovered.
+    """
+    p = watcher.PendingFlight(sample(0))
+    p.feed(sample(0))
+    why = None
+    d = 0.0
+    for t in range(1, 120):
+        d += 20.0
+        s = sample(t, lat=north_of(d))
+        s["gs"] = None
+        why = p.feed(s)
+        if why:
+            break
+    assert why is None, (
+        "a run of steps with no ground speed reading armed a flight (%s)" % why)
+
+
+def test_a_takeoff_roll_is_not_a_reposition():
+    """The corroboration must not reject real speed.
+
+    An airliner is doing about 150 kt on the ground at rotation, which is
+    roughly 77 m between one held point and the next - far beyond anything a
+    reposition floor may forbid. The speed reading is what makes it legitimate.
+    """
+    p = watcher.PendingFlight(sample(0))
+    why = None
+    d = 0.0
+    for t in range(0, 60):
+        gs = min(150.0, 4.0 * t)                  # accelerating down the runway
+        d += gs * 0.514444
+        why = p.feed(sample(t, lat=north_of(d), gs=gs))
+        if why:
+            break
+    assert why is not None, "a takeoff roll never armed a flight"
+    assert p.repositions == 0, (
+        "%d step(s) of a takeoff roll were rejected as repositions"
+        % p.repositions)
+
+
+def test_parked_jitter_is_not_a_reposition():
+    """Or the ring is shredded and a cold start keeps no prefix.
+
+    A parked aircraft drifts single metres per minute with the ground speed
+    reading at zero, and zero speed cannot corroborate any distance at all.
+    The floor is what keeps that from reading as a reposition every second.
+    """
+    p = watcher.PendingFlight(sample(0))
+    rows = [sample(t, lat=north_of(0.4 * math.sin(t / 7.0))) for t in range(0, 900)]
+    feed_all(p, rows)
+    assert p.repositions == 0, (
+        "ordinary parked drift was called a reposition %d time(s); the ring "
+        "is being cleared under a cold-and-dark start" % p.repositions)
+    assert len(p.ring) == 900, (
+        "the ring holds %d of 900 parked points" % len(p.ring))
 
 
 def test_a_promotion_does_not_swallow_the_takeoff():
