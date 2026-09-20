@@ -1261,7 +1261,12 @@ def describe_version():
     try:
         import subprocess
         out = subprocess.run(
-            ["git", "describe", "--tags", "--always", "--dirty"],
+            # Release tags only. Left to itself describe takes the nearest
+            # tag of any kind, so a working marker set before some refactor
+            # becomes the version every user sees - the footer read
+            # "pre-clip-format-37" for weeks after the clip format shipped.
+            ["git", "describe", "--tags", "--match", "v*", "--always",
+             "--dirty"],
             cwd=BASE, capture_output=True, text=True, timeout=3,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         described = (out.stdout or "").strip()
