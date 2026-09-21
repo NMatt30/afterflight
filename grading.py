@@ -824,6 +824,9 @@ FIXED_WING = {
     # A wing has no hover to leave, so lift-off ends on height, not on speed.
     "transition_kt": 1e9,
     "liftoff_top_ft": 400.0,
+    # ...or once it has lasted min_phase_s, whichever is later. Height alone
+    # left a brisk jet climb-out too short to grade. See split_phases.
+    "liftoff_fills_min_phase": True,
     "approach_gate_ft": 1000.0,
     "stabilized_gate_ft": 500.0,
     "vrs_vs_fpm": 300.0,
@@ -1290,6 +1293,26 @@ def split_phases(track, profile):
         if (spd is not None and spd >= profile["transition_kt"]) \
                 or agl >= profile["liftoff_top_ft"]:
             break
+
+    # A lift-off bounded only by height is shortest when it is flown best. A
+    # jet that climbs away briskly reaches 400 ft inside min_phase_s and was
+    # then refused a grade as "too short" - so the cleaner the departure, the
+    # likelier it went unmarked. Where the profile asks for it, the phase runs
+    # on until it is long enough to grade, but never into the climb proper.
+    #
+    # It can only lengthen a lift-off that was already under the minimum. One
+    # that reached its height after min_phase_s ends exactly where it did.
+    if profile.get("liftoff_fills_min_phase") and _finite(track[lo].get("t")):
+        t_lo = float(track[lo]["t"])
+        for i in air:
+            if i <= lift_end:
+                continue
+            if i >= climb_end:
+                break
+            if not _finite(track[lift_end].get("t")) or \
+                    float(track[lift_end]["t"]) - t_lo >= profile["min_phase_s"]:
+                break
+            lift_end = i
 
     out = {"descent": (descent_start, hi)}
     if lift_end > lo:
