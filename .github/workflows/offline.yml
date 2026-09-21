@@ -21,7 +21,14 @@ jobs:
       - name: Offline regressions and self-tests
         shell: pwsh
         run: |
-          $tests = @('test_safety.py', 'test_supervision.py', 'test_grading.py', 'test_cache.py', 'test_replay.py', 'test_integrity.py', 'sampler.py', 'flightprefs.py', 'passenger.py', 'trackexport.py', 'settings.py')
+          # Discovered, not listed. A hand-kept list let test_arming.py ship in
+          # v0.6 behind green checks that never ran it. Finding nothing is a
+          # failure, not a pass: discovery that quietly stopped working would
+          # leave every run green for ever.
+          $found = @(Get-ChildItem -Name -File test_*.py | Sort-Object)
+          if ($found.Count -eq 0) { Write-Error 'no test_*.py found'; exit 1 }
+          $tests = $found + @('sampler.py', 'flightprefs.py', 'passenger.py', 'trackexport.py', 'settings.py')
+          Write-Host ('Running: ' + ($tests -join ', '))
           foreach ($test in $tests) {
             python -B $test
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

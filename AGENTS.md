@@ -150,6 +150,7 @@ default, placed near the other tunables at the top of its module.
 | `test_integrity.py` | Disposable fixtures for cache, persistence, deletion and backup recovery. |
 | `test_replay.py` | Pose lookup during replay, against the scan it replaced. |
 | `test_arming.py` | When a reported aircraft becomes a flight, and what a rebuild publishes. |
+| `test_map.py` | What the route map draws as one line, and where it breaks - and so where it puts markers. |
 | `backup.ps1` | Copies what git deliberately does not, with a SHA-256 manifest and consistency status. |
 | `verify-backup.ps1` | Verifies a backup manifest and every archived file hash. |
 | `logbook.html` / `logbook.js` | The UI. Renders `logbook.json`; writes nothing directly. |
@@ -277,6 +278,7 @@ py -3 test_grading.py       # which profile grades what, and can the UI explain 
 py -3 test_cache.py         # what a rebuild reuses, and what a delete claims
 py -3 test_replay.py        # the ghost is placed where the aircraft was
 py -3 test_arming.py        # a menu is not a flight; a parked aircraft is not one either
+py -3 test_map.py           # a sim skip is not a landing and a takeoff
 py -3 test_integrity.py     # locks, partial deletes, backup round trip
 py -3 sampler.py            # offline self-test: state block layout and peaks
 py -3 flightprefs.py        # offline self-test: the per-flight switches
@@ -286,6 +288,10 @@ py -3 settings.py           # prints the resolved settings
 py -3 logbook_build.py --no-maps --offline --force   # full rebuild, no network
 py -3 -m py_compile watcher.py sampler.py grading.py logbook_build.py
 ```
+
+CI discovers `test_*.py` rather than keeping a list, so a new test file runs
+there without anyone remembering to add it. A hand-kept list let
+`test_arming.py` ship in v0.6 behind green checks that never ran it.
 
 `--offline` keeps the basemap to already-cached tiles, so a rebuild is safe to
 run at any time. `--force` ignores the sortie cache.
