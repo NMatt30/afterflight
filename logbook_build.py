@@ -54,8 +54,9 @@ SCHEMA = 2
 # segment splitting, anything that alters the picture without touching canvas,
 # style, tiles or supersample. Those have their own signature entries; drawing
 # logic has none, so this is what stops a stale PNG being served as current.
-# Bumped for: markers at the leg events, jump-splitting, stop markers.
-BUILDER_VERSION = 32
+# Bumped for: markers at the leg events, jump-splitting, stop markers, and
+# not splitting a jump the aircraft plainly flew across.
+BUILDER_VERSION = 33
 EXCLUDED_JSON = os.path.join(BASE, "excluded.json")
 DETAIL_DIR = os.path.join(SESSIONS, "detail")
 

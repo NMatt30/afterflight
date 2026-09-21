@@ -206,6 +206,24 @@ SEGMENT_BREAK_NM = 0.35
 # recorded before the flight began, not a hover.
 SEGMENT_MIN_EXTENT_NM = 0.01
 
+# But a jump is not always a reposition. The sim can advance further than one
+# sample interval accounts for - a change of sim rate, or a stutter it catches
+# up on - and then the aircraft is simply further along the route it was
+# flying. Measured once at cruise: 1.4 nm between two samples, airborne on both
+# sides, altitude, speed and heading unchanged. Splitting there drew a landing
+# marker and a start marker a third of the way through a flight that did
+# neither.
+#
+# So a jump is joined when it was plainly flown across: airborne on both sides,
+# no slew, altitude continuous, and the jump lying along the ground track of
+# the step before it. Ground track and not heading, because at altitude the
+# two differ by the wind correction angle, and a heading test would fail in
+# exactly the jet-stream conditions a long cruise is flown in. Anything that
+# cannot be checked is split, as before.
+FLOWN_ACROSS_MAX_NM = 25.0
+FLOWN_ACROSS_ALT_FT = 500.0
+FLOWN_ACROSS_TRACK_DEG = 15.0
+
 
 def _nm_apart(a, b):
     """Great-circle nm between two points. mapbake has no haversine of its own."""
@@ -217,13 +235,56 @@ def _nm_apart(a, b):
     return 2.0 * EARTH_NM * math.asin(min(1.0, math.sqrt(h)))
 
 
+def _bearing_deg(a, b):
+    """Initial great-circle bearing from a to b, 0-360."""
+    lat1, lat2 = math.radians(float(a["lat"])), math.radians(float(b["lat"]))
+    dlon = math.radians(float(b["lon"]) - float(a["lon"]))
+    x = math.sin(dlon) * math.cos(lat2)
+    y = (math.cos(lat1) * math.sin(lat2)
+         - math.sin(lat1) * math.cos(lat2) * math.cos(dlon))
+    return math.degrees(math.atan2(x, y)) % 360.0
+
+
+def _angle_apart(a, b):
+    d = abs(a - b) % 360.0
+    return min(d, 360.0 - d)
+
+
+def _flown_across(prev, a, b):
+    """True when the jump from a to b is the aircraft further along its route.
+
+    prev is the point before a, and supplies the ground track the jump has to
+    agree with. Every test must pass; any field missing means the answer is
+    no, which keeps the old behaviour for anything this cannot vouch for.
+    """
+    try:
+        if prev is None:
+            return False
+        if a.get("on_ground") is not False or b.get("on_ground") is not False:
+            return False
+        if a.get("slew") is True or b.get("slew") is True:
+            return False
+        if _nm_apart(a, b) > FLOWN_ACROSS_MAX_NM:
+            return False
+        if abs(float(b["alt"]) - float(a["alt"])) > FLOWN_ACROSS_ALT_FT:
+            return False
+        if _nm_apart(prev, a) <= 0.0:
+            return False                      # no track to compare against
+        track = _bearing_deg(prev, a)
+        return _angle_apart(_bearing_deg(a, b), track) <= FLOWN_ACROSS_TRACK_DEG
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def _split_on_jumps(seg):
     """Break one run of points wherever the aircraft could not have flown it."""
     out, cur = [], []
     for p in seg:
         if cur:
             try:
-                jumped = _nm_apart(cur[-1], p) > SEGMENT_BREAK_NM
+                jumped = (_nm_apart(cur[-1], p) > SEGMENT_BREAK_NM
+                          and not _flown_across(cur[-2] if len(cur) >= 2 else None,
+                                                cur[-1], p))
             except (KeyError, TypeError, ValueError):
                 jumped = False
             if jumped:
