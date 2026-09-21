@@ -977,6 +977,148 @@ def test_the_light_band_is_not_the_transport_band():
         % (light, heavy))
 
 
+# --------------------------------------------------------------------------
+# lift-off length for airplanes
+# --------------------------------------------------------------------------
+
+def _departure(fpm, top_ft=20000.0, runway_ft=1000.0):
+    """Roll, climb at a steady rate, cruise, descend, land. 1 Hz."""
+    pts, t = [], 0.0
+
+    def add(alt, ground, spd):
+        pts.append({"t": t, "alt": alt, "on_ground": ground,
+                    "airspeed": spd, "gs": spd, "bank": 0.0})
+
+    for i in range(30):
+        add(runway_ft, True, 5.0 * i)
+        t += 1.0
+    alt = runway_ft
+    while alt < top_ft:
+        alt = min(top_ft, alt + fpm / 60.0)
+        add(alt, False, 150.0)
+        t += 1.0
+    for _ in range(600):
+        add(top_ft, False, 250.0)
+        t += 1.0
+    while alt > runway_ft + 10:
+        alt = max(runway_ft + 10, alt - 1500.0 / 60.0)
+        add(alt, False, 200.0)
+        t += 1.0
+    for _ in range(20):
+        add(runway_ft, True, 60.0)
+        t += 1.0
+    return pts
+
+
+def _lift_span(track, profile):
+    rng = grading.split_phases(track, profile).get("liftoff")
+    return grading._span_s(track, rng) if rng else 0.0
+
+
+def test_a_brisk_jet_climb_out_is_long_enough_to_grade():
+    """400 ft in eight seconds, which a light jet does.
+
+    Bounded by height alone the phase came out under min_phase_s and was
+    refused a grade - so the cleaner the departure, the likelier it went
+    unmarked. Reported on a real light-jet leg that reached 400 ft in 14.1 s
+    against a 15 s floor, with every other leg of that type between 14 and 21.
+    """
+    floor = grading.FIXED_WING["min_phase_s"]
+    track = _departure(fpm=5000.0)
+    # The fixture must reproduce the fault, or this passes on the old code. A
+    # first draft used 3000 fpm, which the altitude smoothing turns into a 16 s
+    # lift-off unaided - it never fell short and so tested nothing.
+    unaided = _lift_span(track, dict(grading.FIXED_WING,
+                                     liftoff_fills_min_phase=False))
+    assert unaided < floor, (
+        "fixture gives a %.1f s lift-off without the rule, which is already "
+        "gradeable, so it cannot show the rule doing anything" % unaided)
+    span = _lift_span(track, grading.FIXED_WING)
+    assert span >= floor, (
+        "a 5000 fpm climb-out produced a %.1f s lift-off against a %.0f s "
+        "minimum, so it goes ungraded" % (span, floor))
+
+
+def test_a_lift_off_already_long_enough_is_untouched():
+    """The property that keeps this from rewriting history.
+
+    A lift-off that reached its height after min_phase_s must end exactly
+    where it did before the rule existed, or every airplane lift-off grade
+    moves. Compared against the same profile with the rule switched off,
+    index for index, not against a remembered number.
+    """
+    for fpm in (600.0, 1000.0, 1400.0):
+        track = _departure(fpm=fpm)
+        on = grading.split_phases(track, grading.FIXED_WING)
+        off = grading.split_phases(
+            track, dict(grading.FIXED_WING, liftoff_fills_min_phase=False))
+        assert _lift_span(track, dict(grading.FIXED_WING,
+                                      liftoff_fills_min_phase=False)) \
+            >= grading.FIXED_WING["min_phase_s"], (
+            "fixture at %d fpm does not test what it claims: its lift-off "
+            "was already short" % fpm)
+        assert on == off, (
+            "at %d fpm a lift-off that was already long enough moved:\n"
+            "  without the rule %r\n  with it          %r" % (fpm, off, on))
+
+
+def test_lift_off_never_runs_into_the_climb():
+    """Extended to be gradeable, but never past where the climb begins.
+
+    Under the shipped numbers this bound cannot fire, and it is worth knowing
+    why: the 15 s altitude smoothing puts the 85% climb mark at least 18 s
+    after wheels-up on any leg that has a lift-off at all - searched across
+    climb rates to 12000 fpm and tops from 1150 to 6000 ft - and a hop short
+    enough to reach it sooner is graded as all cruise, with no lift-off.
+
+    So it is exercised with a minimum longer than the climb, which is the
+    situation it exists for: someone raises min_phase_s, or shortens the
+    smoothing, and a stretched lift-off would otherwise carry on into level
+    flight and grade cruise as a departure. A first draft of this test used a
+    300 ft hop, produced no lift-off at all, and passed by asserting 0 < 15.
+    """
+    profile = dict(grading.FIXED_WING, min_phase_s=40.0)
+    track = _departure(fpm=7500.0, top_ft=1850.0)
+    ranges = grading.split_phases(track, profile)
+    assert "liftoff" in ranges, (
+        "fixture has no lift-off, so this would pass whatever the bound did")
+
+    air = [i for i, p in enumerate(track) if p.get("on_ground") is False]
+    sm = grading._smooth_alt(track, air, profile["alt_smooth_s"])
+    base = sm[air[0]]
+    mark = base + (max(sm.values()) - base) * profile["phase_frac"]
+    climb_end = next(i for i in air if sm[i] >= mark)
+    wheels_up = track[air[0]]["t"]
+    assert track[climb_end]["t"] - wheels_up < profile["min_phase_s"], (
+        "fixture reaches the climb after the minimum, so the bound is not "
+        "what stops the lift-off here")
+
+    end = ranges["liftoff"][1]
+    assert end <= climb_end, (
+        "lift-off ran to index %d, past the start of the climb at %d - it was "
+        "stretched into level flight" % (end, climb_end))
+
+
+def test_every_airplane_profile_fills_its_lift_off():
+    for name, p in (("FIXED_WING", grading.FIXED_WING),
+                    ("LIGHT_GA", grading.LIGHT_GA),
+                    ("unclassified", grading._unclassified())):
+        assert p.get("liftoff_fills_min_phase") is True, (
+            "%s does not extend a short lift-off" % name)
+
+
+def test_the_helicopter_lift_off_is_left_alone():
+    """Rotary lift-off is calibrated against measured flights.
+
+    Its window ends on transition speed or height, and it is the one profile
+    whose numbers come from real legs rather than published criteria.
+    Stretching that window would move calibrated grades for no reported
+    fault - none of the recorded helicopter lift-offs was short.
+    """
+    assert not grading.ROTARY.get("liftoff_fills_min_phase"), (
+        "the rotary profile extends its lift-off; its calibrated grades move")
+
+
 def main():
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]
