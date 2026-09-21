@@ -662,6 +662,207 @@ def test_a_promotion_does_not_swallow_the_takeoff():
 
 
 # --------------------------------------------------------------------------
+# 7c. "not on the ground" is not the same as flying
+# --------------------------------------------------------------------------
+#
+# While the sim loads an aircraft in, it can report SIM ON GROUND false for a
+# few ticks with the aircraft still frozen on its pad - G FORCE reads 0.0,
+# because nothing is being simulated. That blip used to start the flight and
+# then, a moment later, become a landing: 1 second, 0 nm, graded A. The
+# tracker runs at 10 Hz, so the blip has to be driven at 10 Hz; the recording
+# is 1 Hz and flattens it into a single sample, which does not reproduce it.
+
+class _AlwaysFlown(watcher.ClipTracker):
+    """The tracker as it was before landings required a flight to land from."""
+    flown = property(lambda self: True, lambda self, v: None)
+
+
+def _tracker(cls=watcher.ClipTracker):
+    import types
+    tr = cls()
+    tr.attach(types.SimpleNamespace(flight_id="flt-19990101T000000Z",
+                                    sortie_id="flt-19990101T000000Z",
+                                    aircraft="Test Type"))
+    tr.committed = []
+    tr._commit = lambda kind, ev, rate, **k: tr.committed.append(kind)
+    return tr
+
+
+def _drive(tr, phases, t0=0.0):
+    """Feed (seconds, on_ground, g) phases at 10 Hz. Returns the end time."""
+    t = t0
+    for seconds, on_ground, g in phases:
+        for _ in range(int(round(seconds * 10))):
+            s = sample(t, on_ground=on_ground)
+            s["gforce"] = g
+            s["vs"] = 0.0 if on_ground else -300.0
+            tr.feed(s)
+            t += 0.1
+    return t
+
+
+BLIP = [(20.0, True, 0.0),       # frozen on the pad while the sim loads
+        (0.3, False, 0.0),       # three ticks of "not on the ground"
+        (6.0, True, 1.0)]        # physics starts; still on the pad
+
+
+def test_a_load_in_blip_is_not_a_landing():
+    with NoDisk():
+        before = _tracker(_AlwaysFlown)
+        _drive(before, BLIP)
+        assert before.committed == ["landing"], (
+            "fixture does not reproduce the fault: the old rule logged %r, "
+            "not a landing" % (before.committed,))
+
+        tr = _tracker()
+        _drive(tr, BLIP)
+        assert tr.committed == [], (
+            "a load-in blip with the aircraft frozen on its pad was logged as "
+            "%r" % (tr.committed,))
+
+
+def test_a_one_tick_flicker_while_taxiing_is_not_a_landing():
+    """Same rule, different cause: physics running, a single-tick flicker.
+
+    G force reads a normal 1.0 here, so no g test could catch it. It is the
+    reason this is fixed at the landing and not only at the arming gate.
+    """
+    phases = [(10.0, True, 1.0), (0.2, False, 1.0), (6.0, True, 1.0)]
+    with NoDisk():
+        before = _tracker(_AlwaysFlown)
+        _drive(before, phases)
+        assert before.committed == ["landing"], "fixture does not reproduce it"
+        tr = _tracker()
+        _drive(tr, phases)
+        assert tr.committed == [], (
+            "a flicker off the ground while taxiing became %r" % (tr.committed,))
+
+
+def test_a_real_flight_still_lands():
+    with NoDisk():
+        tr = _tracker()
+        _drive(tr, [(10.0, True, 1.0), (60.0, False, 1.0), (6.0, True, 1.0)])
+        assert tr.committed == ["takeoff", "landing"], (
+            "a normal flight logged %r" % (tr.committed,))
+
+
+def test_a_bounce_is_still_one_landing():
+    """Down, up for a second, down again - one arrival, not none."""
+    with NoDisk():
+        tr = _tracker()
+        _drive(tr, [(10.0, True, 1.0), (60.0, False, 1.0),
+                    (0.5, True, 1.3), (1.0, False, 1.0), (6.0, True, 1.1)])
+        assert tr.committed.count("landing") == 1, (
+            "a bounced landing logged %r" % (tr.committed,))
+
+
+def test_a_touch_and_go_lands_twice():
+    with NoDisk():
+        tr = _tracker()
+        _drive(tr, [(10.0, True, 1.0), (60.0, False, 1.0), (6.0, True, 1.0),
+                    (30.0, False, 1.0), (6.0, True, 1.0)])
+        assert tr.committed.count("landing") == 2, (
+            "two real landings logged as %r" % (tr.committed,))
+
+
+def test_a_hop_too_short_to_be_a_takeoff_is_not_a_landing():
+    """A second off the ground after landing is neither a takeoff nor a landing.
+
+    The takeoff debounce already refused the lift as too brief; the old rule
+    then logged the set-down anyway, as a landing with no takeoff.
+    """
+    phases = [(10.0, True, 1.0), (60.0, False, 1.0), (6.0, True, 1.0),
+              (1.0, False, 1.0), (6.0, True, 1.0)]
+    with NoDisk():
+        before = _tracker(_AlwaysFlown)
+        _drive(before, phases)
+        assert before.committed.count("landing") == 2, "fixture does not reproduce it"
+        tr = _tracker()
+        _drive(tr, phases)
+        assert tr.committed.count("landing") == 1, (
+            "a one-second hop was logged as a second landing: %r" % (tr.committed,))
+
+
+def test_a_restart_just_before_touchdown_still_lands():
+    """Reattached in the air, a moment before the wheels touch.
+
+    The tracker has not seen two seconds airborne yet, but the outing it is
+    rejoining was already flying. Refusing this landing would lose a real one.
+    """
+    with NoDisk():
+        tr = watcher.ClipTracker()
+        tr.committed = []
+        tr._commit = lambda kind, ev, rate, **k: tr.committed.append(kind)
+        snap = {"aircraft": "Test Type", "lat": LAT0, "lon": LON0,
+                "sortie_id": "flt-19990101T000000Z",
+                "flight_id": "flt-19990101T000000Z"}
+        s = sample(0.0, on_ground=False)
+        s["gforce"] = 1.0
+        tr.feed(s)
+        flight, _ = watcher.arm_or_begin(s, tr, None, snap)
+        assert flight is not None and tr.flown, (
+            "a reconnect in the air was not treated as a flight under way")
+        _drive(tr, [(0.5, False, 1.0), (6.0, True, 1.0)], t0=0.1)
+        assert tr.committed.count("landing") == 1, (
+            "a landing half a second after reattaching was refused: %r"
+            % (tr.committed,))
+
+
+def test_a_disk_resume_in_the_air_is_still_flying():
+    """The other way back into a flight under way: reopening it from disk."""
+    import types
+    with NoDisk():
+        tr = watcher.ClipTracker()
+        tr.leg = 1                               # skip the clip-directory scan
+        flight = types.SimpleNamespace(flight_id="flt-19990101T000000Z",
+                                       started_at="1999-01-01T00:00:00Z",
+                                       update=lambda s: None)
+        s = sample(0.0, on_ground=False)
+        watcher._keep_existing_flight(flight, tr, s, "test")
+        assert tr.flown, (
+            "a flight resumed from disk while airborne was not treated as "
+            "flying, so a landing in the next two seconds would be refused")
+
+
+def test_a_frozen_airborne_sample_does_not_arm():
+    p = watcher.PendingFlight(sample(0))
+    p.feed(sample(0))
+    s = sample(1, on_ground=False)
+    s["gforce"] = 0.0
+    assert p.feed(s) is None, (
+        "a not-on-ground sample reading 0.0 g - a frozen aircraft - armed a flight")
+
+
+def test_a_liftoff_at_one_g_arms():
+    p = watcher.PendingFlight(sample(0))
+    s = sample(1, on_ground=False)
+    s["gforce"] = 1.0
+    assert p.feed(s) == "airborne"
+
+
+def test_a_missing_g_reading_still_arms():
+    """No reading is not evidence of a frozen sim.
+
+    Legacy-fallback samples carry no g at all. Treating that as frozen would
+    stop a real lift-off from starting a flight on exactly those ticks.
+    """
+    p = watcher.PendingFlight(sample(0))
+    s = sample(1, on_ground=False)
+    s.pop("gforce", None)
+    s["peaks"] = {}
+    assert p.feed(s) == "airborne", "a lift-off with no g reading was refused"
+
+
+def test_a_peak_reading_counts_as_simulating():
+    """An instant reading of zero with a normal peak in the same second."""
+    p = watcher.PendingFlight(sample(0))
+    s = sample(1, on_ground=False, peaks={"gforce_max": 1.02})
+    s["gforce"] = 0.0
+    assert p.feed(s) == "airborne", (
+        "a sample whose peak g was 1.02 was treated as a frozen sim")
+
+
+# --------------------------------------------------------------------------
 # 8. the backstop, driven through the real builder
 # --------------------------------------------------------------------------
 

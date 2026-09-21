@@ -200,6 +200,19 @@ Data lives in `sessions/` and is **not** in git: flight tracks, clips, maps,
   checked against the ground speed the sim reported for it. That is
   corroboration and not a speed gate: displacement still has to pass on its
   own, so wind arms nothing.
+  **And "not on the ground" is not flying.** The sim can report SIM ON
+  GROUND false for a few ticks while loading an aircraft in, frozen on its
+  pad at 0.0 g. Airborne only arms on no positive evidence of a frozen sim,
+  and a missing g reading is not that evidence - legacy ticks carry none.
+- **A landing needs a flight to land from.** The tracker debounced the takeoff
+  side (airborne for `BOUNCE_SEC` before it counts) but not the landing side,
+  which checked the aircraft had been down long enough and never that it had
+  been up. Any blip off the ground became a landing with no takeoff. A landing
+  now requires `flown`, set by the same `BOUNCE_SEC` and cleared when a
+  landing commits - and set on reattaching in the air, or a watcher restarted
+  just before touchdown would refuse a real landing. **The tracker runs at
+  10 Hz and the track is written at 1 Hz**, so a fault in detection has to be
+  reproduced at 10 Hz: the recording can flatten it away entirely.
 - **The watcher holds modules in memory.** Editing `logbook_build.py` or
   `grading.py` does nothing until you restart the watcher — and a stale watcher
   will happily overwrite a new-format `logbook.json` with the old shape.

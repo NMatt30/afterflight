@@ -115,6 +115,16 @@ FLIGHT_ARM_WINDOW_SEC = 60.0
 # measured in single metres per minute, from reading as a reposition.
 FLIGHT_ARM_REPOSITION_FLOOR_M = 5.0
 FLIGHT_ARM_REPOSITION_MARGIN = 1.5
+# "Not on the ground" is not the same as flying, either. While the sim loads an
+# aircraft in it can report SIM ON GROUND false for a single sample with the
+# aircraft still frozen on its pad, and the airborne trigger took that as a
+# lift-off. A frozen aircraft reads G FORCE at or near zero - it is not being
+# simulated - where every recorded lift-off read 0.997 to 1.5 g on its first
+# airborne sample. Airborne therefore promotes unless there is positive
+# evidence the sim is not running. A missing reading is not that evidence:
+# legacy-fallback samples carry no g at all, and must not stop a real flight
+# from starting.
+FLIGHT_ARM_SIMULATING_MIN_G = 0.8
 RECONNECT_SEC = 5.0
 CONNECT_TIMEOUT = 15.0
 BOUNCE_SEC = 2.0
@@ -2366,8 +2376,9 @@ class PendingFlight:
         self.ring.append(snap)
 
         # Airborne settles it on its own, and has to: a helicopter can lift off
-        # from its spawn without ever travelling 50 m along the ground.
-        if s.get("on_ground") is False:
+        # from its spawn without ever travelling 50 m along the ground. Unless
+        # the sim says it is not simulating the aircraft yet.
+        if s.get("on_ground") is False and not self._frozen(snap):
             return "airborne"
 
         t = snap.get("t")
@@ -2388,6 +2399,18 @@ class PendingFlight:
 
     def history(self):
         return list(self.ring)
+
+    @staticmethod
+    def _frozen(snap):
+        """True only on positive evidence the sim is not simulating the aircraft.
+
+        Every g reading this sample carries - the instant one and the peak since
+        the last point - is below FLIGHT_ARM_SIMULATING_MIN_G. No readings at all
+        is not evidence of anything, and answers False.
+        """
+        readings = [snap.get("gforce"), (snap.get("peaks") or {}).get("gforce_max")]
+        readings = [float(g) for g in readings if finite(g)]
+        return bool(readings) and max(readings) < FLIGHT_ARM_SIMULATING_MIN_G
 
 
 class Flight:
@@ -2817,6 +2840,10 @@ class ClipTracker:
         self.open = []
         self.vs_air = deque(maxlen=12)
         self.airborne_since = None
+        # Whether the aircraft has really flown since it last landed: airborne
+        # for BOUNCE_SEC, the same test a takeoff has to pass to count. A
+        # landing needs it. See the landing branch in feed().
+        self.flown = False
 
     def attach(self, flight):
         self.flight = flight
@@ -2833,6 +2860,7 @@ class ClipTracker:
         self.last_lon = None
         self.pending = None
         self.airborne_since = None
+        self.flown = False
         self.vs_air.clear()
         with RUNTIME_LOCK:
             RUNTIME["flight_id"] = None
@@ -3017,6 +3045,8 @@ class ClipTracker:
         if nowg is False:
             if self.airborne_since is None:
                 self.airborne_since = s.get("t")
+            elif finite(s.get("t")) and                     float(s["t"]) - float(self.airborne_since) >= BOUNCE_SEC:
+                self.flown = True
         else:
             self.airborne_since = None
 
@@ -3076,6 +3106,8 @@ class ClipTracker:
                 contacts = self.pending.get("contacts")
                 heights = self.pending.get("heights")
                 self.pending = None
+                if kind == "landing":
+                    self.flown = False
                 self._commit(kind, ev, rate, contacts=contacts, heights=heights)
 
         if self.flight is not None and self.pending is None and replay_in_progress():
@@ -3086,6 +3118,19 @@ class ClipTracker:
             pass
         elif self.flight is not None and self.pending is None and self.prev_on_ground is True and nowg is False:
             self.pending = {"kind": "takeoff", "since": s.get("t"), "event": dict(s), "rate_fpm": None}
+        elif self.flight is not None and self.pending is None and self.prev_on_ground is False                 and nowg is True and not self.flown:
+            # Down again without ever having flown. The takeoff debounce already
+            # threw away the lift-off as too brief to be one, and until now the
+            # landing side trusted it anyway - it checked the aircraft had been
+            # down long enough, never that it had been up. A single sample of
+            # "not on the ground" while the sim was still loading the aircraft
+            # became a landing at 0 fpm, graded A, a second into the flight.
+            #
+            # A bounce needs no exemption. flown is cleared only when a landing
+            # commits, and a bounce exists only while its landing has not, so an
+            # aircraft coming down from one is always still marked as flying.
+            log("ignored touchdown: not airborne for %.0f s since the last "
+                "landing, so there was no flight to land from" % BOUNCE_SEC)
         elif self.flight is not None and self.pending is None and self.prev_on_ground is False and nowg is True:
             rate = None
             if self.vs_air:
@@ -5236,6 +5281,11 @@ def _begin_new_flight(s, tracker, sortie_id=None, lift_at=None, history=None,
     tracker.reset()
     flight = Flight(s, sortie_id=sortie_id, lift_at=lift_at, history=history)
     tracker.attach(flight)
+    # A reconnect in the air is a flight already under way. Without this a
+    # watcher restarted in the last two seconds before touchdown would refuse
+    # the landing, having not yet seen the aircraft airborne for long enough.
+    if sortie_id and s.get("on_ground") is False:
+        tracker.flown = True
     # reset() above cleared the tracker's ground memory, and takeoff detection
     # is exactly "was on the ground, now is not". The sample that promotes a
     # candidate can be the one that leaves the ground - a helicopter lifting
@@ -5298,6 +5348,8 @@ def arm_or_begin(s, tracker, pending, resume_snap):
 
 def _keep_existing_flight(flight, tracker, s, why):
     tracker.attach(flight)
+    if s.get("on_ground") is False:
+        tracker.flown = True          # resumed in the air: see _begin_new_flight
     if tracker.leg < 1:
         tracker.leg = restore_tracker_leg(flight.flight_id)
         with RUNTIME_LOCK:
