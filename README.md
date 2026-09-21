@@ -398,13 +398,28 @@ returns the plan and changes nothing.
 
 There is no undo. That is the point of it being a second, separate step.
 
-## Version
+## Versions and branches
+
+**`main` is the latest release** — the default branch, and what a plain
+`git clone` gives you. Every commit on it has been flown in the sim before
+being merged, and each release is tagged `vX.Y.Z`.
+
+**`develop` carries work that has not been released yet.** It passes the same
+automated checks, but nobody has flown it yet; expect it to break
+occasionally. To run it:
+
+```powershell
+git checkout develop
+```
 
 `APP_VERSION` in `watcher.py` is the release number. At startup the watcher
-refines it with `git describe --tags --always --dirty`, so a working copy
-reports exactly which commit is running — `0.4.0 (v0.4-7-gc892e43-dirty)` —
-rather than whatever number was last remembered. It is read once, not per
-request, and falls back to the bare constant when git or the repo is absent.
+refines it with `git describe --tags --match "v*" --always --dirty`, so a
+working copy reports exactly which commit is running —
+`0.6.1 (v0.6.1-3-g1a2b3c4)` is three commits past the 0.6.1 release, which is
+what a `develop` build looks like. Only release tags are considered, so a
+marker tag set for some other purpose can never name a build. It is read once,
+not per request, and falls back to the bare constant when git or the repo is
+absent.
 
 It appears in `/state`, in the startup log line, and in the logbook footer.
 

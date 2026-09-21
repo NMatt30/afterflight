@@ -313,6 +313,13 @@ The UI is served by the watcher at `http://127.0.0.1:8742/`. There is no build
 step and no package manager — the UI is plain HTML and JavaScript on purpose,
 and the tray is pure `ctypes` with no pip dependencies.
 
+**Branches.** Work lands on `develop`. `main` holds releases only, and is
+promoted from `develop` by a pull request merged with a **merge commit**,
+after the change has been flown in the sim - not squash or rebase, which
+rewrite every commit and leave the two branches sharing no history after
+each release. Afterwards `develop` fast-forwards to the merge commit. Open
+pull requests against `develop`.
+
 **Before opening a pull request**
 
 1. `py -3 test_safety.py` passes. If you changed something it covers,
