@@ -40,7 +40,7 @@ HTTP_HOST = "127.0.0.1"
 # Bump on a release. describe_version() refines this from git when the repo is
 # there, so a working copy reports exactly which commit is running rather than
 # just the last version someone remembered to edit.
-APP_VERSION = "0.6.0"
+APP_VERSION = "0.6.1"
 HTTP_PORT = 8742
 # How the detect loop gets its data.
 #   legacy - one blocking python-SimConnect get() per variable. ~2.8 Hz.
