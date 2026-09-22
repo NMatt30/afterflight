@@ -151,6 +151,7 @@ default, placed near the other tunables at the top of its module.
 | `test_replay.py` | Pose lookup during replay, against the scan it replaced. |
 | `test_arming.py` | When a reported aircraft becomes a flight, and what a rebuild publishes. |
 | `test_map.py` | What the route map draws as one line, and where it breaks - and so where it puts markers. |
+| `test_efb.py` | When a deploy may rewrite the EFB package's committed `layout.json` - only when its files changed. |
 | `backup.ps1` | Copies what git deliberately does not, with a SHA-256 manifest and consistency status. |
 | `verify-backup.ps1` | Verifies a backup manifest and every archived file hash. |
 | `logbook.html` / `logbook.js` | The UI. Renders `logbook.json`; writes nothing directly. |
@@ -292,6 +293,7 @@ py -3 test_cache.py         # what a rebuild reuses, and what a delete claims
 py -3 test_replay.py        # the ghost is placed where the aircraft was
 py -3 test_arming.py        # a menu is not a flight; a parked aircraft is not one either
 py -3 test_map.py           # a sim skip is not a landing and a takeoff
+py -3 test_efb.py           # a deploy does not dirty the committed EFB layout
 py -3 test_integrity.py     # locks, partial deletes, backup round trip
 py -3 sampler.py            # offline self-test: state block layout and peaks
 py -3 flightprefs.py        # offline self-test: the per-flight switches

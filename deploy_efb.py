@@ -140,6 +140,26 @@ def write_layout(root):
     return len(content)
 
 
+def refresh_source_layout(root):
+    """Regenerate the repo's layout.json only when its files have changed.
+
+    Returns the problems that caused a rewrite, or [] if it was left alone.
+
+    The dates in it are file modification times, and git does not keep those:
+    a checkout sets them to the moment of the checkout. Rewriting on every
+    deploy therefore restamped every date and left layout.json modified in
+    every working tree - a -dirty version string, and a git pull that refuses
+    to run the next time a commit touches the file. Nothing reads these dates:
+    the sim loads the deployed copy, whose layout is always regenerated
+    against its own files, and verify_layout checks paths and sizes. So the
+    committed file is rewritten only when a path or size no longer matches.
+    """
+    problems = verify_layout(root)
+    if problems:
+        write_layout(root)
+    return problems
+
+
 def verify_layout(root):
     """Every layout entry must match the file it points at."""
     path = os.path.join(root, "layout.json")
@@ -217,9 +237,15 @@ def main():
         clean = report_legacy(legacy_roots(), args.remove_legacy)
         return 1 if (differing or missing or problems or not clean) else 0
 
-    # Source first: its own layout has to describe its own files.
-    n = write_layout(SRC)
-    print("\nlayout.json regenerated in efb-pkg (%d files)" % n)
+    # Source first: its own layout has to describe its own files - but it is
+    # only rewritten when it does not. See refresh_source_layout.
+    stale = refresh_source_layout(SRC)
+    if stale:
+        print("\nlayout.json regenerated in efb-pkg, because:")
+        for p in stale:
+            print("  %s" % p)
+    else:
+        print("\nlayout.json in efb-pkg already matches its files; left as committed")
 
     os.makedirs(dst, exist_ok=True)
     copied = 0
