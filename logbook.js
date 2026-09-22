@@ -1920,6 +1920,10 @@
 
   async function rebuild() {
     var btn = $("#rebuild");
+    // Put back whatever the page says, not a second copy of it here - the
+    // copy said "Rebuild" while the page said "Rebuild logbook", so the button
+    // renamed itself the first time it was pressed.
+    var label = btn.textContent;
     btn.disabled = true;
     btn.textContent = "Rebuilding…";
     try {
@@ -1928,7 +1932,7 @@
       await load();
     } catch (e) { /* load() reports it */ }
     btn.disabled = false;
-    btn.textContent = "Rebuild";
+    btn.textContent = label;
   }
 
   function start() {
