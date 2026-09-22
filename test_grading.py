@@ -977,6 +977,39 @@ def test_the_light_band_is_not_the_transport_band():
         % (light, heavy))
 
 
+def test_a_band_reads_in_the_same_unit_as_its_measurement():
+    """For every metric, not just the one that broke.
+
+    The band's unit was sliced off the format string, and a format string's
+    tail is still format syntax: "%.0f%% of descent" gave the tooltip "full
+    marks 3%% of descent, zero 40%% of descent" beside a measurement that
+    correctly read "3% of descent". Compared here against what the format
+    actually prints, so any escape in any future format is covered.
+    """
+    import re
+    offenders = []
+    for key, entry in sorted(grading.METRICS.items()):
+        fmt = entry[1]
+        if not fmt:
+            continue
+        shown = fmt % 7.0                                 # e.g. "7% of descent"
+        number = re.match(r"-?[\d.]+", shown).group(0)
+        unit = shown[len(number):]
+        band = grading.band_text(key, (3.0, 40.0))
+        assert band, "%s has a format but no band" % key
+        if band != "full marks 3%s, zero 40%s" % (unit, unit):
+            offenders.append("%s: measurement unit %r, band %r" % (key, unit, band))
+    assert not offenders, (
+        "bands whose unit is not the measurement's:\n  " + "\n  ".join(offenders))
+
+
+def test_the_percent_metric_still_exercises_the_escape():
+    """The test above only covers the fault while some format uses %%."""
+    assert any("%%" in (e[1] or "") for e in grading.METRICS.values()), (
+        "no metric format contains %% any more, so the band-unit test no "
+        "longer exercises the escape that broke")
+
+
 # --------------------------------------------------------------------------
 # lift-off length for airplanes
 # --------------------------------------------------------------------------

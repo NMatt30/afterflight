@@ -530,10 +530,20 @@ def band_text(key, band):
 
     # Everything after the conversion spec is the unit: "%.0f fpm" -> " fpm",
     # "%.0f° bank" -> "° bank".
+    #
+    # Formatted, not sliced. The tail of a format string is still format
+    # syntax, so slicing "%.0f%% of descent" gave "%% of descent" and the
+    # tooltip printed "full marks 3%% of descent" - while the measurement
+    # beside it, which does go through %, read "3% of descent". Taking the
+    # unit from the formatted output makes it the measurement's unit by
+    # construction, whatever escape a format uses.
     cut = fmt.find("f", fmt.find("%"))
     if cut < 0:
         return None
-    unit = fmt[cut + 1:]
+    try:
+        unit = (fmt % 0.0)[len(fmt[:cut + 1] % 0.0):]
+    except (TypeError, ValueError):
+        return None
 
     def one(v):
         """The threshold itself, not a rounded-off version of it.
