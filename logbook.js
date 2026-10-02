@@ -431,6 +431,9 @@
     (ph.parts || []).forEach(function (p) {
       var tail = [];
       if (p.cap) tail.push("a cap, not a weight");
+      // Measured and shown, but not yet allowed to move the grade. Without
+      // saying so it would read as a cap that simply did not bite.
+      else if (p.counted === false) tail.push("measured, not yet counted");
       else if (p.weight_pct != null) tail.push(p.weight_pct + "% of this phase");
       if (p.band) tail.push(p.band);
       lines.push("  " + p.label
@@ -1752,7 +1755,11 @@
         var row = el("div", "gx-metric");
         row.appendChild(el("b", null, m.label + "  " + m.weight_pct + "%"));
         var right = el("span", "gx-why", m.why || "");
-        if (m.best !== null && m.best !== undefined) {
+        // A metric whose range cannot be two numbers - the float's zero moves
+        // with speed - says it in words instead.
+        if (m.band) {
+          right.appendChild(el("div", "gx-band", m.band));
+        } else if (m.best !== null && m.best !== undefined) {
           right.appendChild(el("div", "gx-band",
             "full marks at " + m.best + ", zero at " + m.worst
             + (m.unit && m.unit.indexOf("%") < 0 ? " " + m.unit.replace("%.0f ", "")

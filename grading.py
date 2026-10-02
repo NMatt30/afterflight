@@ -260,6 +260,58 @@ ALIGNMENT_ROLLOUT_S = 5.0
 # the same allowance the phase rollup gives the weakest phase.
 ALIGNMENT_CAP_POINTS = 10.0
 
+# ------------------------------------------------------------------ float
+#
+# How long the airplane was held off before the wheels touched. Measured as the
+# air distance in its certification sense - "the distance from a height of 50
+# feet above the landing surface to the point of main gear touchdown" (AC
+# 25-32, 8.2.1) - and scored on the time it took, so one rule serves a 60 kt
+# trainer and a 120 kt jet.
+#
+# The standards describe zones, not a slope, and the score follows them:
+#
+#   100 at 7 s. AC 25-32 8.2.4 gives "a flare time of 7 seconds" as the air
+#     distance of "an average pilot who is flying in normal operations".
+#   50 at the end of the touchdown zone. AC 91-79A puts the target touchdown
+#     point "approximately 1,000 ft down the runway", the touchdown zone at
+#     "500-3,000 ft beyond the runway threshold", and the certified distances
+#     on the gear being "at a height of 50 ft over the runway threshold". From
+#     a standard crossing, 2,000 ft of float beyond a normal flare puts the
+#     wheels at the far end of the zone - still acceptable, and the last point
+#     that is. With the cap allowance that is a D.
+#   0 a further 1,000 ft on. This one is a judgment, not a published figure:
+#     past the zone the approach should have been abandoned, and the score
+#     should reach the bottom quickly rather than at once.
+#
+# A first version ran linearly from 7 s to zero at the end of the zone. Built
+# against real landings it called a jet touching down 2,300 ft past the
+# threshold - inside the zone AC 91-79A calls typical operation - an F. The
+# standard says acceptable; the slope said fail.
+#
+# Distances become seconds at the speed actually flown, so every point after
+# the first is worked out per landing.
+#
+# Heights are above the touchdown point - altitude less the altitude at
+# contact - which is above the landing surface, not above whatever terrain the
+# approach crossed.
+#
+# One rule for every airplane, and it is lenient for light ones on purpose.
+# AC 91-79A's "flown onto the runway rather than being held off" is written for
+# turbine airplanes; a light piston airplane is taught to hold off. At 60 kt the
+# zero lands at 27 s.
+FLOAT_HEIGHT_FT = 50.0
+FLOAT_NORMAL_S = 7.0
+FLOAT_MARGIN_FT = 2000.0          # normal flare -> end of the touchdown zone
+FLOAT_ZONE_END_SCORE = 50.0
+FLOAT_BEYOND_FT = 1000.0          # end of the zone -> zero (a judgment)
+FLOAT_CAP_POINTS = ALIGNMENT_CAP_POINTS
+# Off until the owner has seen what it does to existing landings. The float is
+# measured and shown on every airplane leg either way; this decides only
+# whether it may hold the landing letter and the descent phase down. Flipping
+# it is an edit to this file, which grading_revision hashes, so every sortie
+# rebuilds on its own.
+GRADE_FLOAT = False
+
 G_FT_S2 = 32.174
 
 LETTER_ORDER = ("A", "B", "C", "D", "F")
@@ -444,6 +496,167 @@ def alignment_ceiling_letter(alignment):
 def scores_alignment(profile):
     """Whether this profile grades touchdown alignment at all."""
     return bool((profile or {}).get("alignment"))
+
+
+def _ground_ft(a, b):
+    """Great-circle feet between two points carrying lat and lon."""
+    lat1, lat2 = math.radians(float(a["lat"])), math.radians(float(b["lat"]))
+    dlat = lat2 - lat1
+    dlon = math.radians(float(b["lon"]) - float(a["lon"]))
+    h = (math.sin(dlat / 2.0) ** 2
+         + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2.0) ** 2)
+    return 2.0 * 20925646.3 * math.asin(min(1.0, math.sqrt(h)))
+
+
+def landing_float(points, t_land=None, source=None):
+    """How long the airplane was held off before touching down, or None.
+
+    points is the landing clip at 10 Hz when there is one and the 1 Hz track
+    otherwise; resolution_s says which, because a 1 Hz track places the 50 ft
+    crossing and the contact each to within a second.
+
+    None means it could not be measured - the recording starts below 50 ft,
+    the aircraft was on the ground inside the window, a field is missing. It
+    is never a short float.
+    """
+    if not points:
+        return None
+    idx = landing_index(points, t_land)
+    if not idx:
+        return None
+    td = points[idx]
+    if not (_finite(td.get("t")) and _finite(td.get("alt"))):
+        return None
+    ground = float(td["alt"])
+
+    # Back from contact through the flare to the last sample above 50 ft.
+    j = idx - 1
+    while j >= 0:
+        q = points[j]
+        if q.get("on_ground") is not False:
+            return None
+        if not (_finite(q.get("t")) and _finite(q.get("alt"))):
+            return None
+        if float(q["alt"]) - ground > FLOAT_HEIGHT_FT:
+            break
+        j -= 1
+    if j < 0:
+        return None
+    above, below = points[j], points[j + 1]
+    h_a = float(above["alt"]) - ground
+    h_b = float(below["alt"]) - ground
+    frac = (h_a - FLOAT_HEIGHT_FT) / (h_a - h_b) if h_a > h_b else 0.0
+    t_cross = float(above["t"]) + frac * (float(below["t"]) - float(above["t"]))
+    seconds = float(td["t"]) - t_cross
+
+    try:
+        dist = (1.0 - frac) * _ground_ft(above, below)
+        for k in range(j + 1, idx):
+            dist += _ground_ft(points[k], points[k + 1])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if seconds <= 0 or dist <= 0:
+        return None
+    fps = dist / seconds
+    if fps < 10.0:                      # not an airplane arriving
+        return None
+    zone_end_s = FLOAT_NORMAL_S + FLOAT_MARGIN_FT / fps
+    zero_s = zone_end_s + FLOAT_BEYOND_FT / fps
+    gaps = [float(points[k + 1]["t"]) - float(points[k]["t"])
+            for k in range(max(0, idx - 5), idx)
+            if _finite(points[k].get("t")) and _finite(points[k + 1].get("t"))]
+    return {
+        "seconds": round(seconds, 1),
+        "distance_ft": round(dist),
+        "speed_kt": round(fps / 1.68781, 1),
+        "zone_end_s": round(zone_end_s, 1),
+        "zero_s": round(zero_s, 1),
+        "score": round(float_score(seconds, zone_end_s, zero_s), 1),
+        "resolution_s": round(sorted(gaps)[len(gaps) // 2], 2) if gaps else None,
+        "source": source,
+    }
+
+
+def scores_float(profile):
+    """Whether this profile measures the landing float at all."""
+    return bool((profile or {}).get("float"))
+
+
+def landing_float_for(points, aircraft=None, category=None, vs0_kt=None,
+                      t_land=None, source=None, track=None):
+    """The float for this leg's landing, or None if it is not measured here.
+
+    Profile routing is the same as alignment's and for the same reason. track,
+    when given, is what infers the category: a clip is too short to.
+    """
+    if not points:
+        return None
+    if not category:
+        category = infer_category(track or points)
+    if not scores_float(profile_for(aircraft, category=category, vs0_kt=vs0_kt)):
+        return None
+    return landing_float(points, t_land=t_land, source=source)
+
+
+def float_score(seconds, zone_end_s, zero_s):
+    """100 through a normal flare, 50 at the end of the zone, 0 beyond it."""
+    if seconds <= FLOAT_NORMAL_S:
+        return 100.0
+    if seconds <= zone_end_s:
+        span = zone_end_s - FLOAT_NORMAL_S
+        return 100.0 - (100.0 - FLOAT_ZONE_END_SCORE) * (seconds - FLOAT_NORMAL_S) / span
+    if seconds >= zero_s:
+        return 0.0
+    return FLOAT_ZONE_END_SCORE * (zero_s - seconds) / (zero_s - zone_end_s)
+
+
+def float_points_s(speed_kt):
+    """(end of zone, zero) in seconds from 50 ft, at this ground speed."""
+    fps = float(speed_kt) * 1.68781
+    end = FLOAT_NORMAL_S + FLOAT_MARGIN_FT / fps
+    return round(end, 1), round(end + FLOAT_BEYOND_FT / fps, 1)
+
+
+def float_band_text(flt):
+    """What good looks like for this landing - two of the points move with speed."""
+    return ("full marks %g s, end of the touchdown zone %g s, zero %g s at %g kt"
+            % (FLOAT_NORMAL_S, flt["zone_end_s"], flt["zero_s"],
+               round(flt["speed_kt"])))
+
+
+def float_ceiling_letter(flt):
+    """Highest letter the landing may keep, or None while the float is not graded."""
+    if not GRADE_FLOAT or not flt or flt.get("score") is None:
+        return None
+    return letter_for_score(flt["score"] + FLOAT_CAP_POINTS)
+
+
+def _float_part(flt, score):
+    """The float's line in the descent phase, and the score after any cap.
+
+    Shown whether or not it is graded. Until GRADE_FLOAT is on it carries
+    counted False, and the UI says it is measured but not yet counted - a cap
+    that simply never bites would read as a landing that floated fine.
+    """
+    if not flt or flt.get("score") is None:
+        return None, score
+    counted = bool(GRADE_FLOAT)
+    ceiling = flt["score"] + FLOAT_CAP_POINTS
+    held = counted and score is not None and ceiling < score
+    part = {
+        "key": "float",
+        "label": "Float",
+        "score": round(flt["score"], 1),
+        "measured": "%.1f s from 50 ft, %d ft" % (flt["seconds"], flt["distance_ft"]),
+        "weight_pct": 0,
+        "band": float_band_text(flt),
+        "cap": counted,
+        "counted": counted,
+        "held": bool(held),
+        "held_to": round(ceiling, 1) if held else None,
+        "held_from": round(score, 1) if held else None,
+    }
+    return part, (ceiling if held else score)
 
 
 # ------------------------------------------------------------------ words
@@ -834,6 +1047,8 @@ FIXED_WING = {
     # A wing has no hover to leave, so lift-off ends on height, not on speed.
     "transition_kt": 1e9,
     "liftoff_top_ft": 400.0,
+    # Measured on every airplane. See FLOAT_NORMAL_S.
+    "float": True,
     # ...or once it has lasted min_phase_s, whichever is later. Height alone
     # left a brisk jet climb-out too short to grade. See split_phases.
     "liftoff_fills_min_phase": True,
@@ -880,6 +1095,9 @@ def _unclassified():
     p = dict(FIXED_WING)
     p["name"] = "unclassified"
     p["label"] = "Other / unclassified"
+    # A gyroplane lands with next to no roll and no flare to speak of; the
+    # air-distance standard is written for airplanes.
+    p["float"] = False
     d = dict(FIXED_WING["descent"])
     d["weights"] = {k: v for k, v in d["weights"].items()
                     if k not in UNCLASSIFIED_SUPPRESS}
@@ -1529,6 +1747,12 @@ def _score_phase(metrics, spec, extra=None):
         })
         if held:
             score = ceiling
+
+    # The float sits beside alignment for the same reason - a cap, never a
+    # weight - and is applied after it, so the lower ceiling of the two wins.
+    part, score = _float_part((extra or {}).get("float"), score)
+    if part:
+        parts.append(part)
     return score, parts
 
 
@@ -1562,7 +1786,7 @@ def _ride_score(scored, weights):
 
 
 def grade_leg(track, landing_rate_fpm=None, aircraft=None,
-              category=None, vs0_kt=None, alignment=None):
+              category=None, vs0_kt=None, alignment=None, landing_float=None):
     """Grade one leg's track. Returns None when there is too little to judge.
 
     The overall score is a weighted mean of the phases present, held to no more
@@ -1587,6 +1811,8 @@ def grade_leg(track, landing_rate_fpm=None, aircraft=None,
     # both the normal and the touchdown-only descent paths read this.
     if not scores_alignment(profile):
         alignment = None
+    if not scores_float(profile):
+        landing_float = None
 
     td_score = score_for_touchdown_fpm(landing_rate_fpm, profile)
     phases = {}
@@ -1609,7 +1835,7 @@ def grade_leg(track, landing_rate_fpm=None, aircraft=None,
         score, parts = _score_phase(
             metrics, spec,
             extra=({"touchdown": td_score, "touchdown_fpm": landing_rate_fpm,
-                    "alignment": alignment}
+                    "alignment": alignment, "float": landing_float}
                    if name == "descent" else None))
         phases[name] = {
             "score": round(score, 1) if score is not None else None,
@@ -1651,6 +1877,9 @@ def grade_leg(track, landing_rate_fpm=None, aircraft=None,
                 "sub": _alignment_sub(alignment)})
             if held:
                 short_score = ceiling
+        part, short_score = _float_part(landing_float, short_score)
+        if part:
+            short_parts.append(part)
         phases["descent"] = {
             "score": round(short_score, 1),
             "letter": letter_for_score(short_score),
@@ -1753,6 +1982,39 @@ def describe_profile(p):
                 "scrub_best": ALIGNMENT_SCRUB_G[0],
                 "scrub_worst": ALIGNMENT_SCRUB_G[1],
                 "unit": entry[1],
+                "steps": None,
+            })
+        if name == "descent" and scores_float(p):
+            metrics.append({
+                "key": "float",
+                "label": "Float",
+                "why": ("How long the airplane was held off: the time from 50 "
+                        "ft above the runway to the wheels touching, which "
+                        "certification calls the air distance. Seven seconds "
+                        "is the figure for an average pilot in normal "
+                        "operations (AC 25-32). Inside the touchdown zone a "
+                        "longer float still passes, which is what AC 91-79A "
+                        "says; past it the approach should have been "
+                        "abandoned. Where those points fall in seconds depends "
+                        "on how fast you were going."
+                        + ("" if GRADE_FLOAT else
+                           " Measured and shown, not yet counted.")),
+                "weight_pct": 0,
+                "cap": bool(GRADE_FLOAT),
+                "cap_points": FLOAT_CAP_POINTS,
+                "best": FLOAT_NORMAL_S,
+                # A range needs two ends, and this zero moves with speed. The
+                # 100 kt figure is the representative end; band says the rule
+                # and works it out at three speeds, and the UI prints that.
+                "worst": float_points_s(100.0)[1],
+                "band": ("full marks for a %g s flare; 50 when the float has "
+                         "used the touchdown zone, %d ft past a normal flare; "
+                         "zero %d ft beyond that. In seconds: %s"
+                         % (FLOAT_NORMAL_S, FLOAT_MARGIN_FT, FLOAT_BEYOND_FT,
+                            ", ".join("%.0f and %.0f s at %d kt"
+                                      % (float_points_s(kt) + (kt,))
+                                      for kt in (60, 100, 140)))),
+                "unit": "%.0f s",
                 "steps": None,
             })
         phases.append({

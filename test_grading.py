@@ -1011,6 +1011,178 @@ def test_the_percent_metric_still_exercises_the_escape():
 
 
 # --------------------------------------------------------------------------
+# the landing float: 50 ft above the runway to main-gear touchdown
+# --------------------------------------------------------------------------
+
+def _arrival(float_s, kt=100.0, hz=10.0, start_ft=150.0, runway_ft=1000.0):
+    """A straight-in arrival that crosses 50 ft and touches down float_s later.
+
+    Descends at a steady 3-degree-ish rate to 50 ft, then sinks the last 50 ft
+    evenly over float_s, then rolls. Northbound at a steady ground speed, so
+    the distance flown from 50 ft is exactly float_s at kt.
+    """
+    pts, t = [], 1000.0
+    fps = kt * 1.68781
+    dt = 1.0 / hz
+    lat = 47.0
+    dlat = fps * dt / 364000.0               # feet to degrees of latitude
+    h = start_ft
+    approach_sink = fps * 0.0524             # tan(3 degrees)
+    while h > 50.0:
+        pts.append({"t": t, "alt": runway_ft + h, "lat": lat, "lon": -122.0,
+                    "on_ground": False, "gs": kt})
+        t += dt; lat += dlat; h -= approach_sink * dt
+    t50 = t - dt + dt * ((pts[-1]["alt"] - runway_ft - 50.0) / (approach_sink * dt))
+    steps = int(round(float_s * hz))
+    for k in range(steps):
+        frac = (k + 1) / float(steps)
+        pts.append({"t": t, "alt": runway_ft + 50.0 * (1.0 - frac) + 0.5,
+                    "lat": lat, "lon": -122.0, "on_ground": False, "gs": kt})
+        t += dt; lat += dlat
+    for k in range(30):
+        pts.append({"t": t, "alt": runway_ft, "lat": lat, "lon": -122.0,
+                    "on_ground": True, "gs": kt})
+        t += dt; lat += dlat
+    return pts
+
+
+def test_the_float_is_measured_from_50_ft_to_contact():
+    for float_s, kt in ((7.0, 100.0), (14.0, 105.0), (25.0, 60.0)):
+        f = grading.landing_float(_arrival(float_s, kt=kt))
+        assert f is not None, "a plain arrival was not measured"
+        assert abs(f["seconds"] - float_s) <= 0.3, (
+            "flew %.1f s from 50 ft, measured %.1f s" % (float_s, f["seconds"]))
+        want_ft = float_s * kt * 1.68781
+        assert abs(f["distance_ft"] - want_ft) / want_ft < 0.05, (
+            "flew %.0f ft from 50 ft, measured %.0f" % (want_ft, f["distance_ft"]))
+        assert abs(f["speed_kt"] - kt) < 3.0
+
+
+def test_a_recording_that_starts_below_50_ft_is_not_a_short_float():
+    """Not measured is not a perfect flare."""
+    pts = [p for p in _arrival(9.0) if p["alt"] - 1000.0 < 40.0]
+    assert grading.landing_float(pts) is None, (
+        "a recording that never reached 50 ft was scored as a float")
+
+
+def test_the_score_follows_the_zones_not_a_slope():
+    """Inside the touchdown zone a float still passes; that is the standard.
+
+    A first version scored linearly from 7 s to zero at the end of the zone,
+    which made the middle of an acceptable zone a D - and, built against real
+    landings, called a jet touching down 2,300 ft past the threshold an F.
+    """
+    for kt in (60.0, 100.0, 140.0):
+        end, zero = grading.float_points_s(kt)
+        assert grading.float_score(7.0, end, zero) == 100.0
+        assert abs(grading.float_score(end, end, zero) - grading.FLOAT_ZONE_END_SCORE) < 1e-6
+        assert grading.float_score(zero, end, zero) == 0.0
+        s = 7.0
+        while s < end:
+            assert grading.float_score(s, end, zero) >= grading.FLOAT_ZONE_END_SCORE, (
+                "a %.1f s float inside the touchdown zone at %d kt scored %.0f"
+                % (s, kt, grading.float_score(s, end, zero)))
+            s += 0.5
+        last = 101.0
+        for s10 in range(60, int(zero * 10) + 20):
+            v = grading.float_score(s10 / 10.0, end, zero)
+            assert v <= last + 1e-9, "the score rose with a longer float"
+            last = v
+
+
+def test_helicopters_and_gyroplanes_are_not_measured():
+    pts = _arrival(14.0)
+    assert grading.landing_float_for(pts, "AS365", category="Helicopter") is None
+    assert not grading._unclassified().get("float")
+    assert grading.FIXED_WING.get("float") and grading.LIGHT_GA.get("float")
+
+
+def _graded(float_s, flag):
+    """grade_leg on a leg with a soft touchdown and a given float."""
+    keep = grading.GRADE_FLOAT
+    grading.GRADE_FLOAT = flag
+    try:
+        track = _departure(fpm=1000.0)
+        f = grading.landing_float(_arrival(float_s, kt=105.0))
+        g = grading.grade_leg(track, 80.0, "Test Jet", category="Airplane",
+                              vs0_kt=90.0, landing_float=f)
+        return f, g, grading.float_ceiling_letter(f)
+    finally:
+        grading.GRADE_FLOAT = keep
+
+
+def test_off_by_default_and_shown_but_not_counted():
+    assert grading.GRADE_FLOAT is False, (
+        "the float caps landings by default; it was to stay off until its "
+        "bands had been reviewed against real landings")
+    f, g, ceiling = _graded(30.0, False)
+    assert ceiling is None, "with the flag off the float still capped the letter"
+    part = next(p for p in g["phases"]["descent"]["parts"] if p["key"] == "float")
+    assert part["counted"] is False and part["held"] is False, (
+        "the float part claims to count while the flag is off")
+    assert part["band"], "the float part carries no band"
+
+
+def test_a_long_float_holds_the_landing_down():
+    f_short, g_short, c_short = _graded(7.0, True)
+    f_long, g_long, c_long = _graded(30.0, True)
+    assert c_short is None or c_short == "A", "a normal flare was capped"
+    assert c_long == "F", "a float far past the touchdown zone kept %r" % c_long
+    d_short = g_short["phases"]["descent"]["score"]
+    d_long = g_long["phases"]["descent"]["score"]
+    assert d_long < d_short, (
+        "the descent phase scored %.1f with a 30 s float and %.1f with a "
+        "normal flare" % (d_long, d_short))
+    part = next(p for p in g_long["phases"]["descent"]["parts"] if p["key"] == "float")
+    assert part["held"] and part["counted"]
+
+
+def test_the_touchdown_only_descent_is_capped_too():
+    """A leg with no measurable descent is graded on the touchdown alone.
+
+    That branch builds the phase by hand, so a cap applied only in the normal
+    path would leave it as the one way round the float - the same hole
+    alignment had to close.
+    """
+    keep = grading.GRADE_FLOAT
+    try:
+        grading.GRADE_FLOAT = True
+        full = _departure(fpm=1000.0)
+        top = max(p["alt"] for p in full)
+        cut = max(i for i, p in enumerate(full) if p["alt"] >= top)
+        track = full[:cut + 1]                      # climbs and cruises; no descent
+        f = grading.landing_float(_arrival(30.0, kt=105.0))
+        g = grading.grade_leg(track, 80.0, "Test Jet", category="Airplane",
+                              vs0_kt=90.0, landing_float=f)
+        d = g["phases"]["descent"]
+        assert "touchdown only" in (d.get("note") or ""), (
+            "fixture does not reach the touchdown-only branch: %r" % d.get("note"))
+        part = next((p for p in d["parts"] if p["key"] == "float"), None)
+        assert part is not None, "the touchdown-only descent does not show the float"
+        assert part["held"], "a 30 s float did not hold the touchdown-only descent down"
+    finally:
+        grading.GRADE_FLOAT = keep
+
+
+def test_a_short_float_never_lifts_a_landing():
+    """A cap, not a weight: a perfect flare must not pay for a hard landing."""
+    keep = grading.GRADE_FLOAT
+    try:
+        track = _departure(fpm=1000.0)
+        f = grading.landing_float(_arrival(7.0, kt=105.0))
+        grading.GRADE_FLOAT = False
+        without = grading.grade_leg(track, 700.0, "Test Jet", category="Airplane",
+                                    vs0_kt=90.0, landing_float=None)
+        grading.GRADE_FLOAT = True
+        with_f = grading.grade_leg(track, 700.0, "Test Jet", category="Airplane",
+                                   vs0_kt=90.0, landing_float=f)
+        assert with_f["phases"]["descent"]["score"] <= without["phases"]["descent"]["score"], (
+            "a perfect flare raised the descent of a 700 fpm landing")
+    finally:
+        grading.GRADE_FLOAT = keep
+
+
+# --------------------------------------------------------------------------
 # lift-off length for airplanes
 # --------------------------------------------------------------------------
 

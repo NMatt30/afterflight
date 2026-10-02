@@ -55,8 +55,8 @@ SCHEMA = 2
 # style, tiles or supersample. Those have their own signature entries; drawing
 # logic has none, so this is what stops a stale PNG being served as current.
 # Bumped for: markers at the leg events, jump-splitting, stop markers, and
-# not splitting a jump the aircraft plainly flew across.
-BUILDER_VERSION = 33
+# not splitting a jump the aircraft plainly flew across, and the landing float.
+BUILDER_VERSION = 34
 EXCLUDED_JSON = os.path.join(BASE, "excluded.json")
 DETAIL_DIR = os.path.join(SESSIONS, "detail")
 
@@ -1463,6 +1463,31 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
                 # whole logbook, and the landing keeps its rate-only letter.
                 say("%s leg %d: alignment failed %r" % (sortie_id, i, e))
                 alignment = None
+            # How long it was held off. From the landing clip when there is
+            # one - at 10 Hz it places the 50 ft crossing and the contact to a
+            # tenth of a second, where the 1 Hz track is a second either way -
+            # and from the track when there is not. Like alignment it can only
+            # hold the letter down, and only once grading.GRADE_FLOAT is on.
+            landing_float = None
+            try:
+                pts = clip_points(ld_clip) if ld_clip else []
+                if pts:
+                    landing_float = grading.landing_float_for(
+                        pts, aircraft, category=category, vs0_kt=vs0_kt,
+                        t_land=t1, source="clip", track=track)
+                if landing_float is None:
+                    landing_float = grading.landing_float_for(
+                        track, aircraft, category=category, vs0_kt=vs0_kt,
+                        t_land=t1, source="track")
+                held = grading.worse_letter(
+                    grade, grading.float_ceiling_letter(landing_float))
+                if landing_float and held and held != grade:
+                    landing_float["held_from"] = grade
+                    grade = held
+                    grade_name = passenger.name_for_grade(held) or grade_name
+            except Exception as e:
+                say("%s leg %d: float failed %r" % (sortie_id, i, e))
+                landing_float = None
             # Graded after the rate is settled, so a recovered touchdown
             # feeds the descent phase rather than the latched zero.
             try:
@@ -1474,7 +1499,7 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
                 else:
                     phase_grade = grading.grade_leg(
                         seg, rate, aircraft, category=category, vs0_kt=vs0_kt,
-                        alignment=alignment)
+                        alignment=alignment, landing_float=landing_float)
             except Exception as e:
                 # A grading bug must not cost the whole logbook.
                 say("%s leg %d: phase grading failed %r" % (sortie_id, i, e))
@@ -1505,6 +1530,9 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
                 # None means the track carries no lateral accelerations,
                 # not that the aircraft arrived square.
                 "landing_alignment": alignment,
+                # None means not measured - no airplane profile, or no
+                # recording reaching back to 50 ft - never a short float.
+                "landing_float": landing_float,
                 # Per-phase grading. seg is this leg's own slice of the
                 # track, the only place cruise is visible: clips cover the
                 # takeoff and landing windows and nothing in between.

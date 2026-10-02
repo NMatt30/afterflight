@@ -104,6 +104,16 @@ still an arrival. `ROTARY` scores no alignment at all, because every
 helicopter track may carry no lateral accelerations, and a missing
 reading would grade as a flawless one.
 
+**The float is the second thing that can hold it down, and it is off.** Time
+from 50 ft above the runway to main-gear touchdown - the certification air
+distance, AC 25-32 - measured from the 10 Hz landing clip on airplane
+profiles. It is scored on the standard's *zones*, not a slope: 100 for a 7 s
+flare, 50 at the end of the touchdown zone (AC 91-79A), 0 a further 1,000 ft
+on. A first version sloped linearly to zero at the end of the zone and
+failed a jet touching down inside it, which the AC calls typical. It is
+measured and shown everywhere but caps nothing until `GRADE_FLOAT` is
+turned on - the owner reviews the bands against real landings first.
+
 **This logbook is one person's habits, not a sample of how aircraft are
 flown.** The owner is a sim pilot, not a rated one, and their flying is
 evidence about them - not about what a correct number looks like. So it can
