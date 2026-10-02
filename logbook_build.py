@@ -122,6 +122,35 @@ def atomic_write_json(path, obj):
     return persistence.atomic_json(path, obj)
 
 
+# The build cache is machine-written and machine-read, and the largest file a
+# rebuild touches - it grows with the logbook. It was read three times and
+# written twice per build, indented and fsynced whether or not anything had
+# changed, and that was 80% of a rebuild that changed nothing. Now it is read
+# once, written once, only when its contents changed, and compact.
+def read_cache():
+    """(doc, text): the build cache, and the exact text it was read from."""
+    try:
+        with open(CACHE_JSON, "r", encoding="utf-8") as f:
+            text = f.read()
+        doc = json.loads(text)
+    except Exception:
+        return {}, None
+    return (doc, text) if isinstance(doc, dict) else ({}, None)
+
+
+def write_cache(doc, old_text=None):
+    """Write the build cache unless it is unchanged. True if it was written.
+
+    Keys are sorted so the same contents always encode to the same text: the
+    comparison is on text, which also catches an entry changed in place.
+    """
+    text = json.dumps(doc, separators=(",", ":"), sort_keys=True) + "\n"
+    if text == old_text:
+        return False
+    persistence.atomic_text(CACHE_JSON, text)
+    return True
+
+
 def read_track(path):
     """Load a session .jsonl, dropping spawn junk and unusable fixes."""
     pts = []
@@ -281,10 +310,16 @@ def _rel_to_base(path):
         return os.path.abspath(path).replace(os.sep, "/")
 
 
-def scan_flights(force=False):
-    """One record per session .jsonl, with track stats. Cached on mtime+size."""
-    cache = read_json(CACHE_JSON) or {}
-    cached_flights = cache.get("flights") if isinstance(cache, dict) else None
+def scan_flights(force=False, cache=None):
+    """One record per session .jsonl, with track stats. Cached on mtime+size.
+
+    Given the build's cache document, the fresh records go into it and build
+    writes it once at the end. Called on its own, it reads and writes its own.
+    """
+    own = cache is None
+    if own:
+        cache, cache_text = read_cache()
+    cached_flights = cache.get("flights")
     if force or not isinstance(cached_flights, dict):
         cached_flights = {}
     fresh = {}
@@ -339,18 +374,15 @@ def scan_flights(force=False):
         rec["jsonl"] = _rel_to_base(jsonl_path)
         flights.append(rec)
 
-    try:
-        # Merge, do not replace: the sortie cache lives in the same file and is
-        # written later in the build. Overwriting it here meant every sortie
-        # missed on the next run.
-        doc = read_json(CACHE_JSON)
-        if not isinstance(doc, dict):
-            doc = {}
-        doc["schema"] = SCHEMA
-        doc["flights"] = fresh
-        atomic_write_json(CACHE_JSON, doc)
-    except Exception:
-        pass
+    # Merge, do not replace: the sortie cache lives in the same document.
+    # Overwriting it here meant every sortie missed on the next run.
+    cache["schema"] = SCHEMA
+    cache["flights"] = fresh
+    if own:
+        try:
+            write_cache(cache, cache_text)
+        except Exception:
+            pass
 
     flights.sort(key=lambda r: (r.get("t_start") or 0.0))
     return flights
@@ -1384,7 +1416,8 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
     hidden_legs = excluded["legs"]
     hidden_out = []
     places = load_places()
-    flights = scan_flights(force=force)
+    cache, cache_text = read_cache()
+    flights = scan_flights(force=force, cache=cache)
     groups = group_sorties(flights)
     events = load_events()
     events_by_flight = {}
@@ -1401,8 +1434,7 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
     # with the size of the logbook rather than with what was just flown. A
     # sortie whose flight records have not changed is reused wholesale: no
     # track re-read, no re-render.
-    cache = read_json(CACHE_JSON) or {}
-    cached_sorties = cache.get("sorties") if isinstance(cache, dict) else None
+    cached_sorties = cache.get("sorties")
     if not isinstance(cached_sorties, dict) or force:
         cached_sorties = {}
     fresh_sorties = {}
@@ -2054,11 +2086,8 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
     }
     atomic_write_json(LOGBOOK_JSON, doc)
     try:
-        cache_doc = read_json(CACHE_JSON) or {}
-        if not isinstance(cache_doc, dict):
-            cache_doc = {}
-        cache_doc["sorties"] = fresh_sorties
-        atomic_write_json(CACHE_JSON, cache_doc)
+        cache["sorties"] = fresh_sorties
+        write_cache(cache, cache_text)
     except Exception as exc:
         say("cache write failed %r" % (exc,))
     say("rebuilt %d sorties / %d legs in %.2fs (%d reused from cache)"
@@ -2267,11 +2296,11 @@ def _purge(entry, log=None):
 
     # the caches still describe the world as it was a moment ago
     try:
-        cache = read_json(CACHE_JSON)
-        if isinstance(cache, dict):
+        cache, cache_text = read_cache()
+        if cache_text is not None:
             cache["sorties"] = {}
             cache["flights"] = {}
-            atomic_write_json(CACHE_JSON, cache)
+            write_cache(cache, cache_text)
     except Exception:
         pass
 

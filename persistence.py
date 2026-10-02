@@ -55,18 +55,28 @@ def atomic_json(path, obj, fsync=True, compact=False):
     to get back to known-good, and a compact settings file would make that
     promise harder to keep. Only the clip writer asks for it, because a clip
     is machine-written, machine-read, and the largest thing this app produces.
+
+    Encoded with json.dumps rather than streamed with json.dump: the bytes are
+    the same, but json.dump never uses the C encoder, and dumps does whenever
+    there is no indent - several times faster on a large compact document.
     """
+    if compact:
+        text = json.dumps(obj, separators=(',', ':'))
+    else:
+        text = json.dumps(obj, indent=2)
+    return atomic_text(path, text + '\n', fsync=fsync)
+
+
+def atomic_text(path, text, fsync=True):
+    """Publish a complete text file, or raise. atomic_json's writer, for a
+    caller that already holds the encoded text - to compare it first, say."""
     path = os.path.abspath(path)
     with document_lock(path):
         fd, tmp = tempfile.mkstemp(prefix='.' + os.path.basename(path) + '.',
                                    suffix='.tmp', dir=os.path.dirname(path))
         try:
             with os.fdopen(fd, 'w', encoding='utf-8') as f:
-                if compact:
-                    json.dump(obj, f, separators=(',', ':'))
-                else:
-                    json.dump(obj, f, indent=2)
-                f.write('\n')
+                f.write(text)
                 f.flush()
                 if fsync:
                     os.fsync(f.fileno())
