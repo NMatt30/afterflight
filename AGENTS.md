@@ -113,6 +113,10 @@ on. A first version sloped linearly to zero at the end of the zone and
 failed a jet touching down inside it, which the AC calls typical. It is
 measured and shown everywhere but caps nothing until `GRADE_FLOAT` is
 turned on - the owner reviews the bands against real landings first.
+**The touchdown point is the third, and also off** (`GRADE_TOUCHDOWN_POINT`):
+distance past the landing threshold, 100 within 1,400 ft, 50 at the end of the
+touchdown zone (3,000 ft or the runway's first third), 0 a further 1,000 ft on.
+It needs the runway, which only the sim knows - see the facility-data trap.
 
 **This logbook is one person's habits, not a sample of how aircraft are
 flown.** The owner is a sim pilot, not a rated one, and their flying is
@@ -157,11 +161,13 @@ default, placed near the other tunables at the top of its module.
 | `install.ps1` | Checks the machine, stages the sim's DLL, autostart and shortcut. Checks only unless given a switch. |
 | `persistence.py` | Shared document, maintenance and recording locks plus atomic JSON/JSONL helpers. |
 | `clipfile.py` | Where a clip lives on disk and how to read one. The only place that knows the layout. |
+| `runways.py` | Which runway a touchdown was on and how far past its threshold - geometry, and the per-airport runway cache under `sessions/runways/`. |
 | `test_integrity.py` | Disposable fixtures for cache, persistence, deletion and backup recovery. |
 | `test_replay.py` | Pose lookup during replay, against the scan it replaced. |
 | `test_arming.py` | When a reported aircraft becomes a flight, and what a rebuild publishes. |
 | `test_map.py` | What the route map draws as one line, and where it breaks - and so where it puts markers. |
 | `test_efb.py` | When a deploy may rewrite the EFB package's committed `layout.json` - only when its files changed. |
+| `test_runways.py` | The touchdown point end to end: geometry, the zone score, facility-message parsing in the measured layout, the builder, and the cache signature. |
 | `backup.ps1` | Copies what git deliberately does not, with a SHA-256 manifest and consistency status. |
 | `verify-backup.ps1` | Verifies a backup manifest and every archived file hash. |
 | `logbook.html` / `logbook.js` | The UI. Renders `logbook.json`; writes nothing directly. |
@@ -224,6 +230,17 @@ Data lives in `sessions/` and is **not** in git: flight tracks, clips, maps,
   just before touchdown would refuse a real landing. **The tracker runs at
   10 Hz and the track is written at 1 Hz**, so a fault in detection has to be
   reproduced at 10 Hz: the recording can flatten it away entirely.
+- **Facility data was measured, not read from the SDK.** The runway lookup
+  asks the sim for its airport list (message 18: every airport in the world,
+  84,000 of them in 75 parts, 36-byte entries of a 9-byte ident, 3-byte region
+  and three doubles) and per-airport runway data (28 per record, 29 when
+  done). Lengths and widths are **metres**; headings are true, for the primary
+  end; displaced thresholds arrive primary first. Each was checked live -
+  Seattle's runways within 0.1% of their published lengths, San Diego's
+  displaced 27 at 1,808 ft against 1,810, and every recorded airplane
+  touchdown located on a runway centreline to within 10 ft. `test_runways.py` encodes the layout
+  so drifting from it fails offline. The lookup runs only when parked, on its
+  own short-lived connection, never the one the recording rides on.
 - **The watcher holds modules in memory.** Editing `logbook_build.py` or
   `grading.py` does nothing until you restart the watcher — and a stale watcher
   will happily overwrite a new-format `logbook.json` with the old shape.
@@ -304,6 +321,7 @@ py -3 test_replay.py        # the ghost is placed where the aircraft was
 py -3 test_arming.py        # a menu is not a flight; a parked aircraft is not one either
 py -3 test_map.py           # a sim skip is not a landing and a takeoff
 py -3 test_efb.py           # a deploy does not dirty the committed EFB layout
+py -3 test_runways.py       # where on the runway, and what the sim really sends
 py -3 test_integrity.py     # locks, partial deletes, backup round trip
 py -3 sampler.py            # offline self-test: state block layout and peaks
 py -3 flightprefs.py        # offline self-test: the per-flight switches

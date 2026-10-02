@@ -175,6 +175,22 @@ LOG_MAX_BYTES = 4 * 1024 * 1024
 LOG_KEEP = 2
 # A deferred rebuild may run once the aircraft has sat still this long.
 LOGBOOK_PARKED_SEC = 60.0
+# Once parked after a landing, ask the sim for the runways of the airports
+# around the touchdown and cache them for the builder (runways.py), which works
+# out where on the runway the wheels touched. Read-only - facility data is
+# static scenery and nothing is sent to any aircraft - on a short-lived
+# connection of its own, so the 3 MB airport list never passes through the
+# connection the recording rides on. Never in flight or on the rollout.
+#
+# On by default, unlike the grading switches: this only adds data, and
+# grading.GRADE_TOUCHDOWN_POINT decides whether that data moves a grade.
+RUNWAY_LOOKUP = True
+RUNWAY_LOOKUP_PARKED_SEC = 10.0
+RUNWAY_LOOKUP_RADIUS_NM = 3.0
+RUNWAY_LOOKUP_TIMEOUT = 10.0
+# The first lookup of a session also fills in airports for landings recorded
+# before their runways were cached, at most this many airports per pass.
+RUNWAY_BACKFILL_MAX = 60
 # 60 s per clip either way: a takeoff is mostly what happens after it, a
 # landing mostly what happens before it.
 TAKEOFF_BEFORE = 5.0
@@ -363,6 +379,23 @@ SIMCONNECT_RECV_ID_ASSIGNED_OBJECT_ID = 12
 SIMCONNECT_RECV_ID_CAMERA_STATUS = 41
 SIMCONNECT_RECV_ID_CAMERA = 40
 SIMCONNECT_RECV_ID_SIMOBJECT_DATA = 8
+# Facility data. Measured against a running sim before anything relied on
+# them, as everything SimConnect says here has to be: the airport list arrives
+# as 18 in parts of up to 1,139 entries of 36 bytes (a 9-byte ident, a 3-byte
+# region, then latitude, longitude and altitude as doubles); runway data as 28,
+# one message per record, and 29 once a request is complete.
+SIMCONNECT_RECV_ID_AIRPORT_LIST = 18
+SIMCONNECT_RECV_ID_FACILITY_DATA = 28
+SIMCONNECT_RECV_ID_FACILITY_DATA_END = 29
+FACILITY_DEFINE_ID = 7701
+FACILITY_FIELDS = (
+    "OPEN AIRPORT", "LATITUDE", "LONGITUDE", "ALTITUDE", "N_RUNWAYS",
+    "OPEN RUNWAY", "LATITUDE", "LONGITUDE", "ALTITUDE", "HEADING", "LENGTH",
+    "WIDTH", "PRIMARY_NUMBER", "PRIMARY_DESIGNATOR", "SECONDARY_NUMBER",
+    "SECONDARY_DESIGNATOR",
+    "OPEN PRIMARY_THRESHOLD", "LENGTH", "CLOSE PRIMARY_THRESHOLD",
+    "OPEN SECONDARY_THRESHOLD", "LENGTH", "CLOSE SECONDARY_THRESHOLD",
+    "CLOSE RUNWAY", "CLOSE AIRPORT")
 
 # The real camera struct is 84 bytes. CameraSet's packet is 0x68 = 104 = a
 # 16-byte header + an 84-byte struct + a 4-byte mask, and CameraGet replies with
@@ -3011,6 +3044,8 @@ class ClipTracker:
             append_jsonl(EVENTS_JSONL, ev_line)
         except Exception as e:
             log("events.jsonl write failed %s" % repr(e))
+        if kind == "landing":
+            queue_runway_lookup(ev_line.get("lat"), ev_line.get("lon"))
         with RUNTIME_LOCK:
             RUNTIME["recent_events"].append(ev_line)
             RUNTIME["leg"] = self.leg
@@ -3504,6 +3539,9 @@ def load_game_simconnect_dll():
     "SimConnect_MapClientEventToSimEvent",
     "SimConnect_TransmitClientEvent",
     "SimConnect_AICreateNonATCAircraft_EX1",
+    "SimConnect_RequestFacilitiesList",
+    "SimConnect_AddToFacilityDefinition",
+    "SimConnect_RequestFacilityData",
     ):
         try:
             fns[name] = getattr(dll, name)
@@ -3587,6 +3625,15 @@ def load_game_simconnect_dll():
         # ObjectID, EventID, dwData, GroupID, Flags
         fns["SimConnect_TransmitClientEvent"].argtypes = [
             HANDLE, DWORD, DWORD, DWORD, DWORD, DWORD]
+    # Facility data. Optional: without it the runway lookup simply does not
+    # run, and nothing else depends on it.
+    for name, args in (("SimConnect_RequestFacilitiesList", [HANDLE, DWORD, DWORD]),
+                       ("SimConnect_AddToFacilityDefinition", [HANDLE, DWORD, c_char_p]),
+                       ("SimConnect_RequestFacilityData",
+                        [HANDLE, DWORD, DWORD, c_char_p, c_char_p])):
+        if name in fns:
+            fns[name].restype = HRESULT
+            fns[name].argtypes = args
     _GAME_BIND["ok"] = True
     log("game SimConnect exports bound path=%s (CameraSetRelative6DOF not used)" % path)
     return _GAME_BIND
@@ -3626,6 +3673,10 @@ class GameSimConnect:
         self._att_unit = None
         self._cam_state = None
         self._cam_game = None
+        # request id -> {"parts": [raw message bytes], "done": bool}. The
+        # dispatch thread only copies bytes in; the caller parses them.
+        self._fac = {}
+        self._fac_defined = False
 
     def _h(self):
         return self.handle
@@ -3707,6 +3758,18 @@ class GameSimConnect:
                             "CAMERA_STATUS acquiredState=%s game_controlled=%s"
                             % (st.dwAcquiredState, int(st.bGameControlled))
                         )
+                    elif dwid in (SIMCONNECT_RECV_ID_AIRPORT_LIST,
+                                  SIMCONNECT_RECV_ID_FACILITY_DATA,
+                                  SIMCONNECT_RECV_ID_FACILITY_DATA_END):
+                        raw = ctypes.string_at(pp, int(recv.dwSize))
+                        req = struct.unpack_from("<I", raw, 12)[0] if len(raw) >= 16 else None
+                        with self._lock:
+                            ent = self._fac.get(req)
+                            if ent is not None:
+                                if dwid == SIMCONNECT_RECV_ID_FACILITY_DATA_END:
+                                    ent["done"] = True
+                                else:
+                                    ent["parts"].append(raw)
                     elif dwid == SIMCONNECT_RECV_ID_EXCEPTION:
                         exc = cast(pp, POINTER(_SC_RECV_EXCEPTION)).contents
                         with self._lock:
@@ -3715,6 +3778,105 @@ class GameSimConnect:
                 except Exception as e:
                     log("dispatch parse failed %s" % repr(e))
             time.sleep(0.002)
+
+    def _fac_wait(self, rid, ready, timeout):
+        t0 = time.time()
+        while time.time() - t0 < timeout and not self._quit:
+            with self._lock:
+                ent = self._fac.get(rid)
+                if ent is not None and ready(ent):
+                    return self._fac.pop(rid)
+            time.sleep(0.02)
+        with self._lock:
+            self._fac.pop(rid, None)
+        return None
+
+    def facility_airports(self, timeout=RUNWAY_LOOKUP_TIMEOUT):
+        """Every airport the sim knows, as [(ident, region, lat, lon, alt_m)].
+
+        Read-only. The sim answers with the whole world - 84,354 airports on
+        the machine this was measured on - in parts, each saying how many
+        there are; this waits for all of them.
+        """
+        fn = self.fns.get("SimConnect_RequestFacilitiesList")
+        if fn is None:
+            return None
+        rid = self.new_request_id()
+        with self._lock:
+            self._fac[rid] = {"parts": [], "done": False}
+        if not _is_hr(fn(self._h(), 0, rid), 0):
+            with self._lock:
+                self._fac.pop(rid, None)
+            return None
+
+        def complete(ent):
+            parts = ent["parts"]
+            if not parts or len(parts[0]) < 28:
+                return False
+            return len(parts) >= struct.unpack_from("<I", parts[0], 24)[0]
+        ent = self._fac_wait(rid, complete, timeout)
+        if ent is None:
+            return None
+        out = []
+        for raw in ent["parts"]:
+            n = struct.unpack_from("<I", raw, 16)[0]
+            if not n:
+                continue
+            size = (len(raw) - 28) // n
+            if size < 24 + 12:
+                continue
+            for k in range(n):
+                e = raw[28 + k * size: 28 + (k + 1) * size]
+                names = e[:size - 24]
+                la, lo, al = struct.unpack_from("<ddd", e, size - 24)
+                out.append((names[:9].split(b"\0")[0].decode("ascii", "replace"),
+                            names[9:12].split(b"\0")[0].decode("ascii", "replace"),
+                            la, lo, al))
+        return out
+
+    def facility_runways(self, ident, region, timeout=RUNWAY_LOOKUP_TIMEOUT):
+        """One airport's runways as a runways.py cache document, or None. Read-only."""
+        add = self.fns.get("SimConnect_AddToFacilityDefinition")
+        req = self.fns.get("SimConnect_RequestFacilityData")
+        if add is None or req is None:
+            return None
+        if not self._fac_defined:
+            for field in FACILITY_FIELDS:
+                if not _is_hr(add(self._h(), FACILITY_DEFINE_ID, field.encode()), 0):
+                    return None
+            self._fac_defined = True
+        rid = self.new_request_id()
+        with self._lock:
+            self._fac[rid] = {"parts": [], "done": False}
+        if not _is_hr(req(self._h(), FACILITY_DEFINE_ID, rid,
+                          str(ident).encode("ascii", "replace"),
+                          str(region).encode("ascii", "replace")), 0):
+            with self._lock:
+                self._fac.pop(rid, None)
+            return None
+        ent = self._fac_wait(rid, lambda e: e["done"], timeout)
+        if ent is None:
+            return None
+        airport, rws, thresholds = None, {}, {}
+        for raw in ent["parts"]:
+            if len(raw) < 40:
+                continue
+            _user, uniq, parent, typ = struct.unpack_from("<IIII", raw, 12)
+            data = raw[40:]
+            if typ == 0 and len(data) == 28:
+                airport = struct.unpack_from("<dddi", data)
+            elif typ == 1 and len(data) == 52:
+                rws[uniq] = struct.unpack_from("<dddfffiiii", data)
+            elif len(data) == 4:
+                thresholds.setdefault(parent, []).append(struct.unpack_from("<f", data)[0])
+        if airport is None:
+            return None
+        import runways as runways_mod
+        recs = []
+        for uniq in sorted(rws):
+            disp = (thresholds.get(uniq, []) + [0.0, 0.0])[:2]
+            recs.append(tuple(rws[uniq]) + (disp[0], disp[1]))
+        return runways_mod.from_facility(ident, region, airport, recs)
 
     def wait_object_id(self, request_id, timeout=4.0):
         t0 = time.time()
@@ -5359,6 +5521,128 @@ def _keep_existing_flight(flight, tracker, s, why):
     return flight
 
 
+RUNWAYS_DIR = os.path.join(SESSIONS, "runways")
+_runway_queue = []                 # (lat, lon) of landings not yet looked up
+_runway_state = {"thread": None, "backfilled": False}
+_runway_lock = threading.Lock()
+
+
+def queue_runway_lookup(lat, lon):
+    if not RUNWAY_LOOKUP or not (finite(lat) and finite(lon)):
+        return
+    with _runway_lock:
+        _runway_queue.append((float(lat), float(lon)))
+
+
+def runway_lookup_wanted():
+    with _runway_lock:
+        return bool(_runway_queue) or not _runway_state["backfilled"]
+
+
+def _landing_points_on_record():
+    """Every landing in events.jsonl, as (lat, lon)."""
+    out = []
+    try:
+        with open(EVENTS_JSONL, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if e.get("kind") == "landing" and finite(e.get("lat")) and finite(e.get("lon")):
+                    out.append((float(e["lat"]), float(e["lon"])))
+    except OSError:
+        pass
+    return out
+
+
+def lookup_runways(points, backfill=False):
+    """Cache the runways of every airport near these points that is not cached.
+
+    Runs on its own thread and its own SimConnect connection; returns the
+    number of airports written. With backfill, landings already on record whose
+    airports have no runways cached are added, up to RUNWAY_BACKFILL_MAX.
+    """
+    import runways as runways_mod
+    index = runways_mod.load_index(RUNWAYS_DIR)
+
+    def uncovered(pts):
+        return [p for p in pts
+                if not runways_mod.airports_near(index, p[0], p[1], RUNWAY_LOOKUP_RADIUS_NM)]
+
+    want = uncovered(points)
+    if backfill:
+        want += uncovered(_landing_points_on_record())
+    if not want:
+        return 0
+    # A coarse grid, so 84,000 airports are not each measured against every
+    # point: only the cells around a point are looked in.
+    cells = {}
+    for p in want:
+        cells.setdefault((int(p[0] * 10), int(p[1] * 10)), []).append(p)
+
+    gsc = GameSimConnect()
+    try:
+        if not gsc.open():
+            log("runways: SimConnect open failed")
+            return 0
+        listed = gsc.facility_airports()
+        if not listed:
+            log("runways: the sim returned no airport list")
+            return 0
+        targets = {}
+        for ident, region, la, lo, al in listed:
+            ci, cj = int(la * 10), int(lo * 10)
+            for di in (-1, 0, 1):
+                for dj in (-1, 0, 1):
+                    for p in cells.get((ci + di, cj + dj), ()):
+                        if runways_mod.nm_apart(p[0], p[1], la, lo) <= RUNWAY_LOOKUP_RADIUS_NM:
+                            targets[ident] = region
+        saved = 0
+        for ident in sorted(targets):
+            if ident in index:
+                continue
+            if saved >= RUNWAY_BACKFILL_MAX:
+                break
+            doc = gsc.facility_runways(ident, targets[ident])
+            if doc is None:
+                continue
+            # Saved even with no runways: a heliport is still an airport that
+            # has been asked about, and asking again would find the same.
+            os.makedirs(RUNWAYS_DIR, exist_ok=True)
+            persistence.atomic_json(runways_mod.cache_path(RUNWAYS_DIR, ident), doc)
+            saved += 1
+        log("runways: %d point(s), %d airport(s) nearby, %d cached"
+            % (len(want), len(targets), saved))
+        return saved
+    finally:
+        gsc.close()
+
+
+def start_runway_lookup():
+    """Start a lookup on its own thread unless one is already running."""
+    with _runway_lock:
+        t = _runway_state["thread"]
+        if t is not None and t.is_alive():
+            return False
+        points, _runway_queue[:] = list(_runway_queue), []
+        backfill = not _runway_state["backfilled"]
+        _runway_state["backfilled"] = True
+
+    def work():
+        try:
+            if lookup_runways(points, backfill=backfill):
+                schedule_logbook_rebuild(reason="runways cached", bake_maps=False)
+        except Exception as e:
+            log("runways: lookup failed %r" % (e,))
+
+    t = threading.Thread(target=work, daemon=True, name="runway-lookup")
+    with _runway_lock:
+        _runway_state["thread"] = t
+    t.start()
+    return True
+
+
 def run_connected(sm, flight=None, tracker=None, resume_snap=None):
     from SimConnect import AircraftRequests
     aq = AircraftRequests(sm, _time=200)
@@ -5385,6 +5669,7 @@ def run_connected(sm, flight=None, tracker=None, resume_snap=None):
     loop_count = 0
     loop_mark = time.time()
     parked_since = None
+    runway_parked_since = None
     fast_used = 0
     fast_missing = 0
     # Extremes since the last recorded point. Handed to the recorder by
@@ -5540,6 +5825,15 @@ def run_connected(sm, flight=None, tracker=None, resume_snap=None):
             if cs is not None:
                 with RUNTIME_LOCK:
                     RUNTIME["camera_state"] = cs
+            if RUNWAY_LOOKUP and runway_lookup_wanted() and game_dll_status().get("ok"):
+                parked = bool(s.get("on_ground")) and (as_float(s.get("gs")) or 0.0) < 1.0
+                if not parked:
+                    runway_parked_since = None
+                elif runway_parked_since is None:
+                    runway_parked_since = loop_t
+                elif (loop_t - runway_parked_since) >= RUNWAY_LOOKUP_PARKED_SEC:
+                    runway_parked_since = None
+                    start_runway_lookup()
             if _logbook_pending[0]:
                 still = bool(s.get("on_ground")) and (as_float(s.get("gs")) or 0.0) < 1.0
                 if not still:
