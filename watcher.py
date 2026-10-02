@@ -1326,12 +1326,13 @@ def load_settings_at_startup():
     try:
         import settings as settings_mod
         import passenger, tiles, mapbake       # so capture_defaults can see them
-        import flightprefs
+        import flightprefs, grading
         settings_mod.register("watcher", sys.modules[__name__])
         settings_mod.register("flightprefs", flightprefs)
         settings_mod.register("passenger", passenger)
         settings_mod.register("tiles", tiles)
         settings_mod.register("mapbake", mapbake)
+        settings_mod.register("grading", grading)
         settings_mod.capture_defaults()
         saved = settings_mod.load()
         settings_mod.apply(on_buffer=resize_live_buffer)
@@ -1378,9 +1379,12 @@ def apply_settings(values):
     # every save, so testing for presence made each save force a full rebuild -
     # and a topo rebuild is several minutes of tile work for nothing.
     # The landing ladder used to be in here, because changing it rewrote every
-    # stored grade. It is a constant now, so the only settings that still
-    # invalidate the built logbook are the two that change how a map is drawn.
-    watched = ("tile_source", "map_style")
+    # stored grade. It is a constant now. What still invalidates the built
+    # logbook: the two that change how a map is drawn, and the float and
+    # touchdown-point bands, which change grades.
+    watched = ("tile_source", "map_style", "grade_float", "float_normal_s",
+               "float_margin_ft", "float_beyond_ft", "grade_touchdown_point",
+               "tdz_target_ft", "tdz_tolerance_ft", "tdz_end_ft", "tdz_beyond_ft")
     changed = [k for k in watched if before.get(k) != after.get(k)]
     # Clip windows decide a clip's shape at commit, so they are staged rather
     # than applied when a clip is mid-capture; the buffer resize is held with
@@ -3045,7 +3049,9 @@ class ClipTracker:
         except Exception as e:
             log("events.jsonl write failed %s" % repr(e))
         if kind == "landing":
-            queue_runway_lookup(ev_line.get("lat"), ev_line.get("lon"))
+            queue_runway_lookup(ev_line.get("lat"), ev_line.get("lon"),
+                                self.flight.category, self.flight.vs0,
+                                self.flight.aircraft)
         with RUNTIME_LOCK:
             RUNTIME["recent_events"].append(ev_line)
             RUNTIME["leg"] = self.leg
@@ -5527,11 +5533,30 @@ _runway_state = {"thread": None, "backfilled": False}
 _runway_lock = threading.Lock()
 
 
-def queue_runway_lookup(lat, lon):
+def queue_runway_lookup(lat, lon, category=None, vs0=None, aircraft=None):
+    """Ask for this landing's runways at the next parked moment - for an
+    airplane. A helicopter landing asks the sim for nothing."""
     if not RUNWAY_LOOKUP or not (finite(lat) and finite(lon)):
+        return
+    if not measures_runway(category, vs0, aircraft):
         return
     with _runway_lock:
         _runway_queue.append((float(lat), float(lon)))
+
+
+def measures_runway(category, vs0=None, aircraft=None):
+    """Whether a landing in this aircraft is measured against a runway.
+
+    The same profile test the builder uses, so a helicopter landing - at a
+    heliport, a pad or a field - asks the sim for nothing. Without a category
+    the answer is no: profile_for files an unknown as rotary.
+    """
+    try:
+        import grading as grading_mod
+        return grading_mod.scores_float(grading_mod.profile_for(
+            aircraft, category=category, vs0_kt=vs0))
+    except Exception:
+        return False
 
 
 def runway_lookup_wanted():
@@ -5540,8 +5565,12 @@ def runway_lookup_wanted():
 
 
 def _landing_points_on_record():
-    """Every landing in events.jsonl, as (lat, lon)."""
+    """Every airplane landing in events.jsonl, as (lat, lon).
+
+    The aircraft class comes from each flight's meta, read once per flight.
+    """
     out = []
+    kinds = {}
     try:
         with open(EVENTS_JSONL, encoding="utf-8") as f:
             for line in f:
@@ -5549,7 +5578,17 @@ def _landing_points_on_record():
                     e = json.loads(line)
                 except ValueError:
                     continue
-                if e.get("kind") == "landing" and finite(e.get("lat")) and finite(e.get("lon")):
+                if not (e.get("kind") == "landing" and finite(e.get("lat"))
+                        and finite(e.get("lon"))):
+                    continue
+                fid = e.get("flight_id")
+                if fid not in kinds:
+                    meta = (read_json(os.path.join(SESSIONS, fid + ".meta.json"))
+                            if isinstance(fid, str) else None) or {}
+                    kinds[fid] = measures_runway(
+                        meta.get("category"), meta.get("vs0"),
+                        meta.get("aircraft") or e.get("aircraft"))
+                if kinds[fid]:
                     out.append((float(e["lat"]), float(e["lon"])))
     except OSError:
         pass

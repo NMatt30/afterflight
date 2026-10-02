@@ -1,7 +1,7 @@
 """User-editable settings, applied over the module constants at run time.
 
-The constants in watcher.py, tiles.py, mapbake.py and passenger.py stay the
-source of truth: their values at import are captured as the defaults, and a
+The constants in watcher.py, tiles.py, mapbake.py, passenger.py and grading.py
+stay the source of truth: their values at import are captured as the defaults, and a
 saved setting is an override on top. Delete settings.json and you are back to
 known-good without touching code.
 
@@ -68,6 +68,58 @@ SPEC = [
     #
     # If per-taste grading comes back it has to move the curve and the ladder
     # together, not one of them.
+
+    # ---- float and touchdown point ----
+    #
+    # Unlike the ladder these can be settings: the score, the band text and
+    # the letter cap all read the same constants when called, so a setting
+    # moves all three together. The defaults are the published figures, and
+    # grading.PUBLISHED keeps them so a changed band is labelled as the
+    # owner's own wherever it is printed. Airplanes only - a helicopter is
+    # never measured on either, whatever these say. Changing any of them
+    # rebuilds the logbook, because the build signature carries them.
+    {"key": "grade_float", "module": "grading", "attr": "GRADE_FLOAT",
+     "type": "bool", "group": "Float and touchdown point",
+     "label": "Count the float in the landing grade", "live": True,
+     "note": "Off: measured and shown on every airplane landing, but it "
+             "changes no grade. On: a long float can hold the landing "
+             "letter down. It never raises one."},
+    {"key": "float_normal_s", "module": "grading", "attr": "FLOAT_NORMAL_S",
+     "type": "float", "min": 3.0, "max": 20.0, "group": "Float and touchdown point",
+     "label": "Float: full marks up to (s, from 50 ft)", "live": True,
+     "note": "7 s is the average pilot in AC 25-32."},
+    {"key": "float_margin_ft", "module": "grading", "attr": "FLOAT_MARGIN_FT",
+     "type": "float", "min": 500.0, "max": 6000.0, "group": "Float and touchdown point",
+     "label": "Float: touchdown zone past a normal flare (ft)", "live": True,
+     "note": "Scores 50 here. 2,000 ft is AC 91-79A's zone, 1,000 to "
+             "3,000 ft. Turned into seconds at the speed flown."},
+    {"key": "float_beyond_ft", "module": "grading", "attr": "FLOAT_BEYOND_FT",
+     "type": "float", "min": 100.0, "max": 6000.0, "group": "Float and touchdown point",
+     "label": "Float: zero this far past the zone (ft)", "live": True,
+     "note": "A judgment, not a published figure."},
+    {"key": "grade_touchdown_point", "module": "grading", "attr": "GRADE_TOUCHDOWN_POINT",
+     "type": "bool", "group": "Float and touchdown point",
+     "label": "Count the touchdown point in the landing grade", "live": True,
+     "note": "Same rule as the float: off is measured and shown only; on "
+             "can hold the letter down, never raise it. Needs the runway, "
+             "which the sim describes after you park."},
+    {"key": "tdz_target_ft", "module": "grading", "attr": "TDZ_TARGET_FT",
+     "type": "float", "min": 0.0, "max": 4000.0, "group": "Float and touchdown point",
+     "label": "Touchdown point: aim point past the threshold (ft)", "live": True,
+     "note": "About 1,000 ft in AC 91-79A."},
+    {"key": "tdz_tolerance_ft", "module": "grading", "attr": "TDZ_TOLERANCE_FT",
+     "type": "float", "min": 0.0, "max": 3000.0, "group": "Float and touchdown point",
+     "label": "Touchdown point: full marks this far past the aim (ft)", "live": True,
+     "note": "400 ft is the Private Pilot ACS tolerance."},
+    {"key": "tdz_end_ft", "module": "grading", "attr": "TDZ_END_FT",
+     "type": "float", "min": 500.0, "max": 8000.0, "group": "Float and touchdown point",
+     "label": "Touchdown point: end of the touchdown zone (ft)", "live": True,
+     "note": "Scores 50 here. 3,000 ft in AC 91-79A. A runway shorter than "
+             "three times this ends the zone at its first third instead."},
+    {"key": "tdz_beyond_ft", "module": "grading", "attr": "TDZ_BEYOND_FT",
+     "type": "float", "min": 100.0, "max": 6000.0, "group": "Float and touchdown point",
+     "label": "Touchdown point: zero this far past the zone (ft)", "live": True,
+     "note": "A judgment, not a published figure."},
 
     # ---- what a flight gets ----
     # The default for flights nobody has decided about individually. Changing
@@ -324,6 +376,25 @@ def self_test():
         else:
             raise AssertionError("%s accepted a value off its list" % s["key"])
     return True
+
+
+def apply_saved(names):
+    """Register these modules and lay settings.json over them.
+
+    For a process other than the watcher - a command-line build - that must
+    build with the settings the watcher builds with. Without this, a rebuild
+    from the command line published a logbook graded and drawn on the
+    defaults over the one the watcher had made.
+    """
+    import importlib
+    for name in names:
+        try:
+            register(name, importlib.import_module(name))
+        except ImportError:
+            pass
+    capture_defaults()
+    load()
+    return apply()
 
 
 def _register_all():

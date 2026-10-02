@@ -1102,6 +1102,9 @@ def global_signature(bake_maps):
         "places:" + file_sig(PLACES_JSON),
         # A cached sortie must not survive a change to what is hidden.
         "grading:" + grading_revision(),
+        # The float and touchdown-point bands are settings, so they change
+        # without the file changing and grading_revision cannot see them.
+        "runway-bands:" + json.dumps(grading.runway_tunables(), sort_keys=True),
         "prose:" + file_sig(os.path.join(BASE, "passenger_lines.json")),
         "ss:%d" % getattr(mapbake, "SUPERSAMPLE", 1),
         # Everything that changes how a map looks belongs here. Without it a
@@ -2287,6 +2290,11 @@ def _purge(entry, log=None):
 
 if __name__ == "__main__":
     import sys
+    # The watcher builds with settings.json applied; a build from here has to
+    # as well, or it overwrites the watcher's logbook with one graded and
+    # drawn on the defaults.
+    import settings
+    settings.apply_saved(("grading", "passenger", "flightprefs", "tiles", "mapbake"))
     d = build(bake_maps="--no-maps" not in sys.argv, log=print,
               allow_network="--offline" not in sys.argv,
               force="--force" in sys.argv)

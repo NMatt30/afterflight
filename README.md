@@ -300,7 +300,9 @@ failing that, whatever the sim picks by default.
 ## Settings
 
 A **Settings** button in the logbook opens Tier 1 settings: clip windows,
-what a flight gets by default (rating, passenger
+whether the landing float and touchdown point count toward the landing grade
+and the bands they are scored on (airplanes only; the defaults are the
+published figures), what a flight gets by default (rating, passenger
 notes), basemap source and treatment, and replay defaults (start-held, ground
 lift, camera distance/height/orbit).
 
@@ -311,7 +313,9 @@ is not silently overridden by a stale saved copy, and deleting the file returns
 you to known-good.
 
 Everything applies live. Clip windows take effect on the next event, map
-changes trigger a rebuild, and the ring buffer is resized in place.
+and grading changes trigger a rebuild, and the ring buffer is resized in place.
+A rebuild from the command line applies `settings.json` too, so it publishes
+the same logbook the watcher would.
 
 **`BUFFER_SEC` is derived, not configured.** `LANDING_BEFORE` is useless beyond
 what the buffer holds, and offering both invites setting one and forgetting the

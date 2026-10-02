@@ -431,9 +431,10 @@
     (ph.parts || []).forEach(function (p) {
       var tail = [];
       if (p.cap) tail.push("a cap, not a weight");
-      // Measured and shown, but not yet allowed to move the grade. Without
-      // saying so it would read as a cap that simply did not bite.
-      else if (p.counted === false) tail.push("measured, not yet counted");
+      // Measured and shown, but not allowed to move the grade. Without
+      // saying so it would read as a cap that simply did not bite. Short,
+      // because the browser cuts a tooltip line off at a fixed width.
+      else if (p.counted === false) tail.push("not counted");
       else if (p.weight_pct != null) tail.push(p.weight_pct + "% of this phase");
       if (p.band) tail.push(p.band);
       lines.push("  " + p.label

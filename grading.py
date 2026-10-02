@@ -307,9 +307,9 @@ FLOAT_BEYOND_FT = 1000.0          # end of the zone -> zero (a judgment)
 FLOAT_CAP_POINTS = ALIGNMENT_CAP_POINTS
 # Off until the owner has seen what it does to existing landings. The float is
 # measured and shown on every airplane leg either way; this decides only
-# whether it may hold the landing letter and the descent phase down. Flipping
-# it is an edit to this file, which grading_revision hashes, so every sortie
-# rebuilds on its own.
+# whether it may hold the landing letter and the descent phase down. It is a
+# setting (grade_float), and the build signature carries it - see
+# runway_tunables - so every sortie rebuilds when it changes.
 GRADE_FLOAT = False
 
 # ------------------------------------------------------------ touchdown point
@@ -341,6 +341,35 @@ TDZ_SHORT_ALLOWANCE_FT = 50.0
 TDZ_CAP_POINTS = ALIGNMENT_CAP_POINTS
 # Off for the same reason as GRADE_FLOAT, and independently of it.
 GRADE_TOUCHDOWN_POINT = False
+
+# The float and touchdown-point bands are settings (settings.py, "Float and
+# touchdown point"). The values above are the published figures and stay the
+# defaults; PUBLISHED keeps them, so the grading panel - the one place that
+# cites the ACs - can say when the bands in use are the owner's own instead.
+#
+# The landing ladder is not settable because its letters and the touchdown
+# curve are separate constants, and a setting could move one without the
+# other. These have no such split: the score, the band text and the letter cap
+# all read the values below when they are called, so a setting moves all
+# three together. Helicopters are untouched by any of them - scores_float
+# gates every use on the profile, not on these values.
+FLOAT_BANDS = ("FLOAT_NORMAL_S", "FLOAT_MARGIN_FT", "FLOAT_BEYOND_FT")
+TDZ_BANDS = ("TDZ_TARGET_FT", "TDZ_TOLERANCE_FT", "TDZ_END_FT", "TDZ_BEYOND_FT")
+RUNWAY_TUNABLES = ("GRADE_FLOAT",) + FLOAT_BANDS + ("GRADE_TOUCHDOWN_POINT",) + TDZ_BANDS
+PUBLISHED = {_name: globals()[_name] for _name in RUNWAY_TUNABLES}
+
+
+def runway_tunables():
+    """The values in use. A setting changes these without changing this
+    file, so the build signs them separately from grading_revision."""
+    g = globals()
+    return {name: g[name] for name in RUNWAY_TUNABLES}
+
+
+def own_bands(names):
+    """True when any of these bands is not the published figure."""
+    g = globals()
+    return any(g[name] != PUBLISHED[name] for name in names)
 
 G_FT_S2 = 32.174
 
@@ -648,8 +677,13 @@ def float_points_s(speed_kt):
 
 
 def float_band_text(flt):
-    """What good looks like for this landing - two of the points move with speed."""
-    return ("full marks %g s, end of the touchdown zone %g s, zero %g s at %g kt"
+    """What good looks like for this landing - two of the points move with speed.
+
+    In the shape of every other line in the phase tooltip, "full marks X, zero
+    Y", with the 50 between because this one has a knee. The speed is there
+    because it is what put the 50 and the zero where they are.
+    """
+    return ("full marks %g s, 50 at %g s, zero %g s (at %d kt)"
             % (FLOAT_NORMAL_S, flt["zone_end_s"], flt["zero_s"],
                round(flt["speed_kt"])))
 
@@ -691,7 +725,7 @@ def _float_part(flt, score):
     if not flt or flt.get("score") is None:
         return None, score
     return _cap_part("float", "Float", flt["score"],
-                     "%.1f s from 50 ft, %d ft" % (flt["seconds"], flt["distance_ft"]),
+                     "%.1f s" % flt["seconds"],
                      float_band_text(flt), bool(GRADE_FLOAT), FLOAT_CAP_POINTS, score)
 
 
@@ -725,22 +759,25 @@ def touchdown_point_score(distance_ft, length_ft=None):
 def touchdown_point_band_text(tp):
     """What good looks like on this runway, which a short one changes.
 
-    On a runway short enough that its first third falls inside the full-marks
-    distance, the third is both where full marks stop and where the zone ends,
-    and saying "full marks within 804 ft, 50 at 804 ft" read as a
-    contradiction. It is a step, so it is described as one.
+    "full marks X, 50 at Y, zero Z", like its neighbours in the tooltip, and
+    short: the browser cuts a tooltip line off at a fixed width, and the first
+    wording of this one lost its end. Where the runway's first
+    third ends the zone, the runway length is named, since it is the reason.
+    On a runway short enough that the third falls inside the full-marks
+    distance, full marks stop at the third and the next foot is 50; saying
+    "full marks 804 ft, 50 at 804 ft" read as a contradiction, so that case
+    is a step and is described as one.
     """
-    end = touchdown_zone_end_ft(tp.get("length_ft"))
+    length = tp.get("length_ft")
+    end = touchdown_zone_end_ft(length)
     full = min(TDZ_TARGET_FT + TDZ_TOLERANCE_FT, end)
     ft = lambda v: "{:,} ft".format(int(round(v)))
+    third = " (⅓ of %s)" % ft(length) if end < TDZ_END_FT else ""
     if full >= end:
-        return ("full marks within %s, the first third of this runway; "
-                "50 just past it, zero at %s" % (ft(end), ft(end + TDZ_BEYOND_FT)))
-    return ("full marks within %s, 50 at %s (%s), zero at %s"
-            % (ft(full), ft(end),
-               "the end of the touchdown zone" if end >= TDZ_END_FT
-               else "the first third of this runway",
-               ft(end + TDZ_BEYOND_FT)))
+        return ("full marks %s%s, then 50, zero %s"
+                % (ft(end), third, ft(end + TDZ_BEYOND_FT)))
+    return ("full marks %s, 50 at %s%s, zero %s"
+            % (ft(full), ft(end), third, ft(end + TDZ_BEYOND_FT)))
 
 
 def touchdown_point_ceiling_letter(tp):
@@ -753,11 +790,10 @@ def touchdown_point_ceiling_letter(tp):
 def _touchdown_point_part(tp, score):
     if not tp or tp.get("score") is None:
         return None, score
-    where = ("%d ft before" % -tp["distance_ft"] if tp["distance_ft"] < 0
-             else "%d ft past" % tp["distance_ft"])
-    measured = "%s the %s threshold, %s ft runway" % (
-        where, tp.get("runway") or "?",
-        "{:,}".format(int(tp["length_ft"])) if tp.get("length_ft") else "?")
+    d = tp["distance_ft"]
+    measured = "{:,} ft {} {}".format(int(round(abs(d))),
+                                      "short of" if d < 0 else "past",
+                                      tp.get("runway") or "the threshold")
     return _cap_part("touchdown_point", "Touchdown point", tp["score"], measured,
                      touchdown_point_band_text(tp), bool(GRADE_TOUCHDOWN_POINT),
                      TDZ_CAP_POINTS, score)
@@ -2112,6 +2148,8 @@ def describe_profile(p):
                         "says; past it the approach should have been "
                         "abandoned. Where those points fall in seconds depends "
                         "on how fast you were going."
+                        + (" The bands here are your own settings, not "
+                           "those figures." if own_bands(FLOAT_BANDS) else "")
                         + ("" if GRADE_FLOAT else
                            " Measured and shown, not yet counted.")),
                 "weight_pct": 0,
@@ -2142,6 +2180,8 @@ def describe_profile(p):
                         "3,000 ft, or the first third of a shorter runway. "
                         "Measured where the sim has described the runway, "
                         "which it does after you park."
+                        + (" The bands here are your own settings, not "
+                           "those figures." if own_bands(TDZ_BANDS) else "")
                         + ("" if GRADE_TOUCHDOWN_POINT else
                            " Measured and shown, not yet counted.")),
                 "weight_pct": 0,

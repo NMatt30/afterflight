@@ -7,6 +7,10 @@
   the builder           a leg gets its touchdown point from the runway cache
   the cache signature   a runway cached after a landing rebuilds that sortie,
                         and only that sortie
+  the settings          a band set in settings.json moves the score and the
+                        letter together, rebuilds what it changes, and never
+                        reaches a helicopter - nor makes the watcher ask the
+                        sim about one
 
 What the sim sends was measured live before any of this was written: message
 ids 18, 28 and 29, a 36-byte airport-list entry, 28- and 52-byte airport and
@@ -261,8 +265,8 @@ def _flight(tree, touchdown_past_threshold_ft):
     return td
 
 
-def _leg(tree):
-    logbook_build.build(bake_maps=False, allow_network=False, force=True)
+def _leg(tree, force=True):
+    logbook_build.build(bake_maps=False, allow_network=False, force=force)
     with open(os.path.join(tree.dir, "detail", FID + ".json"), encoding="utf-8") as f:
         return json.load(f)["legs"][0]
 
@@ -328,6 +332,268 @@ def test_a_helicopter_gets_no_touchdown_point():
             "a helicopter was measured against the airplane touchdown zone")
     finally:
         t.close()
+
+
+# --------------------------------------------------------------------------
+# the settings
+# --------------------------------------------------------------------------
+
+class Settings(object):
+    """A settings.json, laid over grading the way a command-line build does.
+
+    Through settings.apply_saved rather than by assigning grading's constants,
+    so what is tested is the path a saved setting really takes.
+    """
+
+    def __init__(self, root, values):
+        import settings
+        self.s = settings
+        self._keep = (settings.SETTINGS_PATH, dict(settings._defaults),
+                      settings._values, dict(settings._registry))
+        self._grading = grading.runway_tunables()
+        settings.SETTINGS_PATH = os.path.join(root, "settings.json")
+        with open(settings.SETTINGS_PATH, "w", encoding="utf-8") as f:
+            json.dump(values, f)
+        settings.apply_saved(("grading",))
+
+    def close(self):
+        s = self.s
+        s.SETTINGS_PATH, defaults, s._values, registry = self._keep
+        s._defaults.clear()
+        s._defaults.update(defaults)
+        s._registry.clear()
+        s._registry.update(registry)
+        for name, value in self._grading.items():
+            setattr(grading, name, value)
+
+
+def _with(tree, values, force=True):
+    st = Settings(tree.root, values)
+    try:
+        return _leg(tree, force=force)
+    finally:
+        st.close()
+
+
+def _descent_part(leg, key):
+    pg = leg.get("phase_grade") or {}
+    for p in ((pg.get("phases") or {}).get("descent") or {}).get("parts") or []:
+        if p.get("key") == key:
+            return p
+    return None
+
+
+# Every band as tight as the settings page allows, and both switches on: the
+# harshest a saved settings.json can make these two measures.
+HARSHEST = {"grade_float": True, "float_normal_s": 3.0, "float_margin_ft": 500.0,
+            "float_beyond_ft": 100.0, "grade_touchdown_point": True,
+            "tdz_target_ft": 0.0, "tdz_tolerance_ft": 0.0, "tdz_end_ft": 500.0,
+            "tdz_beyond_ft": 100.0}
+
+
+def test_every_band_is_a_setting_whose_default_is_the_published_figure():
+    import settings
+    by_attr = {s["attr"]: s for s in settings.SPEC if s["module"] == "grading"}
+    missing = [n for n in grading.RUNWAY_TUNABLES if n not in by_attr]
+    assert not missing, "not settable: %s" % ", ".join(missing)
+    for key, value in HARSHEST.items():
+        spec = settings.BY_KEY[key]
+        assert settings.coerce(spec, value) == value, key
+        if spec["type"] == "float":
+            assert grading.PUBLISHED[spec["attr"]] >= spec["min"], (
+                "%s cannot be set back to its published figure" % key)
+
+
+def test_a_band_setting_moves_the_score_and_the_letter_together():
+    """The reason the landing ladder is not a setting is that the letter and
+    the curve could part company. Here a setting has to move both."""
+    t = Tree()
+    try:
+        _flight(t, 2500.0)
+        t.runway()
+        free = _leg(t)
+        held = _with(t, {"grade_touchdown_point": True})
+        assert held["touchdown_point"]["score"] < 100, held["touchdown_point"]
+        assert held["landing_grade"] != free["landing_grade"], (
+            "2,500 ft down a 9,400 ft runway with the touchdown point counted "
+            "did not hold the landing letter, so this test proves nothing")
+        own = _with(t, {"grade_touchdown_point": True, "tdz_tolerance_ft": 2000.0})
+        tp = own["touchdown_point"]
+        assert tp["score"] == 100, (
+            "a 3,000 ft full-marks setting still scored a 2,500 ft touchdown "
+            "%s" % tp["score"])
+        assert own["landing_grade"] == free["landing_grade"], (
+            "the score moved with the setting and the letter did not: %s, "
+            "where the uncounted letter is %s"
+            % (own["landing_grade"], free["landing_grade"]))
+        part = _descent_part(own, "touchdown_point")
+        assert part and part["band"].startswith("full marks 3,000 ft"), (
+            "the leg prints a band other than the one it was scored on: %r"
+            % (part and part["band"]))
+
+        # The panel cites AC 91-79A, so it has to say when the bands are not.
+        def why(values):
+            st = Settings(t.root, values)
+            try:
+                descent = next(p for p in grading.describe_profile(grading.FIXED_WING)["phases"]
+                               if p["key"] == "descent")
+                return next(m for m in descent["metrics"]
+                            if m["key"] == "touchdown_point")["why"]
+            finally:
+                st.close()
+        assert "your own settings" in why({"tdz_tolerance_ft": 2000.0}), (
+            "a band from settings is explained as if it were AC 91-79A's")
+        assert "your own settings" not in why({"grade_touchdown_point": True}), (
+            "the published band is described as a setting")
+    finally:
+        t.close()
+
+
+def test_a_band_setting_rebuilds_the_logbook_without_force():
+    """The bands change without grading.py changing, so grading_revision
+    cannot see them; without their own term in the signature the cached
+    sortie, graded on the old band, wins for ever."""
+    t = Tree()
+    try:
+        _flight(t, 2500.0)
+        t.runway()
+        first = _with(t, {"grade_touchdown_point": True}, force=False)
+        second = _with(t, {"grade_touchdown_point": True, "tdz_tolerance_ft": 2000.0},
+                       force=False)
+        assert first["touchdown_point"]["score"] < 100
+        assert second["touchdown_point"]["score"] == 100, (
+            "a changed band left the cached sortie in place")
+    finally:
+        t.close()
+
+
+def test_no_setting_reaches_a_helicopter():
+    t = Tree()
+    try:
+        _flight(t, 3900.0)
+        t.runway()
+        # The control: the same settings on an airplane do bite, so a
+        # helicopter coming through untouched is the gate and not a no-op.
+        plane = _with(t, HARSHEST)
+        assert plane["touchdown_point"]["score"] == 0 and plane["landing_grade"] == "F", (
+            "the harshest settings left an airplane at %s; the helicopter half "
+            "of this test proves nothing" % plane["landing_grade"])
+
+        meta = os.path.join(t.dir, FID + ".meta.json")
+        doc = json.load(open(meta, encoding="utf-8"))
+        doc.update(aircraft="Test Helicopter", category="Helicopter", vs0=0.0)
+        json.dump(doc, open(meta, "w", encoding="utf-8"))
+        base = _leg(t)
+        heli = _with(t, HARSHEST)
+        assert heli["touchdown_point"] is None and heli["landing_float"] is None, (
+            "a helicopter was measured against an airplane band")
+        assert heli["landing_grade"] == base["landing_grade"], (
+            "settings for airplanes moved a helicopter landing from %s to %s"
+            % (base["landing_grade"], heli["landing_grade"]))
+        assert (heli.get("phase_grade") or {}).get("letter") == \
+            (base.get("phase_grade") or {}).get("letter")
+        for key in ("float", "touchdown_point"):
+            assert _descent_part(heli, key) is None, (
+                "a helicopter descent carries a %s line" % key)
+
+        st = Settings(t.root, HARSHEST)
+        try:
+            descent = next(p for p in grading.describe_profile(grading.ROTARY)["phases"]
+                           if p["key"] == "descent")
+        finally:
+            st.close()
+        keys = {m["key"] for m in descent["metrics"]}
+        assert not keys & {"float", "touchdown_point"}, (
+            "the helicopter tab explains %s" % sorted(keys & {"float", "touchdown_point"}))
+    finally:
+        t.close()
+
+
+def test_saving_a_band_in_the_watcher_rebuilds_the_logbook():
+    """The watcher rebuilds on a settings save only for the keys it watches.
+    A band missing from that list would save, apply, and leave every built
+    grade on the old band until something else happened to rebuild."""
+    import settings
+    root = tempfile.mkdtemp()
+    keep_s = (settings.SETTINGS_PATH, dict(settings._defaults),
+              settings._values, dict(settings._registry))
+    keep_g = grading.runway_tunables()
+    keep_w = (watcher.BASE, watcher.schedule_logbook_rebuild)
+    asked = []
+    try:
+        watcher.BASE = root
+        watcher.schedule_logbook_rebuild = lambda *a, **k: asked.append(k)
+        settings.SETTINGS_PATH = os.path.join(root, "settings.json")
+        settings._defaults.clear()
+        settings._values = {}
+        watcher.load_settings_at_startup()        # registers what the watcher does
+        for spec in settings.SPEC:
+            if spec["module"] != "grading":
+                continue
+            new = (not settings._defaults[spec["key"]] if spec["type"] == "bool"
+                   else spec["min"])
+            del asked[:]
+            ok, out = watcher.apply_settings({spec["key"]: new})
+            assert ok, out
+            assert getattr(grading, spec["attr"]) == new, (
+                "saving %s did not reach grading.%s" % (spec["key"], spec["attr"]))
+            assert out["rebuild_scheduled"] and asked, (
+                "saving %s changed grades and scheduled no rebuild" % spec["key"])
+            del asked[:]
+            ok, out = watcher.apply_settings({spec["key"]: new})
+            assert not out["rebuild_scheduled"] and not asked, (
+                "saving %s unchanged rebuilt the logbook anyway" % spec["key"])
+    finally:
+        settings.SETTINGS_PATH, defaults, settings._values, registry = keep_s
+        settings._defaults.clear()
+        settings._defaults.update(defaults)
+        settings._registry.clear()
+        settings._registry.update(registry)
+        for name, value in keep_g.items():
+            setattr(grading, name, value)
+        watcher.BASE, watcher.schedule_logbook_rebuild = keep_w
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_the_watcher_asks_the_sim_about_airplane_runways_only():
+    assert watcher.measures_runway("Airplane", 90.0, "Test Jet")
+    assert watcher.measures_runway("Airplane", 45.0, "Test Single")
+    assert not watcher.measures_runway("Helicopter", 0.0, "Test Helicopter")
+    assert not watcher.measures_runway("Airplane", 10.0, "Test Gyroplane")
+    assert not watcher.measures_runway(None)
+
+    keep_q = list(watcher._runway_queue)
+    keep = (watcher.RUNWAY_LOOKUP, watcher.SESSIONS, watcher.EVENTS_JSONL)
+    root = tempfile.mkdtemp()
+    try:
+        watcher.RUNWAY_LOOKUP = True
+        del watcher._runway_queue[:]
+        watcher.queue_runway_lookup(LAT0, LON0, "Helicopter", 0.0, "Test Helicopter")
+        assert not watcher._runway_queue, "a helicopter landing queued a runway lookup"
+        watcher.queue_runway_lookup(LAT0, LON0, "Airplane", 90.0, "Test Jet")
+        assert watcher._runway_queue == [(LAT0, LON0)], watcher._runway_queue
+
+        # The backfill reads landings on record, and skips the helicopters.
+        watcher.SESSIONS = root
+        watcher.EVENTS_JSONL = os.path.join(root, "events.jsonl")
+        flights = (("flt-19990101T000000Z", "Airplane", 90.0, LAT0),
+                   ("flt-19990102T000000Z", "Helicopter", 0.0, LAT0 + 1.0),
+                   ("flt-19990103T000000Z", None, None, LAT0 + 2.0))
+        with open(watcher.EVENTS_JSONL, "w", encoding="utf-8") as ev:
+            for fid, cat, vs0, lat in flights:
+                with open(os.path.join(root, fid + ".meta.json"), "w", encoding="utf-8") as f:
+                    json.dump({"flight_id": fid, "category": cat, "vs0": vs0}, f)
+                ev.write(json.dumps({"kind": "landing", "flight_id": fid,
+                                     "lat": lat, "lon": LON0}) + "\n")
+            ev.write(json.dumps({"kind": "landing", "lat": LAT0 + 3.0,
+                                 "lon": LON0}) + "\n")
+        assert watcher._landing_points_on_record() == [(LAT0, LON0)], (
+            "the backfill would ask the sim about %r"
+            % watcher._landing_points_on_record())
+    finally:
+        watcher.RUNWAY_LOOKUP, watcher.SESSIONS, watcher.EVENTS_JSONL = keep
+        watcher._runway_queue[:] = keep_q
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def main():

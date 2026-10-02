@@ -117,6 +117,15 @@ turned on - the owner reviews the bands against real landings first.
 distance past the landing threshold, 100 within 1,400 ft, 50 at the end of the
 touchdown zone (3,000 ft or the runway's first third), 0 a further 1,000 ft on.
 It needs the runway, which only the sim knows - see the facility-data trap.
+**Both switches and their bands are settings, the ladder is not.** The
+ladder's letters and the touchdown curve are separate constants a setting
+could part; the float and touchdown-point score, band and letter cap all read
+the same values when called, so a setting moves them together. The defaults
+are the published figures, kept in `grading.PUBLISHED`, and the grading panel
+says when the bands in use are the owner's own instead. The build signature
+carries the values (`runway_tunables`), because a setting changes them without
+changing `grading.py`. No setting reaches a helicopter: every use is gated on
+the profile, and the watcher asks the sim for no runway after one lands.
 
 **This logbook is one person's habits, not a sample of how aircraft are
 flown.** The owner is a sim pilot, not a rated one, and their flying is
