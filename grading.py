@@ -567,16 +567,68 @@ def _ground_ft(a, b):
     return 2.0 * 20925646.3 * math.asin(min(1.0, math.sqrt(h)))
 
 
-def landing_float(points, t_land=None, source=None):
-    """How long the airplane was held off before touching down, or None.
+def _threshold_crossing(points, idx, past):
+    """(j, frac) where the arrival crossed the threshold before contact idx:
+    between points[j] and points[j + 1], frac of the way. (None, None) if
+    the recording starts past it; ("short", None) if contact was before it."""
+    try:
+        if past(points[idx]) < 0:
+            return "short", None
+        for j in range(idx - 1, -1, -1):
+            a = past(points[j])
+            if a < 0:
+                b = past(points[j + 1])
+                return j, (-a / (b - a)) if b > a else 0.0
+    except (KeyError, TypeError, ValueError):
+        return "short", None
+    return None, None
+
+
+def threshold_height(points, t_land=None, past=None):
+    """Height over the landing threshold, above where the wheels touched.
+
+    Information, not a grade: the float and the touchdown point already say
+    what a high or low crossing cost. Above the touchdown point because the
+    sim gives a runway one elevation, so on a sloped runway this is off by the
+    difference between its threshold and where the wheels touched. None when
+    the recording does not reach back to the threshold.
+    """
+    if not points or past is None:
+        return None
+    idx = landing_index(points, t_land)
+    if not idx or not _finite(points[idx].get("alt")):
+        return None
+    j, frac = _threshold_crossing(points, idx, past)
+    if not isinstance(j, int):
+        return None
+    a, b = points[j], points[j + 1]
+    if not (_finite(a.get("alt")) and _finite(b.get("alt"))):
+        return None
+    alt = float(a["alt"]) + frac * (float(b["alt"]) - float(a["alt"]))
+    return round(alt - float(points[idx]["alt"]), 1)
+
+
+def landing_float(points, t_land=None, source=None, past=None):
+    """How long the airplane was held off over the runway, or None.
+
+    The clock starts at whichever comes later: the 50 ft point (AC 25-32's air
+    distance, which assumes 50 ft over the threshold) or the threshold. An
+    arrival that crosses lower than 50 ft had its clock started over the
+    approach, so time flown low before the runway counted as float, and a
+    landing just past the threshold could read as a long float. past(point) is
+    feet past the
+    landing threshold (runways.past_threshold); without it the clock starts
+    at 50 ft, which is how a caller with no runway learns nothing useful -
+    the builder measures no float there at all.
 
     points is the landing clip at 10 Hz when there is one and the 1 Hz track
     otherwise; resolution_s says which, because a 1 Hz track places the 50 ft
     crossing and the contact each to within a second.
 
     None means it could not be measured - the recording starts below 50 ft,
-    the aircraft was on the ground inside the window, a field is missing. It
-    is never a short float.
+    the aircraft was on the ground inside the window, a field is missing, or
+    it touched down short of the threshold, which the touchdown point scores.
+    It is never a short float.
     """
     if not points:
         return None
@@ -606,6 +658,20 @@ def landing_float(points, t_land=None, source=None):
     h_b = float(below["alt"]) - ground
     frac = (h_a - FLOAT_HEIGHT_FT) / (h_a - h_b) if h_a > h_b else 0.0
     t_cross = float(above["t"]) + frac * (float(below["t"]) - float(above["t"]))
+    start = "50 ft"
+    if past is not None:
+        k, kfrac = _threshold_crossing(points, idx, past)
+        if k == "short":
+            return None
+        if isinstance(k, int):
+            if not (_finite(points[k].get("t")) and _finite(points[k + 1].get("t"))):
+                return None
+            t_thr = (float(points[k]["t"])
+                     + kfrac * (float(points[k + 1]["t"]) - float(points[k]["t"])))
+            if t_thr > t_cross:
+                # Below 50 ft before the runway began: start over the runway.
+                j, frac, t_cross, start = k, kfrac, t_thr, "threshold"
+                above, below = points[j], points[j + 1]
     seconds = float(td["t"]) - t_cross
 
     try:
@@ -617,6 +683,15 @@ def landing_float(points, t_land=None, source=None):
     if seconds <= 0 or dist <= 0:
         return None
     fps = dist / seconds
+    if start == "threshold" and seconds < 1.0:
+        # A second or less over the runway is too short to give a speed from;
+        # the approach just before it says how fast the arrival was.
+        k = max(0, j - 10)
+        try:
+            span = sum(_ground_ft(points[m], points[m + 1]) for m in range(k, idx))
+            fps = span / (float(td["t"]) - float(points[k]["t"]))
+        except (KeyError, TypeError, ValueError, ZeroDivisionError):
+            return None
     if fps < 10.0:                      # not an airplane arriving
         return None
     zone_end_s = FLOAT_NORMAL_S + FLOAT_MARGIN_FT / fps
@@ -633,6 +708,9 @@ def landing_float(points, t_land=None, source=None):
         "score": round(float_score(seconds, zone_end_s, zero_s), 1),
         "resolution_s": round(sorted(gaps)[len(gaps) // 2], 2) if gaps else None,
         "source": source,
+        # Where the clock started: "threshold" when the arrival was already
+        # below 50 ft at the runway, "50 ft" otherwise.
+        "from": start,
     }
 
 
@@ -642,7 +720,7 @@ def scores_float(profile):
 
 
 def landing_float_for(points, aircraft=None, category=None, vs0_kt=None,
-                      t_land=None, source=None, track=None):
+                      t_land=None, source=None, track=None, past=None):
     """The float for this leg's landing, or None if it is not measured here.
 
     Profile routing is the same as alignment's and for the same reason. track,
@@ -654,7 +732,7 @@ def landing_float_for(points, aircraft=None, category=None, vs0_kt=None,
         category = infer_category(track or points)
     if not scores_float(profile_for(aircraft, category=category, vs0_kt=vs0_kt)):
         return None
-    return landing_float(points, t_land=t_land, source=source)
+    return landing_float(points, t_land=t_land, source=source, past=past)
 
 
 def float_score(seconds, zone_end_s, zero_s):
@@ -725,7 +803,9 @@ def _float_part(flt, score):
     if not flt or flt.get("score") is None:
         return None, score
     return _cap_part("float", "Float", flt["score"],
-                     "%.1f s" % flt["seconds"],
+                     "%.1f s from %s" % (flt["seconds"],
+                                        "the threshold" if flt.get("from") == "threshold"
+                                        else "50 ft"),
                      float_band_text(flt), bool(GRADE_FLOAT), FLOAT_CAP_POINTS, score)
 
 
@@ -2139,9 +2219,13 @@ def describe_profile(p):
             metrics.append({
                 "key": "float",
                 "label": "Float",
-                "why": ("How long the airplane was held off: the time from 50 "
-                        "ft above the runway to the wheels touching, which "
-                        "certification calls the air distance. Seven seconds "
+                "why": ("How long the airplane was held off over the runway: "
+                        "the time from 50 ft above it to the wheels touching, "
+                        "which certification calls the air distance - or from "
+                        "the threshold, if it was already lower than 50 ft "
+                        "there, so time flown low over the approach does not "
+                        "count. Measured only where the sim has described the "
+                        "runway. Seven seconds "
                         "is the figure for an average pilot in normal "
                         "operations (AC 25-32). Inside the touchdown zone a "
                         "longer float still passes, which is what AC 91-79A "

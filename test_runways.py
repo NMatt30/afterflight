@@ -288,6 +288,29 @@ def test_a_leg_gets_its_touchdown_point_from_the_cache():
         t.close()
 
 
+def test_no_runway_means_no_float_and_no_touchdown_point():
+    """Off airport, or before the watcher has looked the runway up: nothing
+    says where the runway began, so a float counted from 50 ft would count
+    the approach. Neither measure is taken."""
+    t = Tree()
+    try:
+        _flight(t, 1800.0)
+        leg = _leg(t)
+        assert leg.get("touchdown_point") is None
+        assert leg.get("landing_float") is None, (
+            "a float was measured with no runway to measure it over")
+        t.runway()
+        leg = _leg(t)
+        assert leg.get("landing_float"), "no float with the runway cached"
+        # The fixture flies a 3-degree path to its touchdown point, so it is
+        # 1,800 x tan(3 deg), about 94 ft, over a threshold 1,800 ft before.
+        h = leg["touchdown_point"].get("threshold_height_ft")
+        assert h is not None and abs(h - 94) < 6, (
+            "crossed the threshold at about 94 ft, measured %r" % h)
+    finally:
+        t.close()
+
+
 def test_a_runway_cached_later_rebuilds_that_sortie_and_no_other():
     """The cache trap AGENTS.md describes, for the runway files.
 

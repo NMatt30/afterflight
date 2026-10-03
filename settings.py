@@ -81,13 +81,15 @@ SPEC = [
     {"key": "grade_float", "module": "grading", "attr": "GRADE_FLOAT",
      "type": "bool", "group": "Float and touchdown point",
      "label": "Count the float in the landing grade", "live": True,
-     "note": "Off: measured and shown on every airplane landing, but it "
-             "changes no grade. On: a long float can hold the landing "
-             "letter down. It never raises one."},
+     "note": "Off: measured and shown on every airplane landing on a "
+             "runway the sim has described, but it changes no grade. On: a "
+             "long float can hold the landing letter down. It never raises "
+             "one. Off airport there is no float to count."},
     {"key": "float_normal_s", "module": "grading", "attr": "FLOAT_NORMAL_S",
      "type": "float", "min": 3.0, "max": 20.0, "group": "Float and touchdown point",
-     "label": "Float: full marks up to (s, from 50 ft)", "live": True,
-     "note": "7 s is the average pilot in AC 25-32."},
+     "label": "Float: full marks up to (s)", "live": True,
+     "note": "From 50 ft, or from the threshold if the airplane was "
+             "already lower there. 7 s is the average pilot in AC 25-32."},
     {"key": "float_margin_ft", "module": "grading", "attr": "FLOAT_MARGIN_FT",
      "type": "float", "min": 500.0, "max": 6000.0, "group": "Float and touchdown point",
      "label": "Float: touchdown zone past a normal flare (ft)", "live": True,

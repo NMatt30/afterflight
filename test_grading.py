@@ -1090,6 +1090,55 @@ def test_the_score_follows_the_zones_not_a_slope():
             last = v
 
 
+def _threshold_at(pts, t):
+    """past(point) for a threshold where this northbound arrival was at time t."""
+    for a, b in zip(pts, pts[1:]):
+        if a["t"] <= t <= b["t"]:
+            lat = a["lat"] + (t - a["t"]) / (b["t"] - a["t"]) * (b["lat"] - a["lat"])
+            return lambda q: (q["lat"] - lat) * 364000.0
+    raise AssertionError("time %s is outside the arrival" % t)
+
+
+def test_a_low_arrival_starts_the_float_clock_at_the_threshold():
+    """AC 25-32 measures from 50 ft assuming 50 ft over the threshold. Below
+    50 ft before the runway, the seconds before the threshold are approach,
+    not float - counted, they read a landing just past the threshold as a
+    long float."""
+    pts = _arrival(20.0, kt=100.0)
+    t_td = grading.landing_float(pts)
+    assert t_td and abs(t_td["seconds"] - 20.0) < 0.15, t_td
+    t50 = next(p["t"] for p in pts if p["alt"] - 1000.0 <= 50.5)
+    low = grading.landing_float(pts, past=_threshold_at(pts, t50 + 5.0))
+    assert low["from"] == "threshold", low
+    assert abs(low["seconds"] - 15.0) < 0.2, (
+        "crossed the threshold 5 s into a 20 s float, measured %.1f s"
+        % low["seconds"])
+    assert low["score"] >= t_td["score"], "starting later made the float worse"
+
+
+def test_a_high_arrival_still_starts_at_50_ft():
+    pts = _arrival(20.0, kt=100.0)
+    t50 = next(p["t"] for p in pts if p["alt"] - 1000.0 <= 50.5)
+    high = grading.landing_float(pts, past=_threshold_at(pts, t50 - 5.0))
+    assert high["from"] == "50 ft" and abs(high["seconds"] - 20.0) < 0.15, high
+
+
+def test_touching_down_short_of_the_threshold_measures_no_float():
+    pts = _arrival(10.0, kt=100.0)
+    assert grading.landing_float(pts, past=lambda q: (q["lat"] - 48.0) * 364000.0) is None, (
+        "a touchdown before the runway began was given a float over it")
+
+
+def test_the_height_over_the_threshold_is_measured():
+    pts = _arrival(20.0, kt=100.0)
+    t50 = next(p["t"] for p in pts if p["alt"] - 1000.0 <= 50.5)
+    # 5 s into a float that sinks 50 ft evenly over 20 s.
+    h = grading.threshold_height(pts, past=_threshold_at(pts, t50 + 5.0))
+    assert h is not None and abs(h - 38.0) < 2.0, (
+        "crossed at about 38 ft, measured %r" % h)
+    assert grading.threshold_height(pts) is None, "a height with no runway"
+
+
 def test_helicopters_and_gyroplanes_are_not_measured():
     pts = _arrival(14.0)
     assert grading.landing_float_for(pts, "AS365", category="Helicopter") is None

@@ -77,6 +77,14 @@ def _local_ft(lat0, lon0, lat, lon):
     return east, north
 
 
+def offset_ft(lat, lon, bearing_deg, ft):
+    """The point ft feet from (lat, lon) along bearing_deg. Flat, like _local_ft."""
+    b = math.radians(bearing_deg)
+    dn, de = ft * math.cos(b), ft * math.sin(b)
+    return (lat + dn / (60.0 * FT_PER_NM),
+            lon + de / (60.0 * FT_PER_NM * math.cos(math.radians(lat))))
+
+
 def end_ident(number, designator=None):
     """'09', '27L' - the painted name of a runway end."""
     if number is None:
@@ -99,7 +107,9 @@ def locate(runway, lat, lon, track_deg):
     Returns the landing end's name, the distance past its threshold (negative
     before it), the distance from the centreline (positive right of it, looking
     down the runway), the runway length and the landing distance available
-    from that threshold.
+    from that threshold - and where that threshold is and which way the runway
+    is landed on, so any other point of the arrival can be placed against it
+    (past_threshold).
     """
     try:
         h = float(runway["heading"])
@@ -124,13 +134,33 @@ def locate(runway, lat, lon, track_deg):
         return None
 
     displaced = float(runway.get(end + "_displaced_ft") or 0.0)
+    # The landing threshold, on the centreline: the near end plus any
+    # displacement, in the direction of landing.
+    landing_h = h % 360.0 if end == "primary" else (h + 180.0) % 360.0
+    thr = offset_ft(float(runway["lat"]), float(runway["lon"]), landing_h,
+                    displaced - length / 2.0)
     return {
         "runway": runway.get(end),
         "distance_ft": round(from_end - displaced),
         "lateral_ft": round(lateral),
         "length_ft": round(length),
         "available_ft": round(length - displaced),
+        "threshold_lat": round(thr[0], 7),
+        "threshold_lon": round(thr[1], 7),
+        "landing_heading": round(landing_h, 2),
     }
+
+
+def past_threshold(hit, lat, lon):
+    """Feet past the landing threshold of a located runway, negative before it.
+
+    Along the runway's direction only, so it is the same number for a point
+    on the extended centreline and for one beside it - which is what "over
+    the threshold" means for an aircraft that is not exactly lined up.
+    """
+    h = math.radians(float(hit["landing_heading"]))
+    east, north = _local_ft(hit["threshold_lat"], hit["threshold_lon"], lat, lon)
+    return east * math.sin(h) + north * math.cos(h)
 
 
 def touchdown_on(runways, lat, lon, track_deg):
@@ -253,11 +283,7 @@ def touchdown_at(index, lat, lon, track_deg, radius_nm=3.0):
 
 # --------------------------------------------------------------------- tests
 
-def _offset(lat, lon, bearing_deg, ft):
-    b = math.radians(bearing_deg)
-    dn, de = ft * math.cos(b), ft * math.sin(b)
-    return (lat + dn / (60.0 * FT_PER_NM),
-            lon + de / (60.0 * FT_PER_NM * math.cos(math.radians(lat))))
+_offset = offset_ft
 
 
 def _self_test():
@@ -279,6 +305,13 @@ def _self_test():
     r = locate(rw, p[0], p[1], 268.0)
     assert r and r["runway"] == "27" and abs(r["distance_ft"] - 1500) <= 2, r
     assert r["available_ft"] == 7000, r
+    # Any point of the arrival measures against the same displaced threshold:
+    # the touchdown itself, one on the approach, and one off the centreline.
+    assert abs(past_threshold(r, p[0], p[1]) - 1500) <= 2, r
+    q = _offset(east_end[0], east_end[1], 90.0, 2000.0)
+    assert abs(past_threshold(r, q[0], q[1]) + 3000) <= 2
+    q = _offset(*_offset(east_end[0], east_end[1], 270.0, 1000.0), 0.0, 60.0)
+    assert abs(past_threshold(r, q[0], q[1])) <= 2
 
     # Before the threshold is negative, not discarded.
     p = _offset(west_end[0], west_end[1], 270.0, 300.0)

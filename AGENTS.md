@@ -107,7 +107,11 @@ reading would grade as a flawless one.
 **The float is the second thing that can hold it down, and it is off.** Time
 from 50 ft above the runway to main-gear touchdown - the certification air
 distance, AC 25-32 - measured from the 10 Hz landing clip on airplane
-profiles. It is scored on the standard's *zones*, not a slope: 100 for a 7 s
+profiles. **The clock starts at the later of 50 ft and the threshold**: the
+AC assumes 50 ft over the threshold, and an arrival crossing lower had its
+approach counted as float. So the float needs the runway, and an
+off-airport landing has none. The height over the threshold is recorded
+beside it as information and graded nowhere. It is scored on the standard's *zones*, not a slope: 100 for a 7 s
 flare, 50 at the end of the touchdown zone (AC 91-79A), 0 a further 1,000 ft
 on. A first version sloped linearly to zero at the end of the zone and
 failed a jet touching down inside it, which the AC calls typical. It is
