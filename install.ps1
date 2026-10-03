@@ -87,8 +87,12 @@ $deps = @{
   "PIL"        = "optional - baked map PNGs (pip install Pillow)";
 }
 foreach ($mod in $deps.Keys) {
-  & $py -c "import $mod" 2>$null
-  if ($LASTEXITCODE -eq 0) { Ok "$mod" }
+  # A missing module prints a traceback, and under "Stop" Windows PowerShell
+  # turns a native command's stderr into an error that ends the script - so a
+  # machine without an optional package never got past this line.
+  $have = $false
+  try { & $py -c "import $mod" 2>$null; $have = ($LASTEXITCODE -eq 0) } catch { $have = $false }
+  if ($have) { Ok "$mod" }
   elseif ($mod -eq "PIL") { Warn "$mod missing - $($deps[$mod]); maps will draw in the page only" }
   elseif ($mod -eq "SimConnect") { Ok "$mod not installed - not needed; the watcher talks to the sim through its own DLL" }
   else { Bad "$mod missing - $($deps[$mod])" }
