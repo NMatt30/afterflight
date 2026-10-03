@@ -824,6 +824,132 @@ def test_a_disk_resume_in_the_air_is_still_flying():
             "flying, so a landing in the next two seconds would be refused")
 
 
+class Clips(object):
+    """A temporary clips directory, pointed at by the watcher."""
+
+    def __init__(self):
+        import tempfile
+        self.dir = tempfile.mkdtemp()
+        self._keep = (watcher.CLIPS_DIR, watcher.EVENTS_JSONL)
+        watcher.CLIPS_DIR = os.path.join(self.dir, "clips")
+        watcher.EVENTS_JSONL = os.path.join(self.dir, "events.jsonl")
+        os.makedirs(watcher.CLIPS_DIR)
+
+    def put(self, name, body=b'{"k":"hdr","v":1}\n'):
+        path = os.path.join(watcher.CLIPS_DIR, name)
+        with open(path, "wb") as f:
+            f.write(body)
+        return path
+
+    def close(self):
+        import shutil
+        watcher.CLIPS_DIR, watcher.EVENTS_JSONL = self._keep
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+
+FID_CLIPS = "flt-19990101T000000Z"
+
+
+def test_a_flight_resumed_from_disk_keeps_counting_its_legs():
+    """The leg count came back from clip names ending ".json", and clips have
+    been ".jsonl" since they became append-only. Every resume restarted at
+    leg 1, and the next leg was appended to leg 1's recordings."""
+    import types
+    c = Clips()
+    try:
+        flight = types.SimpleNamespace(flight_id=FID_CLIPS, started_at="1999-01-01T00:00:00Z",
+                                       update=lambda s: None)
+
+        def resumed():
+            with NoDisk():
+                tr = watcher.ClipTracker()
+                watcher._keep_existing_flight(flight, tr, sample(0.0), "test")
+                return tr.leg
+
+        c.put(FID_CLIPS + "-leg1-takeoff.jsonl")
+        c.put(FID_CLIPS + "-leg1-landing.jsonl")
+        assert resumed() == 1, "a resume after leg 1 counted %d legs" % resumed()
+        c.put(FID_CLIPS + "-leg2-takeoff.jsonl")
+        assert resumed() == 2
+        c.put(FID_CLIPS + "-leg3-landing.json")          # a clip from before .jsonl
+        assert resumed() == 3, "a legacy .json clip was not counted"
+        c.put("flt-19990102T000000Z-leg9-takeoff.jsonl")  # another flight's
+        assert resumed() == 3, "another flight's clips were counted"
+    finally:
+        c.close()
+
+
+def _committed_clip(kind, leg):
+    """Drive the real _commit for one event, with the tracker counting leg."""
+    import types
+    tr = watcher.ClipTracker()
+    tr.leg = leg
+    tr.flight = types.SimpleNamespace(
+        flight_id=FID_CLIPS, sortie_id=FID_CLIPS, aircraft="Test Type",
+        lift_at="1999-01-01T00:00:00Z", category=None, vs0=None,
+        landing_rate_fpm=None, landed=False)
+    s = sample(100.0, on_ground=(kind == "landing"))
+    s["ts"] = "1999-01-01T00:01:40Z"
+    keep = watcher.write_event
+    watcher.write_event = lambda *a, **k: None
+    try:
+        tr._commit(kind, s, 120.0 if kind == "landing" else None)
+    finally:
+        watcher.write_event = keep
+    return tr, tr.open[-1]
+
+
+def test_a_new_recording_never_lands_in_an_existing_file():
+    """Whatever the count says, a clip already on disk is never appended to.
+    A miscount costs a leg number, not a recording."""
+    c = Clips()
+    try:
+        first = c.put(FID_CLIPS + "-leg1-takeoff.jsonl", b'{"k":"hdr","v":1,"leg":1}\n')
+        land1 = c.put(FID_CLIPS + "-leg1-landing.jsonl", b'{"k":"hdr","v":1,"leg":1}\n')
+        before = (open(first, "rb").read(), open(land1, "rb").read())
+        # The count says this is leg 1's takeoff - the resume bug's state.
+        tr, clip = _committed_clip("takeoff", 0)
+        assert clip.clip_id == FID_CLIPS + "-leg2-takeoff", (
+            "a takeoff counted as leg 1 opened %s, which already has a "
+            "recording" % clip.clip_id)
+        assert tr.leg == 2
+        # A landing whose leg already has one moves on too.
+        tr, clip = _committed_clip("landing", 1)
+        assert clip.clip_id == FID_CLIPS + "-leg2-landing", clip.clip_id
+        assert (open(first, "rb").read(), open(land1, "rb").read()) == before, (
+            "an existing recording was changed")
+    finally:
+        c.close()
+
+
+def test_a_takeoff_never_takes_a_leg_that_has_landed():
+    """A leg with a landing and no takeoff - a restart in the air - is
+    finished. A takeoff opened on it would pair a later departure with an
+    earlier arrival."""
+    c = Clips()
+    try:
+        c.put(FID_CLIPS + "-leg1-takeoff.jsonl")
+        c.put(FID_CLIPS + "-leg1-landing.jsonl")
+        c.put(FID_CLIPS + "-leg2-landing.jsonl")
+        tr, clip = _committed_clip("takeoff", 1)
+        assert clip.clip_id == FID_CLIPS + "-leg3-takeoff", (
+            "a takeoff opened on leg 2, which already landed: %s" % clip.clip_id)
+    finally:
+        c.close()
+
+
+def test_a_free_leg_is_used_as_counted():
+    """The guard must not move a leg that is not taken."""
+    c = Clips()
+    try:
+        tr, clip = _committed_clip("takeoff", 0)
+        assert clip.clip_id == FID_CLIPS + "-leg1-takeoff", clip.clip_id
+        tr, clip = _committed_clip("landing", 1)
+        assert clip.clip_id == FID_CLIPS + "-leg1-landing", clip.clip_id
+    finally:
+        c.close()
+
+
 def test_a_frozen_airborne_sample_does_not_arm():
     p = watcher.PendingFlight(sample(0))
     p.feed(sample(0))

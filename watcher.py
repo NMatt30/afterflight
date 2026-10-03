@@ -2239,17 +2239,31 @@ def same_sortie(flight, s):
 
 
 def restore_tracker_leg(flight_id):
+    """The highest leg this flight already has a clip for, or 0.
+
+    Through clipfile, which knows both suffixes. This used to scan for
+    ".json" alone, and every clip has been ".jsonl" since clips became
+    append-only - so a flight resumed from disk restarted its count at leg 1,
+    and its next takeoff and landing were appended to leg 1's files. Replaying
+    either leg then played leg 1.
+    """
     best = 0
+    prefix = str(flight_id) + "-leg"
     try:
-        for name in os.listdir(CLIPS_DIR):
-            if not name.startswith(str(flight_id) + "-") or not name.endswith(".json"):
+        for cid, _paths in clipfile.iter_clip_files(CLIPS_DIR):
+            if not cid.startswith(prefix):
                 continue
-            m = re.search(r"-leg(\d+)-", name)
+            m = re.match(r"(\d+)-", cid[len(prefix):])
             if m:
                 best = max(best, int(m.group(1)))
     except Exception:
         pass
     return best
+
+
+def clip_on_disk(flight_id, leg, kind):
+    """True if this flight already has a recording for this leg and kind."""
+    return bool(clipfile.paths_for(CLIPS_DIR, "%s-leg%s-%s" % (flight_id, leg, kind)))
 
 
 def carry_sortie_id(s, snap):
@@ -2978,6 +2992,21 @@ class ClipTracker:
             if self.flight:
                 self.flight.landing_rate_fpm = rate_fpm
                 self.flight.landed = True
+        # Never append to a recording that is already on disk. A clip file is
+        # appended from open to finish, so a second recording opened on the
+        # same name lands at the end of the first, and the replay plays the
+        # first. The leg count is what keeps names apart; if it is ever wrong
+        # again - a resume that miscounts, a file this tracker did not write -
+        # this costs a leg number, never a recording. A takeoff needs a leg
+        # with nothing recorded yet; a landing needs one with no landing.
+        counted = self.leg
+        fid = self.flight.flight_id
+        while (clip_on_disk(fid, self.leg, kind)
+               or (kind == "takeoff" and clip_on_disk(fid, self.leg, "landing"))):
+            self.leg += 1
+        if self.leg != counted:
+            log("%s: leg %s already has a recording on disk; recording this "
+                "as leg %s instead" % (kind, counted, self.leg))
         # Window around the TRANSITION sample (first airborne / first ground), not bounce-commit time.
         prefix = self._window(event_s["t"], before)
         if not any(abs((p.get("t") or 0) - event_s["t"]) < 0.25 for p in prefix):

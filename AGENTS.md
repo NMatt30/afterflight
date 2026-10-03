@@ -282,6 +282,11 @@ Data lives in `sessions/` and is **not** in git: flight tracks, clips, maps,
   that stopped at a checkpoint. Only the watcher may call a clip
   *interrupted*: recording claims are in memory, so a command-line build
   can only say completion was not recorded.
+  **Ask `clipfile` for names, never a suffix.** A resume counted its legs
+  from clip files ending `.json` after clips had become `.jsonl`, so every
+  resumed flight restarted at leg 1 and appended its next leg to leg 1's
+  recordings. Opening a clip now also refuses a name already on disk and
+  takes the next free leg, so a miscount costs a number, not a recording.
 - **Nothing unchanged is reprocessed, and that is a default not a mode.** A
   rebuild reads a flight's track *and* its meta only when one of them has
   moved. **There are two signatures and both need the input.** The per-flight
