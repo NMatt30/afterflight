@@ -483,6 +483,7 @@
   // simply did not bite.
   function countsText(p) {
     if (p.counted === false) return "shown only";
+    if (p.weight_pct > 0 && !p.cap) return p.weight_pct + "%" + (p.held ? ", lowered it" : "");
     if (p.cap || p.weight_pct === 0) return p.held ? "lowered it" : "can only lower";
     return p.weight_pct != null ? p.weight_pct + "%" : "";
   }
@@ -544,15 +545,26 @@
     });
     var sec = el("section", "gt-phase");
     sec.dataset.phase = "landing";
-    gtHead(sec, "Landing", leg.landing_grade, own ? own.score : null,
-           leg.landing_grade_name || "");
-    sec.appendChild(el("div", "gt-note",
-      "Your touchdown rate sets the landing grade. The measures below it "
-      + "can only lower it, never raise it."));
+    // Two grades live here and must not be confused. The landing score is
+    // how the landing was flown, a blend; the A-F letter beside it is how
+    // the touchdown felt, the rate's alone.
+    var feel = (leg.landing_grade_name || "") + (leg.landing_grade
+      ? " touchdown (" + leg.landing_grade + ")" : "");
+    if (own) gtHead(sec, "Landing", own.letter, own.score, feel);
+    else gtHead(sec, "Landing", leg.landing_grade, null, leg.landing_grade_name || "");
+    sec.appendChild(el("div", "gt-note", own
+      ? "The landing score blends how firmly you touched down with where on "
+        + "the runway and how long you floated. The touchdown letter is how it "
+        + "felt: the rate sets it, and the other measures can only lower it."
+      : "Your touchdown rate sets the landing grade. The measures below it "
+        + "can only lower it, never raise it."));
+    if (own && own.note) sec.appendChild(el("div", "gt-held", own.note));
     var t = gtTable();
     var td = byKey.touchdown;
     t.row(["Touchdown", fmtRate(leg.landing_rate_fpm), scoreText(td && td.score),
-           "sets the grade", (td && td.band) || ""]);
+           own ? (td && td.weight_pct ? td.weight_pct + "%, sets the letter" : "sets the letter")
+               : "sets the grade",
+           (td && td.band) || ""]);
     var tp = leg.touchdown_point;
     if (tp && tp.threshold_height_ft != null) {
       t.row(["Height over runway start", Math.round(tp.threshold_height_ft) + " ft", "–",
@@ -567,10 +579,18 @@
      ["The touchdown spot", leg.touchdown_point]].forEach(function (pair) {
       var m = pair[1];
       if (m && m.held_from) {
-        sec.appendChild(el("div", "gt-held", pair[0] + " lowered the landing grade from "
-                           + m.held_from + "."));
+        sec.appendChild(el("div", "gt-held", pair[0] + " lowered the touchdown letter from "
+                           + m.held_from + " to " + (leg.landing_grade || "?") + "."));
       }
     });
+    if (own) {
+      (own.parts || []).forEach(function (p) {
+        if (p.held) {
+          sec.appendChild(el("div", "gt-held", p.label + " lowered the landing score from "
+                             + Math.round(p.held_from) + " to " + Math.round(p.held_to) + "."));
+        }
+      });
+    }
     var airplane = pg && pg.profile && pg.profile !== "rotary";
     if (airplane && !tp) {
       sec.appendChild(el("div", "gt-note",

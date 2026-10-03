@@ -80,11 +80,12 @@ SPEC = [
     # rebuilds the logbook, because the build signature carries them.
     {"key": "grade_float", "module": "grading", "attr": "GRADE_FLOAT",
      "type": "bool", "group": "Float and touchdown spot",
-     "label": "Let a long float lower the landing grade", "live": True,
+     "label": "Count the float in the landing grades", "live": True,
      "note": "Off: the float is shown on each airplane landing but doesn't "
-             "affect any grade. On: floating too long before touching down "
-             "lowers the landing grade. It can never raise it. Only measured "
-             "on a runway the sim knows about, so not off airport."},
+             "affect any grade. On: it counts toward the landing score - a "
+             "short float helps, a long one costs - and a long float can also "
+             "lower the landing letter, never raise it. Only measured on a "
+             "runway the sim knows about, so not off airport."},
     {"key": "float_normal_s", "module": "grading", "attr": "FLOAT_NORMAL_S",
      "type": "float", "min": 3.0, "max": 20.0, "group": "Float and touchdown spot",
      "label": "Float: full marks up to (seconds)", "live": True,
@@ -104,12 +105,13 @@ SPEC = [
              "zero. Our own choice, not an FAA figure."},
     {"key": "grade_touchdown_point", "module": "grading", "attr": "GRADE_TOUCHDOWN_POINT",
      "type": "bool", "group": "Float and touchdown spot",
-     "label": "Let a long touchdown lower the landing grade", "live": True,
-     "note": "Same as the float. Off: how far down the runway you touched "
-             "down is shown but doesn't affect any grade. On: touching down "
-             "too far along lowers the landing grade, never raises it. Needs "
-             "the runway's layout, which the app gets from the sim after "
-             "you park."},
+     "label": "Count the touchdown spot in the landing grades", "live": True,
+     "note": "Off: how far down the runway you touched down is shown but "
+             "doesn't affect any grade. On: it counts toward the landing "
+             "score - near the aim point helps, far down the runway costs - "
+             "and landing long can also lower the landing letter, never "
+             "raise it. Needs the runway's layout, which the app gets from "
+             "the sim after you park."},
     {"key": "tdz_target_ft", "module": "grading", "attr": "TDZ_TARGET_FT",
      "type": "float", "min": 0.0, "max": 4000.0, "group": "Float and touchdown spot",
      "label": "Touchdown spot: aim point (feet from the runway start)", "live": True,

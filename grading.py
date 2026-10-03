@@ -1127,10 +1127,11 @@ def describe_metric(key, value):
 
 PHASE_WORDS = {
     # Only shown with LANDING_PHASE on.
-    "landing": ("Landing", "How firmly the aircraft touched down, and what "
-                "can pull that down: how straight it arrived, how long it "
-                "floated over the runway, and how far down the runway it "
-                "touched."),
+    "landing": ("Landing", "How the landing was flown: how firmly the "
+                "aircraft touched down, how far down the runway, and how long "
+                "it floated, blended together - never more than 10 points above "
+                "the touchdown alone, so precision can't rescue a hard landing. "
+                "Arriving crooked can only lower it."),
     "liftoff": ("Lift-off", "Leaving the ground until the aircraft is "
                             "flying away."),
     "climb": ("Climb", "From transition until level at the top of the climb."),
@@ -1431,6 +1432,31 @@ PHASE_ORDER = ("liftoff", "climb", "cruise", "descent")
 # never more than one band above its weakest phase, and approach and landing
 # are now judged separately. Off until the owner has seen which legs move.
 LANDING_PHASE = True
+
+# How the landing phase scores. The A-F landing letter is how the touchdown
+# felt, and stays the touchdown rate's, with alignment, the float and the
+# touchdown spot able only to lower it. The landing PHASE is how the landing
+# was flown, and the pilot standards treat touching down near the aim point
+# with little float as a main criterion beside a smooth arrival - not merely
+# a thing not to get wrong. So the phase blends them, each counted only when
+# its Settings switch is on.
+#
+# The weights are a judgment: nothing published weights these against each
+# other. The touchdown carries half. The touchdown spot carries most of the
+# rest. The float carries least, because a long float and a long touchdown
+# are mostly one mistake, and weighting both fully would count it twice.
+LANDING_WEIGHTS = {"touchdown": 0.50, "touchdown_point": 0.35, "float": 0.15}
+# The phase never sits more than one band above the touchdown's own score:
+# precision can lift a firm landing a little, and cannot rescue a hard one.
+LANDING_LEAD_POINTS = 10.0
+# And the mirror of that: past the end of the touchdown zone - where the
+# touchdown spot or float scores below this - landing long is a fault the
+# standards say to go around for, not a matter of degree. There it also caps
+# the landing at its own score plus one band, so a soft touchdown cannot
+# average away a landing a third of the way down the runway. Inside the zone
+# it is weighed, not capped. Measured, the blend without this let a soft
+# touchdown well past the zone average up to a C.
+LANDING_FAULT_SCORE = 50.0
 
 # Below this stall speed, an aircraft the sim calls an Airplane is not one in
 # any sense these thresholds understand. A C172 reports 40 kt. A Magni M24
@@ -2214,6 +2240,80 @@ def _landing_phase(td_score, landing_rate_fpm, profile, alignment=None,
     return score, parts
 
 
+def _landing_blend(td_score, landing_rate_fpm, profile, alignment=None,
+                   landing_float=None, touchdown_point=None):
+    """The landing phase: (score, parts, note).
+
+    A weighted blend of the touchdown, the touchdown spot and the float -
+    each of the last two only when measured and switched on - held to no
+    more than LANDING_LEAD_POINTS above the touchdown's own score, then
+    lowered by alignment if it was crooked. Switched off, a measure is
+    listed and shown only; it neither helps nor costs.
+    """
+    counted = {"touchdown": True,
+               "touchdown_point": bool(GRADE_TOUCHDOWN_POINT and touchdown_point
+                                       and touchdown_point.get("score") is not None),
+               "float": bool(GRADE_FLOAT and landing_float
+                             and landing_float.get("score") is not None)}
+    scores = {"touchdown": td_score,
+              "touchdown_point": (touchdown_point or {}).get("score"),
+              "float": (landing_float or {}).get("score")}
+    total = sum(LANDING_WEIGHTS[k] for k in counted if counted[k])
+    blend = sum(scores[k] * LANDING_WEIGHTS[k] for k in counted if counted[k]) / total
+    score = min(blend, td_score + LANDING_LEAD_POINTS)
+    note = None
+    if blend - score > 0.05:
+        # Rounded as the page rounds what it shows beside this - to a
+        # tenth, then half up - or the note and the pill disagree by one.
+        whole = lambda v: int(math.floor(round(v, 1) + 0.5))
+        note = ("Held to %d: a landing can't score more than %d points "
+                "above its touchdown alone (%d)."
+                % (whole(score), whole(LANDING_LEAD_POINTS), whole(td_score)))
+
+    def share(k):
+        return round(LANDING_WEIGHTS[k] * 100 / total) if counted[k] else 0
+
+    parts = [{"key": "touchdown", "label": "Touchdown",
+              "score": round(td_score, 1), "weight_pct": share("touchdown"),
+              "band": touchdown_band_text(profile),
+              "measured": describe_metric("touchdown", landing_rate_fpm)[1]}]
+    for key, maker, value in (("touchdown_point", _touchdown_point_part, touchdown_point),
+                              ("float", _float_part, landing_float)):
+        part, _ignored = maker(value, None)
+        if part:
+            part.update({"weight_pct": share(key), "cap": False,
+                         "counted": counted[key], "held": False,
+                         "held_to": None, "held_from": None})
+            # Past the zone: a fault, which caps as well as weighing.
+            if counted[key] and scores[key] < LANDING_FAULT_SCORE:
+                ceiling = scores[key] + ALIGNMENT_CAP_POINTS
+                if ceiling < score:
+                    part.update({"held": True, "held_to": round(ceiling, 1),
+                                 "held_from": round(score, 1)})
+                    score = ceiling
+            parts.append(part)
+    if alignment and alignment.get("score") is not None:
+        ceiling = alignment["score"] + ALIGNMENT_CAP_POINTS
+        held = ceiling < score
+        bits = []
+        if alignment.get("bank_deg") is not None:
+            bits.append("%.1f\u00b0 bank" % alignment["bank_deg"])
+        if alignment.get("scrub_g") is not None:
+            bits.append("%.2f g slide" % alignment["scrub_g"])
+        parts.append({
+            "key": "alignment", "label": "Alignment",
+            "score": round(alignment["score"], 1),
+            "measured": ", ".join(bits) or None, "weight_pct": 0,
+            "band": None,
+            "cap": True, "held": bool(held),
+            "held_to": round(ceiling, 1) if held else None,
+            "held_from": round(score, 1) if held else None,
+            "sub": _alignment_sub(alignment)})
+        if held:
+            score = ceiling
+    return score, parts, note
+
+
 def grade_leg(track, landing_rate_fpm=None, aircraft=None,
               category=None, vs0_kt=None, alignment=None, landing_float=None,
               touchdown_point=None):
@@ -2288,7 +2388,7 @@ def grade_leg(track, landing_rate_fpm=None, aircraft=None,
     d = phases.get("descent")
     if LANDING_PHASE:
         if td_score is not None:
-            land_score, land_parts = _landing_phase(
+            land_score, land_parts, land_note = _landing_blend(
                 td_score, landing_rate_fpm, profile, alignment, landing_float,
                 touchdown_point)
             phases["landing"] = {
@@ -2297,6 +2397,8 @@ def grade_leg(track, landing_rate_fpm=None, aircraft=None,
                 "seconds": None,
                 "parts": land_parts,
             }
+            if land_note:
+                phases["landing"]["note"] = land_note
     elif td_score is not None and (d is None or d.get("score") is None):
         # Built by _landing_phase rather than through _score_phase, so the
         # limits apply here too - or a leg with no measurable descent is the
@@ -2426,7 +2528,9 @@ def describe_profile(p):
                         "has described the runway."
                         + (" These limits are your own settings, not the "
                            "FAA's figures." if own_bands(FLOAT_BANDS) else "")
-                        + ("" if GRADE_FLOAT else
+                        + (" It counts toward the landing score - a short "
+                           "float helps, a long one costs - and a long float "
+                           "can also lower the landing letter." if GRADE_FLOAT else
                            " Shown only for now: it doesn't change any grade "
                            "(you can switch that on in Settings).")),
                 "weight_pct": 0,
@@ -2460,7 +2564,10 @@ def describe_profile(p):
                         "described the runway, which it does after you park."
                         + (" These limits are your own settings, not the "
                            "FAA's figures." if own_bands(TDZ_BANDS) else "")
-                        + ("" if GRADE_TOUCHDOWN_POINT else
+                        + (" It counts toward the landing score - near the "
+                           "aim point helps, far down the runway costs - and "
+                           "landing long can also lower the landing letter."
+                           if GRADE_TOUCHDOWN_POINT else
                            " Shown only for now: it doesn't change any grade "
                            "(you can switch that on in Settings).")),
                 "weight_pct": 0,
@@ -2538,9 +2645,14 @@ def _split_landing(p, phases):
                 m["weight_pct"] = round(m["weight_pct"] * 100.0 / total)
         out.append(dict(ph, weight_pct=round(d_w * 100), metrics=rest))
         land = [m for m in ph["metrics"] if m["key"] in LANDING_KEYS]
+        on = {"touchdown": True, "touchdown_point": bool(GRADE_TOUCHDOWN_POINT),
+              "float": bool(GRADE_FLOAT)}
+        total = sum(LANDING_WEIGHTS[k] for k in on if on[k])
         for m in land:
-            if m["key"] == "touchdown":
-                m["weight_pct"] = 100
+            if m["key"] in LANDING_WEIGHTS:
+                m["cap"] = False
+                m["weight_pct"] = (round(LANDING_WEIGHTS[m["key"]] * 100 / total)
+                                   if on[m["key"]] else 0)
         label, blurb = PHASE_WORDS["landing"]
         if not [m for m in land if m["key"] != "touchdown"]:
             blurb = "How firmly the aircraft touched down."

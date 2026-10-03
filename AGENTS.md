@@ -147,6 +147,16 @@ down and never up: an approach no longer hides behind a good touchdown.
 Off, the touchdown is 45% of the descent as well as the landing letter, and
 the Grading tab listed it twice.
 
+**The landing phase is a blend; the landing letter is not.** The A-F letter is
+how the touchdown felt: the rate sets it, and alignment, the float and the
+touchdown spot can only lower it. The landing PHASE is how the landing was
+flown: touchdown, touchdown spot and float blended (`LANDING_WEIGHTS`, a
+judgment and labelled one), each only when its Settings switch is on. Two
+limits keep the blend honest: it never sits more than a band above the
+touchdown alone, so precision cannot rescue a hard landing; and a spot or
+float past the touchdown zone caps it as well as weighing in, because a
+soft touchdown otherwise averaged a landing far down the runway up to a C.
+
 **This logbook is one person's habits, not a sample of how aircraft are
 flown.** The owner is a sim pilot, not a rated one, and their flying is
 evidence about them - not about what a correct number looks like. So it can

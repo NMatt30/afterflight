@@ -1328,7 +1328,8 @@ def test_a_long_float_holds_the_landing_down():
         "the landing scored %.1f with a 30 s float and %.1f with a "
         "normal flare" % (d_long, d_short))
     part = next(p for p in _landing_of(g_long)["parts"] if p["key"] == "float")
-    assert part["held"] and part["counted"]
+    assert part["counted"] and part["weight_pct"] > 0, (
+        "a switched-on float is not counted in the landing")
 
 
 def test_the_touchdown_only_descent_is_capped_too():
@@ -1375,27 +1376,128 @@ def test_a_leg_with_no_descent_still_has_a_capped_landing():
         land = g["phases"].get("landing")
         assert land, "a leg with no descent lost its landing"
         part = next((p for p in land["parts"] if p["key"] == "float"), None)
-        assert part and part["held"], "a 30 s float did not hold the landing down"
+        assert part and part["counted"], "the float is not counted in the landing"
+        td = next(p for p in land["parts"] if p["key"] == "touchdown")["score"]
+        assert land["score"] < td, "a 30 s float did not lower the landing"
     finally:
         grading.GRADE_FLOAT = keep
 
 
-def test_a_short_float_never_lifts_a_landing():
-    """A cap, not a weight: a perfect flare must not pay for a hard landing."""
-    keep = grading.GRADE_FLOAT
-    try:
-        track = _departure(fpm=1000.0)
-        f = grading.landing_float(_arrival(7.0, kt=105.0))
-        grading.GRADE_FLOAT = False
-        without = grading.grade_leg(track, 700.0, "Test Jet", category="Airplane",
-                                    vs0_kt=90.0, landing_float=None)
-        grading.GRADE_FLOAT = True
-        with_f = grading.grade_leg(track, 700.0, "Test Jet", category="Airplane",
-                                   vs0_kt=90.0, landing_float=f)
-        assert with_f["phases"]["descent"]["score"] <= without["phases"]["descent"]["score"], (
-            "a perfect flare raised the descent of a 700 fpm landing")
-    finally:
-        grading.GRADE_FLOAT = keep
+class Switches(object):
+    """GRADE_FLOAT and GRADE_TOUCHDOWN_POINT set for the duration."""
+
+    def __init__(self, flt, tdz):
+        self.want = (flt, tdz)
+
+    def __enter__(self):
+        self.keep = (grading.GRADE_FLOAT, grading.GRADE_TOUCHDOWN_POINT)
+        grading.GRADE_FLOAT, grading.GRADE_TOUCHDOWN_POINT = self.want
+        return self
+
+    def __exit__(self, *exc):
+        grading.GRADE_FLOAT, grading.GRADE_TOUCHDOWN_POINT = self.keep
+        return False
+
+
+def _spot(distance_ft, length_ft=8000.0):
+    return {"distance_ft": distance_ft, "length_ft": length_ft, "runway": "09",
+            "score": grading.touchdown_point_score(distance_ft, length_ft)}
+
+
+def _landed(fpm, float_s=7.0, spot_ft=1000.0, flt=True, tdz=True):
+    with Switches(flt, tdz):
+        g = grading.grade_leg(_departure(fpm=1000.0), fpm, "Test Jet",
+                              category="Airplane", vs0_kt=90.0,
+                              landing_float=grading.landing_float(_arrival(float_s, kt=105.0)),
+                              touchdown_point=_spot(spot_ft))
+    land = g["phases"]["landing"]
+    td = next(p for p in land["parts"] if p["key"] == "touchdown")["score"]
+    return land, td
+
+
+def test_precision_cannot_rescue_a_hard_landing():
+    """A perfect flare onto the aim point is still a 700 fpm arrival."""
+    land, td = _landed(700.0)
+    assert land["score"] <= td + grading.LANDING_LEAD_POINTS + 0.05, (
+        "a hard landing on the aim point scored %.1f over a touchdown of %.1f"
+        % (land["score"], td))
+    # The letter is the touchdown's: no measure can lift it.
+    f = grading.landing_float(_arrival(7.0, kt=105.0))
+    for ceiling in (grading.float_ceiling_letter(f),
+                    grading.touchdown_point_ceiling_letter(_spot(1000.0))):
+        assert grading.worse_letter("F", ceiling) == "F"
+
+
+def test_a_firm_landing_on_the_spot_scores_above_its_touchdown():
+    """What an instructor would say: on the aim point with a tidy flare is a
+    good landing, firm or not."""
+    land, td = _landed(300.0)
+    assert td < 100, "the fixture's touchdown is already perfect"
+    assert td < land["score"] <= td + grading.LANDING_LEAD_POINTS + 0.05, (
+        "a firm landing on the aim point scored %.1f against a touchdown of %.1f"
+        % (land["score"], td))
+
+
+def test_a_greaser_far_down_the_runway_scores_below_its_touchdown():
+    land, td = _landed(50.0, float_s=20.0, spot_ft=3500.0)
+    assert land["score"] < td - 20, (
+        "a soft touchdown 3,500 ft down the runway after a 20 s float scored "
+        "%.1f against %.1f" % (land["score"], td))
+
+
+def test_switched_off_measures_neither_help_nor_cost():
+    land, td = _landed(300.0, float_s=25.0, spot_ft=3800.0, flt=False, tdz=False)
+    assert abs(land["score"] - td) < 0.05, (
+        "switched off, the float and touchdown spot still moved the landing "
+        "from %.1f to %.1f" % (td, land["score"]))
+    for p in land["parts"]:
+        if p["key"] in ("float", "touchdown_point"):
+            assert p["counted"] is False and p["weight_pct"] == 0, p
+
+
+def test_the_blend_reweights_what_is_switched_on():
+    land, td = _landed(300.0, flt=False, tdz=True)
+    shares = {p["key"]: p["weight_pct"] for p in land["parts"]}
+    w = grading.LANDING_WEIGHTS
+    want = round(w["touchdown"] * 100 / (w["touchdown"] + w["touchdown_point"]))
+    assert shares["touchdown"] == want and shares["float"] == 0, shares
+
+
+def test_landing_past_the_touchdown_zone_is_a_fault_not_a_degree():
+    """A soft touchdown 3,500 ft down the runway: the blend alone averaged it
+    to a C. Past the zone the touchdown spot caps as well as weighs."""
+    land, td = _landed(100.0, float_s=9.0, spot_ft=3500.0)
+    spot = next(p for p in land["parts"] if p["key"] == "touchdown_point")
+    assert spot["score"] < grading.LANDING_FAULT_SCORE, "the fixture is inside the zone"
+    assert land["score"] <= spot["score"] + grading.ALIGNMENT_CAP_POINTS + 0.05, (
+        "a landing past the touchdown zone scored %.1f with the spot at %.1f"
+        % (land["score"], spot["score"]))
+    assert spot["held"], "the cap held the landing down and the part does not say so"
+    # Inside the zone it is weighed, never capped.
+    land, td = _landed(100.0, float_s=9.0, spot_ft=2500.0)
+    spot = next(p for p in land["parts"] if p["key"] == "touchdown_point")
+    assert spot["score"] >= grading.LANDING_FAULT_SCORE and not spot["held"], spot
+
+
+def test_the_lead_note_rounds_as_the_page_does():
+    """The page shows a score rounded to a tenth, then half up. A note that
+    rounded the raw value said 87 under a pill that said 88."""
+    with Switches(True, True):
+        score, parts, note = grading._landing_blend(
+            77.49999, 188.0, grading.LIGHT_GA,
+            touchdown_point=_spot(1000.0),
+            landing_float=grading.landing_float(_arrival(7.0, kt=105.0)))
+    shown = int(round(score, 1) + 0.5)
+    assert note and ("Held to %d" % shown) in note and "(78)" in note, (
+        "the page shows %d and the note says %r" % (shown, note))
+
+
+def test_the_lead_limit_says_so_when_it_bites():
+    land, td = _landed(450.0)
+    assert land["score"] <= td + grading.LANDING_LEAD_POINTS + 0.05
+    assert land.get("note") and "can't score more than" in land["note"], (
+        "the landing was held to its touchdown plus %d with nothing said: %r"
+        % (grading.LANDING_LEAD_POINTS, land.get("note")))
 
 
 # --------------------------------------------------------------------------
