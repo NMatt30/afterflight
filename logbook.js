@@ -383,7 +383,7 @@
     var caveat = "";
     if (!pg || !pg.phases) return ("Overall for the leg") + caveat;
     var lines = ["Overall for the leg"];
-    ["liftoff", "climb", "cruise", "descent"].forEach(function (n) {
+    ["liftoff", "climb", "cruise", "descent", "landing"].forEach(function (n) {
       var ph = pg.phases[n];
       if (!ph) return;
       lines.push("  " + n + "   "
@@ -532,13 +532,18 @@
 
   function landingSection(leg, pg) {
     if (!leg.landing_grade && leg.landing_rate_fpm == null) return null;
+    // A phase of its own when grading.LANDING_PHASE is on; otherwise its
+    // measures are inside the descent, and are read from there.
+    var phases = (pg || {}).phases || {};
+    var own = phases.landing || null;
     var byKey = {};
-    ((((pg || {}).phases || {}).descent || {}).parts || []).forEach(function (p) {
+    ((own || phases.descent || {}).parts || []).forEach(function (p) {
       byKey[p.key] = p;
     });
     var sec = el("section", "gt-phase");
     sec.dataset.phase = "landing";
-    gtHead(sec, "Landing", leg.landing_grade, null, leg.landing_grade_name || "");
+    gtHead(sec, "Landing", leg.landing_grade, own ? own.score : null,
+           leg.landing_grade_name || "");
     sec.appendChild(el("div", "gt-note",
       "The touchdown rate sets the letter. A limit can only hold it down."));
     var t = gtTable();
@@ -608,7 +613,7 @@
     if (!pg || !pg.phases) return null;
     var sec = el("section", "gt-phase gt-overall");
     sec.dataset.phase = "overall";
-    var chain = PHASES.filter(function (ph) {
+    var chain = PHASES.concat([["landing", "Landing"]]).filter(function (ph) {
       var p = pg.phases[ph[0]];
       return p && p.score !== null && p.score !== undefined;
     }).map(function (ph) {
@@ -863,6 +868,10 @@
       ps.appendChild(phasePill("climb", pg.phases.climb, openAt("climb")));
       ps.appendChild(phasePill("cruise", pg.phases.cruise, openAt("cruise")));
       ps.appendChild(phasePill("descent", pg.phases.descent, openAt("descent")));
+      // Only when grading.LANDING_PHASE made the landing a phase of its own.
+      if (pg.phases.landing) {
+        ps.appendChild(phasePill("landing", pg.phases.landing, openAt("landing")));
+      }
       head.appendChild(ps);
     }
     var route = el("span", "route");

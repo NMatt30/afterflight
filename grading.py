@@ -1124,6 +1124,10 @@ def describe_metric(key, value):
 
 
 PHASE_WORDS = {
+    # Only shown with LANDING_PHASE on.
+    "landing": ("Landing", "The touchdown, and what can hold it down: how "
+                "straight the aircraft arrived, how long it floated over the "
+                "runway, and where on it the wheels touched."),
     "liftoff": ("Lift-off", "Leaving the ground until the aircraft is "
                             "flying away."),
     "climb": ("Climb", "From transition until level at the top of the climb."),
@@ -1409,6 +1413,21 @@ FIXED_WING["alignment"] = True
 
 PROFILES = {"rotary": ROTARY, "fixed_wing": FIXED_WING}
 PHASE_ORDER = ("liftoff", "climb", "cruise", "descent")
+
+# The landing as a phase of its own, rather than 45% of the descent.
+#
+# Off, the touchdown does two jobs: it sets the landing letter, and it is the
+# heaviest measure in the descent phase - so the Grading tab listed it twice,
+# and the descent's score mixed how the approach was flown with how the
+# wheels met the runway. On, the descent is the approach - its other
+# measures, in the same proportions to each other - and "landing" is a phase:
+# the touchdown score, held down by alignment, the float and the touchdown
+# point. The descent's weight in the leg is split between the two by the
+# touchdown's own share of it (landing_phase_weights), so a leg with every
+# measure present averages exactly as before. What moves is the cap: a leg is
+# never more than one band above its weakest phase, and approach and landing
+# are now judged separately. Off until the owner has seen which legs move.
+LANDING_PHASE = False
 
 # Below this stall speed, an aircraft the sim calls an Airplane is not one in
 # any sense these thresholds understand. A C172 reports 40 kt. A Magni M24
@@ -2118,14 +2137,78 @@ def _ride_score(scored, weights):
     F cruise averaged to a C, and C is the "ordinary flying" pool - printed
     next to an F CRUISE pill, on the same row.
     """
-    keys = [k for k in scored if k != "descent"]
+    keys = [k for k in scored if k not in ("descent", "landing")]
     if not keys:
-        return scored.get("descent")
+        return scored.get("descent", scored.get("landing"))
     total = sum(weights[k] for k in keys)
     if total <= 0:
         return None
     mean = sum(scored[k] * weights[k] for k in keys) / total
     return min(mean, min(scored[k] for k in keys) + PHASE_CAP_POINTS)
+
+
+def landing_phase_weights(profile):
+    """(descent, landing) weights in the leg, with the landing a phase.
+
+    The descent's weight split by the touchdown's share of the descent - 45%
+    on every profile so far - so the arithmetic of a leg with everything
+    measured is the same as with the touchdown inside the descent.
+    """
+    d = profile["phase_weights"].get("descent", 0.0)
+    w = profile["descent"]["weights"]
+    total = sum(w.values())
+    t = w.get("touchdown", 0.0) / total if total else 0.0
+    return d * (1.0 - t), d * t
+
+
+def phase_weights_for(profile):
+    """Each phase's weight in the leg, the landing included when it is one."""
+    pw = dict(profile["phase_weights"])
+    if LANDING_PHASE:
+        pw["descent"], pw["landing"] = landing_phase_weights(profile)
+    return pw
+
+
+def _landing_phase(td_score, landing_rate_fpm, profile, alignment=None,
+                   landing_float=None, touchdown_point=None):
+    """The touchdown score with the landing limits applied, and its parts.
+
+    What the landing phase is, and what a descent with nothing else to measure
+    falls back to. The limits are caps, never weights: each can take points
+    off and none can add any, applied alignment, float, touchdown point, so
+    the lowest ceiling wins.
+    """
+    score, parts = td_score, [
+        {"key": "touchdown", "label": "Touchdown",
+         "score": round(td_score, 1), "weight_pct": 100,
+         "band": touchdown_band_text(profile),
+         "measured": describe_metric("touchdown", landing_rate_fpm)[1]}]
+    if alignment and alignment.get("score") is not None:
+        ceiling = alignment["score"] + ALIGNMENT_CAP_POINTS
+        held = ceiling < score
+        bits = []
+        if alignment.get("bank_deg") is not None:
+            bits.append("%.1f\u00b0 bank" % alignment["bank_deg"])
+        if alignment.get("scrub_g") is not None:
+            bits.append("%.2f g slide" % alignment["scrub_g"])
+        parts.append({
+            "key": "alignment", "label": "Alignment",
+            "score": round(alignment["score"], 1),
+            "measured": ", ".join(bits) or None, "weight_pct": 0,
+            "band": None,
+            "cap": True, "held": bool(held),
+            "held_to": round(ceiling, 1) if held else None,
+            "held_from": round(score, 1) if held else None,
+            "sub": _alignment_sub(alignment)})
+        if held:
+            score = ceiling
+    part, score = _float_part(landing_float, score)
+    if part:
+        parts.append(part)
+    part, score = _touchdown_point_part(touchdown_point, score)
+    if part:
+        parts.append(part)
+    return score, parts
 
 
 def grade_leg(track, landing_rate_fpm=None, aircraft=None,
@@ -2179,11 +2262,15 @@ def grade_leg(track, landing_rate_fpm=None, aircraft=None,
         # the touchdown band can be worded for the right curve.
         spec = dict(profile[name], _profile=profile) if name == "descent" \
             else profile[name]
+        # With the landing a phase of its own the descent gets none of the
+        # landing's measures: the touchdown scores nothing here, and the
+        # weights left are averaged over in their own proportions.
         score, parts = _score_phase(
             metrics, spec,
-            extra=({"touchdown": td_score, "touchdown_fpm": landing_rate_fpm,
-                    "alignment": alignment, "float": landing_float,
-                    "touchdown_point": touchdown_point}
+            extra=(({} if LANDING_PHASE else
+                    {"touchdown": td_score, "touchdown_fpm": landing_rate_fpm,
+                     "alignment": alignment, "float": landing_float,
+                     "touchdown_point": touchdown_point})
                    if name == "descent" else None))
         phases[name] = {
             "score": round(score, 1) if score is not None else None,
@@ -2196,41 +2283,24 @@ def grade_leg(track, landing_rate_fpm=None, aircraft=None,
     # touchdown would otherwise drop out of the rollup entirely - the landing
     # simply not counted. Grade the phase on the touchdown alone.
     d = phases.get("descent")
-    if td_score is not None and (d is None or d.get("score") is None):
-        # This branch builds the phase by hand rather than through
-        # _score_phase, so the alignment cap has to be applied here too or a
-        # leg with no measurable descent is the one place a crooked landing
-        # gets away with it.
-        short_score, short_parts = td_score, [
-            {"key": "touchdown", "label": "Touchdown",
-             "score": round(td_score, 1), "weight_pct": 100,
-             "band": touchdown_band_text(profile),
-             "measured": describe_metric("touchdown", landing_rate_fpm)[1]}]
-        if alignment and alignment.get("score") is not None:
-            ceiling = alignment["score"] + ALIGNMENT_CAP_POINTS
-            held = ceiling < short_score
-            bits = []
-            if alignment.get("bank_deg") is not None:
-                bits.append("%.1f° bank" % alignment["bank_deg"])
-            if alignment.get("scrub_g") is not None:
-                bits.append("%.2f g slide" % alignment["scrub_g"])
-            short_parts.append({
-                "key": "alignment", "label": "Alignment",
-                "score": round(alignment["score"], 1),
-                "measured": ", ".join(bits) or None, "weight_pct": 0,
-                "band": None,
-                "cap": True, "held": bool(held),
-                "held_to": round(ceiling, 1) if held else None,
-                "held_from": round(short_score, 1) if held else None,
-                "sub": _alignment_sub(alignment)})
-            if held:
-                short_score = ceiling
-        part, short_score = _float_part(landing_float, short_score)
-        if part:
-            short_parts.append(part)
-        part, short_score = _touchdown_point_part(touchdown_point, short_score)
-        if part:
-            short_parts.append(part)
+    if LANDING_PHASE:
+        if td_score is not None:
+            land_score, land_parts = _landing_phase(
+                td_score, landing_rate_fpm, profile, alignment, landing_float,
+                touchdown_point)
+            phases["landing"] = {
+                "score": round(land_score, 1),
+                "letter": letter_for_score(land_score),
+                "seconds": None,
+                "parts": land_parts,
+            }
+    elif td_score is not None and (d is None or d.get("score") is None):
+        # Built by _landing_phase rather than through _score_phase, so the
+        # limits apply here too - or a leg with no measurable descent is the
+        # one place a crooked landing gets away with it.
+        short_score, short_parts = _landing_phase(
+            td_score, landing_rate_fpm, profile, alignment, landing_float,
+            touchdown_point)
         phases["descent"] = {
             "score": round(short_score, 1),
             "letter": letter_for_score(short_score),
@@ -2243,7 +2313,7 @@ def grade_leg(track, landing_rate_fpm=None, aircraft=None,
     if not scored:
         return None
 
-    weights = profile["phase_weights"]
+    weights = phase_weights_for(profile)
     total = sum(weights[k] for k in scored)
     overall = sum(scored[k] * weights[k] for k in scored) / total
 
@@ -2267,9 +2337,10 @@ def grade_leg(track, landing_rate_fpm=None, aircraft=None,
         "ride_letter": letter_for_score(ride),
         # The in-flight phase that set the ride grade, so the UI can say why
         # the paragraph reads the way it does.
-        "ride_worst_phase": (min([k for k in scored if k != "descent"],
+        "ride_worst_phase": (min([k for k in scored if k not in ("descent", "landing")],
                                  key=lambda k: scored[k])
-                             if [k for k in scored if k != "descent"] else None),
+                             if [k for k in scored if k not in ("descent", "landing")]
+                             else None),
     }
 
 
@@ -2421,6 +2492,8 @@ def describe_profile(p):
             "measures that depend on a fixed-wing number - descent angle and "
             "the 500 ft gate - left out rather than judged against numbers "
             "that do not apply to it.")
+    if LANDING_PHASE:
+        phases = _split_landing(p, phases)
     return {
         "key": p["name"],
         "label": p["label"],
@@ -2430,6 +2503,39 @@ def describe_profile(p):
         # touchdown alignment. False for rotary, and the tab says why.
         "alignment": scores_alignment(p),
     }
+
+
+LANDING_KEYS = ("touchdown", "alignment", "float", "touchdown_point")
+
+
+def _split_landing(p, phases):
+    """The panel's phases with the landing taken out of the descent."""
+    out = []
+    for ph in phases:
+        if ph["key"] != "descent":
+            out.append(ph)
+            continue
+        d_w, l_w = landing_phase_weights(p)
+        rest = [m for m in ph["metrics"] if m["key"] not in LANDING_KEYS]
+        total = sum(m["weight_pct"] for m in rest if not m.get("cap")) or 1
+        for m in rest:
+            if not m.get("cap"):
+                m["weight_pct"] = round(m["weight_pct"] * 100.0 / total)
+        out.append(dict(ph, weight_pct=round(d_w * 100), metrics=rest))
+        land = [m for m in ph["metrics"] if m["key"] in LANDING_KEYS]
+        for m in land:
+            if m["key"] == "touchdown":
+                m["weight_pct"] = 100
+        label, blurb = PHASE_WORDS["landing"]
+        out.append({
+            "key": "landing",
+            "label": label,
+            "blurb": blurb,
+            "source": ph.get("source"),
+            "weight_pct": round(l_w * 100),
+            "metrics": land,
+        })
+    return out
 
 
 def describe():
