@@ -59,13 +59,20 @@ Say ""
 # ---------------------------------------------------------------- python
 Say "Python"
 $py = $null
-foreach ($cand in @("py", "python")) {
+# A release carries its own Python in runtime\; a source checkout uses the
+# machine's.
+$bundled = Join-Path $Base "runtime\python.exe"
+if (Test-Path $bundled) {
+  $v = & $bundled -c "import sys; print('%d.%d.%d' % sys.version_info[:3])" 2>$null
+  if ($LASTEXITCODE -eq 0 -and $v) { $py = $bundled; Ok "bundled Python $v (runtime\)" }
+}
+if (-not $py) { foreach ($cand in @("py", "python")) {
   try {
     $v = & $cand -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null
     if ($LASTEXITCODE -eq 0 -and $v) { $py = $cand; Ok "$cand -> Python $v"; break }
   } catch { }
-}
-if (-not $py) { Bad "No Python found on PATH. Install Python 3.10+ and re-run."; exit 1 }
+} }
+if (-not $py) { Bad "No Python found. The release download carries its own; a source checkout needs Python 3.10+ on PATH."; exit 1 }
 
 $pyExe = & $py -c "import sys; print(sys.executable)"
 $pywExe = Join-Path (Split-Path -Parent $pyExe) "pythonw.exe"
@@ -76,13 +83,18 @@ else { Warn "pythonw.exe not found; the tray will show a console window" }
 Say ""
 Say "Dependencies"
 $deps = @{
-  "SimConnect" = "required - sampling, clips (pip install SimConnect==0.4.26)";
+  "SimConnect" = "optional - only the older connection (SIM_CONNECTION=python-simconnect), or a fallback when the sim's DLL cannot be found";
   "PIL"        = "optional - baked map PNGs (pip install Pillow)";
 }
 foreach ($mod in $deps.Keys) {
-  & $py -c "import $mod" 2>$null
-  if ($LASTEXITCODE -eq 0) { Ok "$mod" }
+  # A missing module prints a traceback, and under "Stop" Windows PowerShell
+  # turns a native command's stderr into an error that ends the script - so a
+  # machine without an optional package never got past this line.
+  $have = $false
+  try { & $py -c "import $mod" 2>$null; $have = ($LASTEXITCODE -eq 0) } catch { $have = $false }
+  if ($have) { Ok "$mod" }
   elseif ($mod -eq "PIL") { Warn "$mod missing - $($deps[$mod]); maps will draw in the page only" }
+  elseif ($mod -eq "SimConnect") { Ok "$mod not installed - not needed; the watcher talks to the sim through its own DLL" }
   else { Bad "$mod missing - $($deps[$mod])" }
 }
 
@@ -105,7 +117,7 @@ foreach ($d in @("sessions", "sessions\clips", "sessions\maps", "native")) {
 
 # ---------------------------------------------------------------- dll
 Say ""
-Say "Chase / ghost SimConnect DLL"
+Say "The sim's SimConnect DLL (recording, replay and the chase camera)"
 if ($ResolveDll) {
   Push-Location $Base
   try {
@@ -137,7 +149,7 @@ else:
     Ok "native\SimConnect_internal.dll present ($sz KB)"
     Say "         re-run with -ResolveDll after a sim update"
   } else {
-    Warn "native\SimConnect_internal.dll missing - ghost and chase will be unavailable"
+    Bad "native\SimConnect_internal.dll missing - recording, replay and the chase camera need it"
     Say  "         run: .\install.ps1 -ResolveDll   (with the sim installed)"
   }
 }

@@ -15,6 +15,11 @@
     "arrived rather than how hard: gentle on the wheels, then crooked or",
     "sliding. Those lines must not call the touchdown firm, because it wasn't.",
     "",
+    "'held_float' and 'held_long' are the same idea for the float and the",
+    "touchdown spot: a gentle touchdown whose letter came down because the",
+    "airplane floated a long way first, or touched down far along the runway.",
+    "Describe the softness and the runway used, never a firm arrival.",
+    "",
     "'connector' is a short bridging sentence, used only when the ride and the",
     "landing pull in opposite directions - 'up' when the landing rescued a bad",
     "ride, 'down' when it spoiled a good one. Without it the paragraph reads",
@@ -370,6 +375,26 @@
       "It arrived kindly at {rate} and then wandered. My drink objected.",
       "A gentle {rate}, landed a touch sideways. The tires paid for it."
     ],
+    "held_float": [
+      "We floated. And floated. When the wheels found the runway at {rate} it was gentle, but a lot of runway had gone by.",
+      "Soft at {rate}, once we got there. Getting there took a long stretch of runway.",
+      "A long, hanging moment just above the runway, then a kind {rate} to finish it.",
+      "{rate} on touchdown, which was gentle. The float before it went on long enough for me to notice.",
+      "We hovered over the runway for what felt like a while before settling at {rate}.",
+      "It touched down kindly at {rate}, after deciding to fly a good way down the runway first.",
+      "Smooth at {rate}, eventually. The runway lights kept going past while we waited.",
+      "The arrival was soft, {rate}, and in no hurry at all to happen."
+    ],
+    "held_long": [
+      "A gentle {rate}, though well down the runway. I watched a lot of concrete go by first.",
+      "Soft at {rate}, and late. Most of the runway markings had gone past by then.",
+      "We landed smoothly at {rate}, a long way down the runway. I could see the far end coming.",
+      "Kind on the wheels at {rate}, but we used a fair bit of runway getting there.",
+      "Down at {rate}, nicely, just further along the runway than I would have liked.",
+      "The touchdown was soft, {rate}. The timing less so, with plenty of runway behind us.",
+      "A quiet {rate}, well past where I expected us to land.",
+      "Gentle on the wheels at {rate}. The brakes had rather less runway to work with."
+    ],
     "none": [
       "No landing recorded on this leg.",
       "The leg ends without a touchdown on the tape.",
@@ -503,7 +528,7 @@
       "Whatever was going on earlier, it was resolved by the runway.",
       "It saved the best for last.",
       "And then, rather suddenly, competence.",
-      "The approach was a different flight entirely.",
+      "The arrival was a different flight entirely.",
       "All of which made what happened next more surprising.",
       "Then somebody remembered how to fly.",
       "It pulled itself together for the important part.",

@@ -9,6 +9,25 @@ that copies files elsewhere, no service, and no registry beyond one optional
 
 ---
 
+## The release download - no Python needed
+
+Each release on GitHub has an `AfterFlight-<version>.zip`. It carries its own
+Python, so there is nothing else to install:
+
+1. Unpack it somewhere you can write - `C:\Users\<you>\AfterFlight`, not
+   `Program Files`. Everything, your flights included, lives in that folder.
+2. Run **Start AfterFlight.cmd**. The tray appears; its menu can make it start
+   with Windows.
+3. Start the sim. The watcher finds the sim's own SimConnect DLL by itself.
+
+**Updating:** unpack the new zip over the same folder. A release never
+contains anyone's data, so your flights, clips and settings stay as they are.
+Running `backup.ps1` first costs nothing.
+
+The rest of this page is for running from a source checkout.
+
+---
+
 ## What you need first
 
 | | | |
@@ -20,8 +39,8 @@ that copies files elsewhere, no service, and no registry beyond one optional
 There is no build step and no package manager. The UI is plain HTML and
 JavaScript on purpose, and the tray has no pip dependencies at all.
 
-> **Why Python at all?** Shipping without it is a known gap, written up in
-> `DESIGN-NOTES.md`. Until that lands you need an interpreter on the machine.
+> **Why Python at all?** Only because this is the source. The release zip
+> above carries its own; this section is for running from a clone.
 
 ### Install Python
 

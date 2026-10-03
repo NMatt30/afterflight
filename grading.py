@@ -213,6 +213,17 @@ def letter_for_score(score):
     return LETTER_WORST
 
 
+def touchdown_letter(rate_fpm, profile=None):
+    """The touchdown's A-F letter, on this aircraft type's own criteria.
+
+    The same curve the touchdown is scored on, so the letter and the score
+    are one verdict. It was a fixed rate ladder for every aircraft - A under
+    60 fpm, C under 300 - which called a jet's 200 fpm, the middle of the
+    airline target, "Firm", beside a touchdown score of 100.
+    """
+    return letter_for_score(score_for_touchdown_fpm(rate_fpm, profile))
+
+
 def score_for_touchdown_fpm(rate_fpm, profile=None):
     """0-100 for a touchdown rate, sign ignored.
 
@@ -259,6 +270,117 @@ ALIGNMENT_ROLLOUT_S = 5.0
 # How far above the alignment score the landing letter may sit. One band -
 # the same allowance the phase rollup gives the weakest phase.
 ALIGNMENT_CAP_POINTS = 10.0
+
+# ------------------------------------------------------------------ float
+#
+# How long the airplane was held off before the wheels touched. Measured as the
+# air distance in its certification sense - "the distance from a height of 50
+# feet above the landing surface to the point of main gear touchdown" (AC
+# 25-32, 8.2.1) - and scored on the time it took, so one rule serves a 60 kt
+# trainer and a 120 kt jet.
+#
+# The standards describe zones, not a slope, and the score follows them:
+#
+#   100 at 7 s. AC 25-32 8.2.4 gives "a flare time of 7 seconds" as the air
+#     distance of "an average pilot who is flying in normal operations".
+#   50 at the end of the touchdown zone. AC 91-79A puts the target touchdown
+#     point "approximately 1,000 ft down the runway", the touchdown zone at
+#     "500-3,000 ft beyond the runway threshold", and the certified distances
+#     on the gear being "at a height of 50 ft over the runway threshold". From
+#     a standard crossing, 2,000 ft of float beyond a normal flare puts the
+#     wheels at the far end of the zone - still acceptable, and the last point
+#     that is. With the cap allowance that is a D.
+#   0 a further 1,000 ft on. This one is a judgment, not a published figure:
+#     past the zone the approach should have been abandoned, and the score
+#     should reach the bottom quickly rather than at once.
+#
+# A first version ran linearly from 7 s to zero at the end of the zone. Built
+# against real landings it called a jet touching down 2,300 ft past the
+# threshold - inside the zone AC 91-79A calls typical operation - an F. The
+# standard says acceptable; the slope said fail.
+#
+# Distances become seconds at the speed actually flown, so every point after
+# the first is worked out per landing.
+#
+# Heights are above the touchdown point - altitude less the altitude at
+# contact - which is above the landing surface, not above whatever terrain the
+# approach crossed.
+#
+# One rule for every airplane, and it is lenient for light ones on purpose.
+# AC 91-79A's "flown onto the runway rather than being held off" is written for
+# turbine airplanes; a light piston airplane is taught to hold off. At 60 kt the
+# zero lands at 27 s.
+FLOAT_HEIGHT_FT = 50.0
+FLOAT_NORMAL_S = 7.0
+FLOAT_MARGIN_FT = 2000.0          # normal flare -> end of the touchdown zone
+FLOAT_ZONE_END_SCORE = 50.0
+FLOAT_BEYOND_FT = 1000.0          # end of the zone -> zero (a judgment)
+FLOAT_CAP_POINTS = ALIGNMENT_CAP_POINTS
+# Off until the owner has seen what it does to existing landings. The float is
+# measured and shown on every airplane leg either way; this decides only
+# whether it may hold the landing letter and the descent phase down. It is a
+# setting (grade_float), and the build signature carries it - see
+# runway_tunables - so every sortie rebuilds when it changes.
+GRADE_FLOAT = False
+
+# ------------------------------------------------------------ touchdown point
+#
+# Where on the runway the wheels touched, measured past the landing threshold
+# (runways.py) - the displaced one where there is a displacement. Only known
+# where the sim has described the runway; see watcher.lookup_runways. The
+# float says how long the airplane was held off; this says where that left it.
+#
+#   100 within 1,400 ft: AC 91-79A's target touchdown point, "approximately
+#       1,000 ft down the runway", plus the Private Pilot ACS tolerance,
+#       "within 400 feet beyond or on the specified point" - the loosest
+#       published tolerance, applied to every airplane.
+#   50  at the end of the touchdown zone: 3,000 ft, or the first third of a
+#       shorter runway - AC 91-79A, "500-3,000 ft beyond the runway threshold
+#       not to exceed the first one-third of the runway". On a runway short
+#       enough that the third falls inside 1,400 ft, full marks stop at the
+#       third and the next foot is 50: the third is the limit there.
+#   0   1,000 ft beyond that - the same judgment as the float's, labelled as
+#       one.
+#   0   more than 50 ft before the threshold. Landing short is not good at any
+#       distance; the 50 ft is for where the recording places the wheels.
+TDZ_TARGET_FT = 1000.0
+TDZ_TOLERANCE_FT = 400.0
+TDZ_END_FT = 3000.0
+TDZ_END_SCORE = 50.0
+TDZ_BEYOND_FT = 1000.0
+TDZ_SHORT_ALLOWANCE_FT = 50.0
+TDZ_CAP_POINTS = ALIGNMENT_CAP_POINTS
+# Off for the same reason as GRADE_FLOAT, and independently of it.
+GRADE_TOUCHDOWN_POINT = False
+
+# The float and touchdown-point bands are settings (settings.py, "Float and
+# touchdown point"). The values above are the published figures and stay the
+# defaults; PUBLISHED keeps them, so the grading panel - the one place that
+# cites the ACs - can say when the bands in use are the owner's own instead.
+#
+# The landing ladder is not settable because its letters and the touchdown
+# curve are separate constants, and a setting could move one without the
+# other. These have no such split: the score, the band text and the letter cap
+# all read the values below when they are called, so a setting moves all
+# three together. Helicopters are untouched by any of them - scores_float
+# gates every use on the profile, not on these values.
+FLOAT_BANDS = ("FLOAT_NORMAL_S", "FLOAT_MARGIN_FT", "FLOAT_BEYOND_FT")
+TDZ_BANDS = ("TDZ_TARGET_FT", "TDZ_TOLERANCE_FT", "TDZ_END_FT", "TDZ_BEYOND_FT")
+RUNWAY_TUNABLES = ("GRADE_FLOAT",) + FLOAT_BANDS + ("GRADE_TOUCHDOWN_POINT",) + TDZ_BANDS
+PUBLISHED = {_name: globals()[_name] for _name in RUNWAY_TUNABLES}
+
+
+def runway_tunables():
+    """The values in use. A setting changes these without changing this
+    file, so the build signs them separately from grading_revision."""
+    g = globals()
+    return {name: g[name] for name in RUNWAY_TUNABLES}
+
+
+def own_bands(names):
+    """True when any of these bands is not the published figure."""
+    g = globals()
+    return any(g[name] != PUBLISHED[name] for name in names)
 
 G_FT_S2 = 32.174
 
@@ -446,6 +568,450 @@ def scores_alignment(profile):
     return bool((profile or {}).get("alignment"))
 
 
+def _ground_ft(a, b):
+    """Great-circle feet between two points carrying lat and lon."""
+    lat1, lat2 = math.radians(float(a["lat"])), math.radians(float(b["lat"]))
+    dlat = lat2 - lat1
+    dlon = math.radians(float(b["lon"]) - float(a["lon"]))
+    h = (math.sin(dlat / 2.0) ** 2
+         + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2.0) ** 2)
+    return 2.0 * 20925646.3 * math.asin(min(1.0, math.sqrt(h)))
+
+
+def _threshold_crossing(points, idx, past):
+    """(j, frac) where the arrival crossed the threshold before contact idx:
+    between points[j] and points[j + 1], frac of the way. (None, None) if
+    the recording starts past it; ("short", None) if contact was before it."""
+    try:
+        if past(points[idx]) < 0:
+            return "short", None
+        for j in range(idx - 1, -1, -1):
+            a = past(points[j])
+            if a < 0:
+                b = past(points[j + 1])
+                return j, (-a / (b - a)) if b > a else 0.0
+    except (KeyError, TypeError, ValueError):
+        return "short", None
+    return None, None
+
+
+# How far apart the two readings a slope is taken from must be, at least. The
+# 10 Hz clip puts readings 15 ft apart at approach speed, where a tenth of a
+# foot of rounding in the height above ground is a 0.7% slope.
+SURFACE_BASE_FT = 100.0
+# Which readings are this landing's: from a while before touchdown to shortly
+# after, and only along the runway. A track is the whole flight, and "past
+# the threshold" is a distance along a heading - every point ahead on that
+# line, the departure included, is past it.
+SURFACE_BEFORE_S = 120.0
+SURFACE_AFTER_S = 20.0
+# ...and only on it: two minutes before touchdown can be the downwind leg,
+# abeam the runway and half a mile to one side of it, over other ground.
+SURFACE_LATERAL_FT = 250.0
+
+
+class RunwaySurface(object):
+    """The runway's elevation along its length, as the sim models it.
+
+    The sim gives a runway one elevation, and its runways are not flat: some
+    rise or fall by 2% or more, which is 20 ft over the first 1,000 ft. So the
+    surface is read from the aircraft itself - its altitude less its height
+    above the ground beneath (PLANE ALT ABOVE GROUND), wherever it was over
+    the runway. Only readings past the threshold are used: before it is
+    whatever lies off the end, a field or the edge of a mesa, and an approach
+    over a drop would otherwise put the runway hundreds of feet low.
+
+    at(x) is the elevation x feet past the threshold: interpolated between
+    readings, and beyond them extended along the slope of the nearest two that
+    are SURFACE_BASE_FT apart. Before the threshold that extension is the
+    runway's plane, which is what "50 ft above the landing surface" means.
+    ref is the aircraft's own height above the ground on its wheels, the
+    offset between where its altitude is measured and its wheels.
+    """
+
+    def __init__(self, xs, gs, ref):
+        self.xs, self.gs, self.ref = xs, gs, ref
+
+    def _slope(self, i, j):
+        return (self.gs[j] - self.gs[i]) / (self.xs[j] - self.xs[i])
+
+    def _far(self, i, step):
+        j = i + step
+        while 0 <= j < len(self.xs) and abs(self.xs[j] - self.xs[i]) < SURFACE_BASE_FT:
+            j += step
+        return j if 0 <= j < len(self.xs) else None
+
+    def at(self, x):
+        xs, gs = self.xs, self.gs
+        if x <= xs[0]:
+            j = self._far(0, 1)
+            return gs[0] + (self._slope(0, j) * (x - xs[0]) if j is not None else 0.0)
+        if x >= xs[-1]:
+            n = len(xs) - 1
+            j = self._far(n, -1)
+            return gs[n] + (self._slope(j, n) * (x - xs[n]) if j is not None else 0.0)
+        for k in range(1, len(xs)):
+            if x <= xs[k]:
+                f = (x - xs[k - 1]) / (xs[k] - xs[k - 1]) if xs[k] > xs[k - 1] else 0.0
+                return gs[k - 1] + f * (gs[k] - gs[k - 1])
+        return gs[-1]
+
+    def height(self, q, past):
+        """How high the wheels were above the runway, at this point."""
+        return float(q["alt"]) - self.at(past(q)) - self.ref
+
+
+def runway_surface(samples, past, t_land=None, length_ft=None, beside=None):
+    """A RunwaySurface from samples carrying alt, agl, lat and lon, or None.
+
+    Only readings from SURFACE_BEFORE_S before touchdown to SURFACE_AFTER_S
+    after it, between the threshold and length_ft past it, and - given
+    beside(point), feet from the centreline - within SURFACE_LATERAL_FT of
+    the centreline, are runway.
+    None without at least two of them SURFACE_BASE_FT apart, or without a
+    reading on the wheels after touchdown to take ref from.
+    """
+    if not samples or past is None:
+        return None
+    pts = [q for q in samples if _finite(q.get("alt")) and _finite(q.get("agl"))
+           and _finite(q.get("t"))]
+    idx = landing_index(pts, t_land)
+    if not idx:
+        return None
+    ref = [float(q["agl"]) for q in pts[idx:idx + 10] if q.get("on_ground")]
+    if not ref:
+        return None
+    ref = sorted(ref)[len(ref) // 2]
+    t_td = float(pts[idx]["t"])
+    end = float(length_ft) if _finite(length_ft) else float("inf")
+    over = []
+    for q in pts:
+        if not (t_td - SURFACE_BEFORE_S <= float(q["t"]) <= t_td + SURFACE_AFTER_S):
+            continue
+        try:
+            x = past(q)
+            if beside is not None and abs(beside(q)) > SURFACE_LATERAL_FT:
+                continue
+        except (KeyError, TypeError, ValueError):
+            continue
+        if 0 <= x <= end:
+            over.append((x, float(q["alt"]) - float(q["agl"])))
+    over.sort()
+    if len(over) < 2 or over[-1][0] - over[0][0] < SURFACE_BASE_FT:
+        return None
+    return RunwaySurface([x for x, _ in over], [g for _, g in over], ref)
+
+
+def threshold_height(points, t_land=None, past=None, surface=None):
+    """How high the wheels crossed the landing threshold, above the runway.
+
+    Information, not a grade: the float and the touchdown point already say
+    what a high or low crossing cost. Measured against the runway surface at
+    the threshold (RunwaySurface). It used to be measured above where the
+    wheels touched, which on a sloped runway is off by the rise between the
+    two - 30 ft and more on runways that climb 2%. Without a surface it is
+    None, not that guess. None too when the recording does not reach back to
+    the threshold.
+    """
+    if not points or past is None or surface is None:
+        return None
+    idx = landing_index(points, t_land)
+    if not idx or not _finite(points[idx].get("alt")):
+        return None
+    j, frac = _threshold_crossing(points, idx, past)
+    if not isinstance(j, int):
+        return None
+    a, b = points[j], points[j + 1]
+    if not (_finite(a.get("alt")) and _finite(b.get("alt"))):
+        return None
+    alt = float(a["alt"]) + frac * (float(b["alt"]) - float(a["alt"]))
+    return round(alt - surface.at(0.0) - surface.ref, 1)
+
+
+def landing_float(points, t_land=None, source=None, past=None, surface=None):
+    """How long the airplane was held off over the runway, or None.
+
+    The clock starts at whichever comes later: the 50 ft point (AC 25-32's air
+    distance, which assumes 50 ft over the threshold) or the threshold. An
+    arrival that crosses lower than 50 ft had its clock started over the
+    approach, so time flown low before the runway counted as float, and a
+    landing just past the threshold could read as a long float. past(point) is
+    feet past the
+    landing threshold (runways.past_threshold); without it the clock starts
+    at 50 ft, which is how a caller with no runway learns nothing useful -
+    the builder measures no float there at all.
+
+    points is the landing clip at 10 Hz when there is one and the 1 Hz track
+    otherwise; resolution_s says which, because a 1 Hz track places the 50 ft
+    crossing and the contact each to within a second.
+
+    None means it could not be measured - the recording starts below 50 ft,
+    the aircraft was on the ground inside the window, a field is missing, or
+    it touched down short of the threshold, which the touchdown point scores.
+    It is never a short float.
+    """
+    if not points:
+        return None
+    idx = landing_index(points, t_land)
+    if not idx:
+        return None
+    td = points[idx]
+    if not (_finite(td.get("t")) and _finite(td.get("alt"))):
+        return None
+    # Height above the runway where there is one (RunwaySurface): above where
+    # the wheels touched is off by the runway's rise on a sloped one.
+    if surface is not None and past is not None:
+        def height(q):
+            return surface.height(q, past)
+    else:
+        ground = float(td["alt"])
+
+        def height(q):
+            return float(q["alt"]) - ground
+
+    # Back from contact through the flare to the last sample above 50 ft.
+    j = idx - 1
+    while j >= 0:
+        q = points[j]
+        if q.get("on_ground") is not False:
+            return None
+        if not (_finite(q.get("t")) and _finite(q.get("alt"))):
+            return None
+        if height(q) > FLOAT_HEIGHT_FT:
+            break
+        j -= 1
+    if j < 0:
+        return None
+    above, below = points[j], points[j + 1]
+    h_a = height(above)
+    h_b = height(below)
+    frac = (h_a - FLOAT_HEIGHT_FT) / (h_a - h_b) if h_a > h_b else 0.0
+    t_cross = float(above["t"]) + frac * (float(below["t"]) - float(above["t"]))
+    start = "50 ft"
+    if past is not None:
+        k, kfrac = _threshold_crossing(points, idx, past)
+        if k == "short":
+            return None
+        if isinstance(k, int):
+            if not (_finite(points[k].get("t")) and _finite(points[k + 1].get("t"))):
+                return None
+            t_thr = (float(points[k]["t"])
+                     + kfrac * (float(points[k + 1]["t"]) - float(points[k]["t"])))
+            if t_thr > t_cross:
+                # Below 50 ft before the runway began: start over the runway.
+                j, frac, t_cross, start = k, kfrac, t_thr, "threshold"
+                above, below = points[j], points[j + 1]
+    seconds = float(td["t"]) - t_cross
+
+    try:
+        dist = (1.0 - frac) * _ground_ft(above, below)
+        for k in range(j + 1, idx):
+            dist += _ground_ft(points[k], points[k + 1])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if seconds <= 0 or dist <= 0:
+        return None
+    fps = dist / seconds
+    if start == "threshold" and seconds < 1.0:
+        # A second or less over the runway is too short to give a speed from;
+        # the approach just before it says how fast the arrival was.
+        k = max(0, j - 10)
+        try:
+            span = sum(_ground_ft(points[m], points[m + 1]) for m in range(k, idx))
+            fps = span / (float(td["t"]) - float(points[k]["t"]))
+        except (KeyError, TypeError, ValueError, ZeroDivisionError):
+            return None
+    if fps < 10.0:                      # not an airplane arriving
+        return None
+    zone_end_s = FLOAT_NORMAL_S + FLOAT_MARGIN_FT / fps
+    zero_s = zone_end_s + FLOAT_BEYOND_FT / fps
+    gaps = [float(points[k + 1]["t"]) - float(points[k]["t"])
+            for k in range(max(0, idx - 5), idx)
+            if _finite(points[k].get("t")) and _finite(points[k + 1].get("t"))]
+    return {
+        "seconds": round(seconds, 1),
+        "distance_ft": round(dist),
+        "speed_kt": round(fps / 1.68781, 1),
+        "zone_end_s": round(zone_end_s, 1),
+        "zero_s": round(zero_s, 1),
+        "score": round(float_score(seconds, zone_end_s, zero_s), 1),
+        "resolution_s": round(sorted(gaps)[len(gaps) // 2], 2) if gaps else None,
+        "source": source,
+        # Where the clock started: "threshold" when the arrival was already
+        # below 50 ft at the runway, "50 ft" otherwise.
+        "from": start,
+    }
+
+
+def scores_float(profile):
+    """Whether this profile measures the landing float at all."""
+    return bool((profile or {}).get("float"))
+
+
+def landing_float_for(points, aircraft=None, category=None, vs0_kt=None,
+                      t_land=None, source=None, track=None, past=None,
+                      surface=None):
+    """The float for this leg's landing, or None if it is not measured here.
+
+    Profile routing is the same as alignment's and for the same reason. track,
+    when given, is what infers the category: a clip is too short to.
+    """
+    if not points:
+        return None
+    if not category:
+        category = infer_category(track or points)
+    if not scores_float(profile_for(aircraft, category=category, vs0_kt=vs0_kt)):
+        return None
+    return landing_float(points, t_land=t_land, source=source, past=past,
+                         surface=surface)
+
+
+def float_score(seconds, zone_end_s, zero_s):
+    """100 through a normal flare, 50 at the end of the zone, 0 beyond it."""
+    if seconds <= FLOAT_NORMAL_S:
+        return 100.0
+    if seconds <= zone_end_s:
+        span = zone_end_s - FLOAT_NORMAL_S
+        return 100.0 - (100.0 - FLOAT_ZONE_END_SCORE) * (seconds - FLOAT_NORMAL_S) / span
+    if seconds >= zero_s:
+        return 0.0
+    return FLOAT_ZONE_END_SCORE * (zero_s - seconds) / (zero_s - zone_end_s)
+
+
+def float_points_s(speed_kt):
+    """(end of zone, zero) in seconds from 50 ft, at this ground speed."""
+    fps = float(speed_kt) * 1.68781
+    end = FLOAT_NORMAL_S + FLOAT_MARGIN_FT / fps
+    return round(end, 1), round(end + FLOAT_BEYOND_FT / fps, 1)
+
+
+def float_band_text(flt):
+    """What good looks like for this landing - two of the points move with speed.
+
+    In the shape of every other line in the phase tooltip, "full marks X, zero
+    Y", with the 50 between because this one has a knee. The speed is there
+    because it is what put the 50 and the zero where they are.
+    """
+    return ("Full marks up to %g s. Half marks at %g s, zero at %g s "
+            "(at your %d kt)"
+            % (FLOAT_NORMAL_S, flt["zone_end_s"], flt["zero_s"],
+               round(flt["speed_kt"])))
+
+
+def float_ceiling_letter(flt):
+    """Highest letter the landing may keep, or None while the float is not graded."""
+    if not GRADE_FLOAT or not flt or flt.get("score") is None:
+        return None
+    return letter_for_score(flt["score"] + FLOAT_CAP_POINTS)
+
+
+def _cap_part(key, label, value, measured, band, counted, cap_points, score):
+    """A cap's line in the descent phase, and the phase score after it.
+
+    Shown whether or not it is counted. Until it is, it carries counted False
+    and the UI says it is measured but not yet counted - a cap that simply
+    never bites would read as a measurement that came out fine.
+    """
+    ceiling = value + cap_points
+    held = counted and score is not None and ceiling < score
+    part = {
+        "key": key,
+        "label": label,
+        "score": round(value, 1),
+        "measured": measured,
+        "weight_pct": 0,
+        "band": band,
+        "cap": counted,
+        "counted": counted,
+        "held": bool(held),
+        "held_to": round(ceiling, 1) if held else None,
+        "held_from": round(score, 1) if held else None,
+    }
+    return part, (ceiling if held else score)
+
+
+def _float_part(flt, score):
+    """The float's line in the descent phase, and the score after any cap."""
+    if not flt or flt.get("score") is None:
+        return None, score
+    return _cap_part("float", "Float", flt["score"],
+                     "%.1f s from %s" % (flt["seconds"],
+                                        "the runway start" if flt.get("from") == "threshold"
+                                        else "50 ft up"),
+                     float_band_text(flt), bool(GRADE_FLOAT), FLOAT_CAP_POINTS, score)
+
+
+def touchdown_zone_end_ft(length_ft):
+    """3,000 ft, or the first third of a shorter runway."""
+    try:
+        third = float(length_ft) / 3.0
+    except (TypeError, ValueError):
+        return TDZ_END_FT
+    return min(TDZ_END_FT, third) if third > 0 else TDZ_END_FT
+
+
+def touchdown_point_score(distance_ft, length_ft=None):
+    """100 near the target, 50 at the end of the touchdown zone, 0 beyond."""
+    d = float(distance_ft)
+    end = touchdown_zone_end_ft(length_ft)
+    full = min(TDZ_TARGET_FT + TDZ_TOLERANCE_FT, end)
+    zero = end + TDZ_BEYOND_FT
+    if d < -TDZ_SHORT_ALLOWANCE_FT:
+        return 0.0
+    if d <= full:
+        return 100.0
+    if d <= end:
+        return (100.0 - (100.0 - TDZ_END_SCORE) * (d - full) / (end - full)
+                if end > full else TDZ_END_SCORE)
+    if d >= zero:
+        return 0.0
+    return TDZ_END_SCORE * (zero - d) / TDZ_BEYOND_FT
+
+
+def touchdown_point_band_text(tp):
+    """What good looks like on this runway, which a short one changes.
+
+    "full marks X, 50 at Y, zero Z", like its neighbours in the tooltip, and
+    short: the browser cuts a tooltip line off at a fixed width, and the first
+    wording of this one lost its end. Where the runway's first
+    third ends the zone, the runway length is named, since it is the reason.
+    On a runway short enough that the third falls inside the full-marks
+    distance, full marks stop at the third and the next foot is 50; saying
+    "full marks 804 ft, 50 at 804 ft" read as a contradiction, so that case
+    is a step and is described as one.
+    """
+    length = tp.get("length_ft")
+    end = touchdown_zone_end_ft(length)
+    full = min(TDZ_TARGET_FT + TDZ_TOLERANCE_FT, end)
+    ft = lambda v: "{:,} ft".format(int(round(v)))
+    third = (" (a third of this %s runway)" % ft(length)
+             if end < TDZ_END_FT else "")
+    if full >= end:
+        return ("Full marks within %s%s. Half marks just past that, zero "
+                "at %s" % (ft(end), third, ft(end + TDZ_BEYOND_FT)))
+    return ("Full marks within %s. Half marks at %s%s, zero at %s"
+            % (ft(full), ft(end), third, ft(end + TDZ_BEYOND_FT)))
+
+
+def touchdown_point_ceiling_letter(tp):
+    """Highest letter the landing may keep, or None while this is not graded."""
+    if not GRADE_TOUCHDOWN_POINT or not tp or tp.get("score") is None:
+        return None
+    return letter_for_score(tp["score"] + TDZ_CAP_POINTS)
+
+
+def _touchdown_point_part(tp, score):
+    if not tp or tp.get("score") is None:
+        return None, score
+    d = tp["distance_ft"]
+    rwy = "runway %s" % tp["runway"] if tp.get("runway") else "the runway"
+    measured = ("{:,} ft short of {}".format(int(round(-d)), rwy) if d < 0
+                else "{:,} ft down {}".format(int(round(d)), rwy))
+    return _cap_part("touchdown_point", "Touchdown spot", tp["score"], measured,
+                     touchdown_point_band_text(tp), bool(GRADE_TOUCHDOWN_POINT),
+                     TDZ_CAP_POINTS, score)
+
+
 # ------------------------------------------------------------------ words
 
 # What each metric is called, how to print what was measured, and one line of
@@ -530,10 +1096,20 @@ def band_text(key, band):
 
     # Everything after the conversion spec is the unit: "%.0f fpm" -> " fpm",
     # "%.0f° bank" -> "° bank".
+    #
+    # Formatted, not sliced. The tail of a format string is still format
+    # syntax, so slicing "%.0f%% of descent" gave "%% of descent" and the
+    # tooltip printed "full marks 3%% of descent" - while the measurement
+    # beside it, which does go through %, read "3% of descent". Taking the
+    # unit from the formatted output makes it the measurement's unit by
+    # construction, whatever escape a format uses.
     cut = fmt.find("f", fmt.find("%"))
     if cut < 0:
         return None
-    unit = fmt[cut + 1:]
+    try:
+        unit = (fmt % 0.0)[len(fmt[:cut + 1] % 0.0):]
+    except (TypeError, ValueError):
+        return None
 
     def one(v):
         """The threshold itself, not a rounded-off version of it.
@@ -561,6 +1137,12 @@ def describe_metric(key, value):
 
 
 PHASE_WORDS = {
+    # Only shown with LANDING_PHASE on.
+    "landing": ("Landing", "How the landing was flown: how firmly the "
+                "aircraft touched down, how far down the runway, and how long "
+                "it floated, blended together - never more than 10 points above "
+                "the touchdown alone, so precision can't rescue a hard landing. "
+                "Arriving crooked can only lower it."),
     "liftoff": ("Lift-off", "Leaving the ground until the aircraft is "
                             "flying away."),
     "climb": ("Climb", "From transition until level at the top of the climb."),
@@ -824,6 +1406,8 @@ FIXED_WING = {
     # A wing has no hover to leave, so lift-off ends on height, not on speed.
     "transition_kt": 1e9,
     "liftoff_top_ft": 400.0,
+    # Measured on every airplane. See FLOAT_NORMAL_S.
+    "float": True,
     # ...or once it has lasted min_phase_s, whichever is later. Height alone
     # left a brisk jet climb-out too short to grade. See split_phases.
     "liftoff_fills_min_phase": True,
@@ -844,6 +1428,46 @@ FIXED_WING["alignment"] = True
 
 PROFILES = {"rotary": ROTARY, "fixed_wing": FIXED_WING}
 PHASE_ORDER = ("liftoff", "climb", "cruise", "descent")
+
+# The landing as a phase of its own, rather than 45% of the descent.
+#
+# Off, the touchdown does two jobs: it sets the landing letter, and it is the
+# heaviest measure in the descent phase - so the Grading tab listed it twice,
+# and the descent's score mixed how the approach was flown with how the
+# wheels met the runway. On, the descent is the approach - its other
+# measures, in the same proportions to each other - and "landing" is a phase:
+# the touchdown score, held down by alignment, the float and the touchdown
+# point. The descent's weight in the leg is split between the two by the
+# touchdown's own share of it (landing_phase_weights), so a leg with every
+# measure present averages exactly as before. What moves is the cap: a leg is
+# never more than one band above its weakest phase, and approach and landing
+# are now judged separately. Off until the owner has seen which legs move.
+LANDING_PHASE = True
+
+# How the landing phase scores. The A-F landing letter is how the touchdown
+# felt, and stays the touchdown rate's, with alignment, the float and the
+# touchdown spot able only to lower it. The landing PHASE is how the landing
+# was flown, and the pilot standards treat touching down near the aim point
+# with little float as a main criterion beside a smooth arrival - not merely
+# a thing not to get wrong. So the phase blends them, each counted only when
+# its Settings switch is on.
+#
+# The weights are a judgment: nothing published weights these against each
+# other. The touchdown carries half. The touchdown spot carries most of the
+# rest. The float carries least, because a long float and a long touchdown
+# are mostly one mistake, and weighting both fully would count it twice.
+LANDING_WEIGHTS = {"touchdown": 0.50, "touchdown_point": 0.35, "float": 0.15}
+# The phase never sits more than one band above the touchdown's own score:
+# precision can lift a firm landing a little, and cannot rescue a hard one.
+LANDING_LEAD_POINTS = 10.0
+# And the mirror of that: past the end of the touchdown zone - where the
+# touchdown spot or float scores below this - landing long is a fault the
+# standards say to go around for, not a matter of degree. There it also caps
+# the landing at its own score plus one band, so a soft touchdown cannot
+# average away a landing a third of the way down the runway. Inside the zone
+# it is weighed, not capped. Measured, the blend without this let a soft
+# touchdown well past the zone average up to a C.
+LANDING_FAULT_SCORE = 50.0
 
 # Below this stall speed, an aircraft the sim calls an Airplane is not one in
 # any sense these thresholds understand. A C172 reports 40 kt. A Magni M24
@@ -870,6 +1494,9 @@ def _unclassified():
     p = dict(FIXED_WING)
     p["name"] = "unclassified"
     p["label"] = "Other / unclassified"
+    # A gyroplane lands with next to no roll and no flare to speak of; the
+    # air-distance standard is written for airplanes.
+    p["float"] = False
     d = dict(FIXED_WING["descent"])
     d["weights"] = {k: v for k, v in d["weights"].items()
                     if k not in UNCLASSIFIED_SUPPRESS}
@@ -1519,6 +2146,15 @@ def _score_phase(metrics, spec, extra=None):
         })
         if held:
             score = ceiling
+
+    # The float sits beside alignment for the same reason - a cap, never a
+    # weight - and is applied after it, so the lower ceiling of the two wins.
+    part, score = _float_part((extra or {}).get("float"), score)
+    if part:
+        parts.append(part)
+    part, score = _touchdown_point_part((extra or {}).get("touchdown_point"), score)
+    if part:
+        parts.append(part)
     return score, parts
 
 
@@ -1527,6 +2163,14 @@ def _score_phase(metrics, spec, extra=None):
 
 # How far a rollup may sit above its own worst phase. One grade band.
 PHASE_CAP_POINTS = 10.0
+
+
+# What the ride leaves out: whatever carries the touchdown, which has its own
+# sentence. With the landing a phase of its own that is the landing, and the
+# descent - now the approach - is flying like any other; left out of the
+# ride, an F approach sat under "smooth enough that I forgot to hold on".
+def _not_ride():
+    return ("landing",) if LANDING_PHASE else ("descent", "landing")
 
 
 def _ride_score(scored, weights):
@@ -1541,9 +2185,9 @@ def _ride_score(scored, weights):
     F cruise averaged to a C, and C is the "ordinary flying" pool - printed
     next to an F CRUISE pill, on the same row.
     """
-    keys = [k for k in scored if k != "descent"]
+    keys = [k for k in scored if k not in _not_ride()]
     if not keys:
-        return scored.get("descent")
+        return scored.get("descent", scored.get("landing"))
     total = sum(weights[k] for k in keys)
     if total <= 0:
         return None
@@ -1551,8 +2195,147 @@ def _ride_score(scored, weights):
     return min(mean, min(scored[k] for k in keys) + PHASE_CAP_POINTS)
 
 
+def landing_phase_weights(profile):
+    """(descent, landing) weights in the leg, with the landing a phase.
+
+    The descent's weight split by the touchdown's share of the descent - 45%
+    on every profile so far - so the arithmetic of a leg with everything
+    measured is the same as with the touchdown inside the descent.
+    """
+    d = profile["phase_weights"].get("descent", 0.0)
+    w = profile["descent"]["weights"]
+    total = sum(w.values())
+    t = w.get("touchdown", 0.0) / total if total else 0.0
+    return d * (1.0 - t), d * t
+
+
+def phase_weights_for(profile):
+    """Each phase's weight in the leg, the landing included when it is one."""
+    pw = dict(profile["phase_weights"])
+    if LANDING_PHASE:
+        pw["descent"], pw["landing"] = landing_phase_weights(profile)
+    return pw
+
+
+def _landing_phase(td_score, landing_rate_fpm, profile, alignment=None,
+                   landing_float=None, touchdown_point=None):
+    """The touchdown score with the landing limits applied, and its parts.
+
+    What the landing phase is, and what a descent with nothing else to measure
+    falls back to. The limits are caps, never weights: each can take points
+    off and none can add any, applied alignment, float, touchdown point, so
+    the lowest ceiling wins.
+    """
+    score, parts = td_score, [
+        {"key": "touchdown", "label": "Touchdown",
+         "score": round(td_score, 1), "weight_pct": 100,
+         "band": touchdown_band_text(profile),
+         "measured": describe_metric("touchdown", landing_rate_fpm)[1]}]
+    if alignment and alignment.get("score") is not None:
+        ceiling = alignment["score"] + ALIGNMENT_CAP_POINTS
+        held = ceiling < score
+        bits = []
+        if alignment.get("bank_deg") is not None:
+            bits.append("%.1f\u00b0 bank" % alignment["bank_deg"])
+        if alignment.get("scrub_g") is not None:
+            bits.append("%.2f g slide" % alignment["scrub_g"])
+        parts.append({
+            "key": "alignment", "label": "Alignment",
+            "score": round(alignment["score"], 1),
+            "measured": ", ".join(bits) or None, "weight_pct": 0,
+            "band": None,
+            "cap": True, "held": bool(held),
+            "held_to": round(ceiling, 1) if held else None,
+            "held_from": round(score, 1) if held else None,
+            "sub": _alignment_sub(alignment)})
+        if held:
+            score = ceiling
+    part, score = _float_part(landing_float, score)
+    if part:
+        parts.append(part)
+    part, score = _touchdown_point_part(touchdown_point, score)
+    if part:
+        parts.append(part)
+    return score, parts
+
+
+def _landing_blend(td_score, landing_rate_fpm, profile, alignment=None,
+                   landing_float=None, touchdown_point=None):
+    """The landing phase: (score, parts, note).
+
+    A weighted blend of the touchdown, the touchdown spot and the float -
+    each of the last two only when measured and switched on - held to no
+    more than LANDING_LEAD_POINTS above the touchdown's own score, then
+    lowered by alignment if it was crooked. Switched off, a measure is
+    listed and shown only; it neither helps nor costs.
+    """
+    counted = {"touchdown": True,
+               "touchdown_point": bool(GRADE_TOUCHDOWN_POINT and touchdown_point
+                                       and touchdown_point.get("score") is not None),
+               "float": bool(GRADE_FLOAT and landing_float
+                             and landing_float.get("score") is not None)}
+    scores = {"touchdown": td_score,
+              "touchdown_point": (touchdown_point or {}).get("score"),
+              "float": (landing_float or {}).get("score")}
+    total = sum(LANDING_WEIGHTS[k] for k in counted if counted[k])
+    blend = sum(scores[k] * LANDING_WEIGHTS[k] for k in counted if counted[k]) / total
+    score = min(blend, td_score + LANDING_LEAD_POINTS)
+    note = None
+    if blend - score > 0.05:
+        # Rounded as the page rounds what it shows beside this - to a
+        # tenth, then half up - or the note and the pill disagree by one.
+        whole = lambda v: int(math.floor(round(v, 1) + 0.5))
+        note = ("Held to %d: a landing can't score more than %d points "
+                "above its touchdown alone (%d)."
+                % (whole(score), whole(LANDING_LEAD_POINTS), whole(td_score)))
+
+    def share(k):
+        return round(LANDING_WEIGHTS[k] * 100 / total) if counted[k] else 0
+
+    parts = [{"key": "touchdown", "label": "Touchdown",
+              "score": round(td_score, 1), "weight_pct": share("touchdown"),
+              "band": touchdown_band_text(profile),
+              "measured": describe_metric("touchdown", landing_rate_fpm)[1]}]
+    for key, maker, value in (("touchdown_point", _touchdown_point_part, touchdown_point),
+                              ("float", _float_part, landing_float)):
+        part, _ignored = maker(value, None)
+        if part:
+            part.update({"weight_pct": share(key), "cap": False,
+                         "counted": counted[key], "held": False,
+                         "held_to": None, "held_from": None})
+            # Past the zone: a fault, which caps as well as weighing.
+            if counted[key] and scores[key] < LANDING_FAULT_SCORE:
+                ceiling = scores[key] + ALIGNMENT_CAP_POINTS
+                if ceiling < score:
+                    part.update({"held": True, "held_to": round(ceiling, 1),
+                                 "held_from": round(score, 1)})
+                    score = ceiling
+            parts.append(part)
+    if alignment and alignment.get("score") is not None:
+        ceiling = alignment["score"] + ALIGNMENT_CAP_POINTS
+        held = ceiling < score
+        bits = []
+        if alignment.get("bank_deg") is not None:
+            bits.append("%.1f\u00b0 bank" % alignment["bank_deg"])
+        if alignment.get("scrub_g") is not None:
+            bits.append("%.2f g slide" % alignment["scrub_g"])
+        parts.append({
+            "key": "alignment", "label": "Alignment",
+            "score": round(alignment["score"], 1),
+            "measured": ", ".join(bits) or None, "weight_pct": 0,
+            "band": None,
+            "cap": True, "held": bool(held),
+            "held_to": round(ceiling, 1) if held else None,
+            "held_from": round(score, 1) if held else None,
+            "sub": _alignment_sub(alignment)})
+        if held:
+            score = ceiling
+    return score, parts, note
+
+
 def grade_leg(track, landing_rate_fpm=None, aircraft=None,
-              category=None, vs0_kt=None, alignment=None):
+              category=None, vs0_kt=None, alignment=None, landing_float=None,
+              touchdown_point=None):
     """Grade one leg's track. Returns None when there is too little to judge.
 
     The overall score is a weighted mean of the phases present, held to no more
@@ -1577,6 +2360,11 @@ def grade_leg(track, landing_rate_fpm=None, aircraft=None,
     # both the normal and the touchdown-only descent paths read this.
     if not scores_alignment(profile):
         alignment = None
+    if not scores_float(profile):
+        landing_float = None
+        # The touchdown zone is an airplane standard too, and rides the same
+        # switch: a helicopter landing on a runway is not aiming for 1,000 ft.
+        touchdown_point = None
 
     td_score = score_for_touchdown_fpm(landing_rate_fpm, profile)
     phases = {}
@@ -1596,10 +2384,15 @@ def grade_leg(track, landing_rate_fpm=None, aircraft=None,
         # the touchdown band can be worded for the right curve.
         spec = dict(profile[name], _profile=profile) if name == "descent" \
             else profile[name]
+        # With the landing a phase of its own the descent gets none of the
+        # landing's measures: the touchdown scores nothing here, and the
+        # weights left are averaged over in their own proportions.
         score, parts = _score_phase(
             metrics, spec,
-            extra=({"touchdown": td_score, "touchdown_fpm": landing_rate_fpm,
-                    "alignment": alignment}
+            extra=(({} if LANDING_PHASE else
+                    {"touchdown": td_score, "touchdown_fpm": landing_rate_fpm,
+                     "alignment": alignment, "float": landing_float,
+                     "touchdown_point": touchdown_point})
                    if name == "descent" else None))
         phases[name] = {
             "score": round(score, 1) if score is not None else None,
@@ -1612,35 +2405,26 @@ def grade_leg(track, landing_rate_fpm=None, aircraft=None,
     # touchdown would otherwise drop out of the rollup entirely - the landing
     # simply not counted. Grade the phase on the touchdown alone.
     d = phases.get("descent")
-    if td_score is not None and (d is None or d.get("score") is None):
-        # This branch builds the phase by hand rather than through
-        # _score_phase, so the alignment cap has to be applied here too or a
-        # leg with no measurable descent is the one place a crooked landing
-        # gets away with it.
-        short_score, short_parts = td_score, [
-            {"key": "touchdown", "label": "Touchdown",
-             "score": round(td_score, 1), "weight_pct": 100,
-             "band": touchdown_band_text(profile),
-             "measured": describe_metric("touchdown", landing_rate_fpm)[1]}]
-        if alignment and alignment.get("score") is not None:
-            ceiling = alignment["score"] + ALIGNMENT_CAP_POINTS
-            held = ceiling < short_score
-            bits = []
-            if alignment.get("bank_deg") is not None:
-                bits.append("%.1f° bank" % alignment["bank_deg"])
-            if alignment.get("scrub_g") is not None:
-                bits.append("%.2f g slide" % alignment["scrub_g"])
-            short_parts.append({
-                "key": "alignment", "label": "Alignment",
-                "score": round(alignment["score"], 1),
-                "measured": ", ".join(bits) or None, "weight_pct": 0,
-                "band": None,
-                "cap": True, "held": bool(held),
-                "held_to": round(ceiling, 1) if held else None,
-                "held_from": round(short_score, 1) if held else None,
-                "sub": _alignment_sub(alignment)})
-            if held:
-                short_score = ceiling
+    if LANDING_PHASE:
+        if td_score is not None:
+            land_score, land_parts, land_note = _landing_blend(
+                td_score, landing_rate_fpm, profile, alignment, landing_float,
+                touchdown_point)
+            phases["landing"] = {
+                "score": round(land_score, 1),
+                "letter": letter_for_score(land_score),
+                "seconds": None,
+                "parts": land_parts,
+            }
+            if land_note:
+                phases["landing"]["note"] = land_note
+    elif td_score is not None and (d is None or d.get("score") is None):
+        # Built by _landing_phase rather than through _score_phase, so the
+        # limits apply here too - or a leg with no measurable descent is the
+        # one place a crooked landing gets away with it.
+        short_score, short_parts = _landing_phase(
+            td_score, landing_rate_fpm, profile, alignment, landing_float,
+            touchdown_point)
         phases["descent"] = {
             "score": round(short_score, 1),
             "letter": letter_for_score(short_score),
@@ -1653,7 +2437,7 @@ def grade_leg(track, landing_rate_fpm=None, aircraft=None,
     if not scored:
         return None
 
-    weights = profile["phase_weights"]
+    weights = phase_weights_for(profile)
     total = sum(weights[k] for k in scored)
     overall = sum(scored[k] * weights[k] for k in scored) / total
 
@@ -1677,9 +2461,10 @@ def grade_leg(track, landing_rate_fpm=None, aircraft=None,
         "ride_letter": letter_for_score(ride),
         # The in-flight phase that set the ride grade, so the UI can say why
         # the paragraph reads the way it does.
-        "ride_worst_phase": (min([k for k in scored if k != "descent"],
+        "ride_worst_phase": (min([k for k in scored if k not in _not_ride()],
                                  key=lambda k: scored[k])
-                             if [k for k in scored if k != "descent"] else None),
+                             if [k for k in scored if k not in _not_ride()]
+                             else None),
     }
 
 
@@ -1745,6 +2530,78 @@ def describe_profile(p):
                 "unit": entry[1],
                 "steps": None,
             })
+        if name == "descent" and scores_float(p):
+            metrics.append({
+                "key": "float",
+                "label": "Float",
+                "why": ("How long the airplane floated over the runway before "
+                        "the wheels touched. The clock starts 50 ft above the "
+                        "runway - or at the start of the runway, if you were "
+                        "already lower than that, so time spent low over the "
+                        "approach doesn't count. The FAA treats about 7 "
+                        "seconds as normal (AC 25-32). Floating longer still "
+                        "passes while there is runway left in the touchdown "
+                        "zone (AC 91-79A); beyond that, going around was the "
+                        "better choice. How many seconds that is depends on "
+                        "how fast you were going. Only measured where the sim "
+                        "has described the runway."
+                        + (" These limits are your own settings, not the "
+                           "FAA's figures." if own_bands(FLOAT_BANDS) else "")
+                        + (" It counts toward the landing score - a short "
+                           "float helps, a long one costs - and a long float "
+                           "can also lower the landing letter." if GRADE_FLOAT else
+                           " Shown only for now: it doesn't change any grade "
+                           "(you can switch that on in Settings).")),
+                "weight_pct": 0,
+                "cap": bool(GRADE_FLOAT),
+                "cap_points": FLOAT_CAP_POINTS,
+                "best": FLOAT_NORMAL_S,
+                # A range needs two ends, and this zero moves with speed. The
+                # 100 kt figure is the representative end; band says the rule
+                # and works it out at three speeds, and the UI prints that.
+                "worst": float_points_s(100.0)[1],
+                "band": ("Full marks up to %g s. Half marks after another "
+                         "{:,} ft of runway, zero {:,} ft after that. In "
+                         "seconds, half marks and zero come at %s."
+                         .format(int(FLOAT_MARGIN_FT), int(FLOAT_BEYOND_FT))
+                         % (FLOAT_NORMAL_S,
+                            "; ".join("%.0f and %.0f s at %d kt"
+                                      % (float_points_s(kt) + (kt,))
+                                      for kt in (60, 100, 140)))),
+                "unit": "%.0f s",
+                "steps": None,
+            })
+        if name == "descent" and scores_float(p):
+            metrics.append({
+                "key": "touchdown_point",
+                "label": "Touchdown spot",
+                "why": ("How far down the runway the wheels touched, measured "
+                        "from where the runway starts. The FAA's aim point is "
+                        "about 1,000 ft in, and touching down past 3,000 ft - "
+                        "or past the first third of a shorter runway - is "
+                        "landing long (AC 91-79A). Measured once the sim has "
+                        "described the runway, which it does after you park."
+                        + (" These limits are your own settings, not the "
+                           "FAA's figures." if own_bands(TDZ_BANDS) else "")
+                        + (" It counts toward the landing score - near the "
+                           "aim point helps, far down the runway costs - and "
+                           "landing long can also lower the landing letter."
+                           if GRADE_TOUCHDOWN_POINT else
+                           " Shown only for now: it doesn't change any grade "
+                           "(you can switch that on in Settings).")),
+                "weight_pct": 0,
+                "cap": bool(GRADE_TOUCHDOWN_POINT),
+                "cap_points": TDZ_CAP_POINTS,
+                "best": TDZ_TARGET_FT + TDZ_TOLERANCE_FT,
+                "worst": TDZ_END_FT + TDZ_BEYOND_FT,
+                "band": ("Full marks within {:,} ft of the runway start. "
+                         "Half marks at {:,} ft, or a third of the way down a "
+                         "shorter runway; zero {:,} ft after that."
+                         .format(int(TDZ_TARGET_FT + TDZ_TOLERANCE_FT),
+                                 int(TDZ_END_FT), int(TDZ_BEYOND_FT))),
+                "unit": "%.0f ft",
+                "steps": None,
+            })
         phases.append({
             "key": name,
             "label": label,
@@ -1765,6 +2622,8 @@ def describe_profile(p):
             "measures that depend on a fixed-wing number - descent angle and "
             "the 500 ft gate - left out rather than judged against numbers "
             "that do not apply to it.")
+    if LANDING_PHASE:
+        phases = _split_landing(p, phases)
     return {
         "key": p["name"],
         "label": p["label"],
@@ -1774,6 +2633,59 @@ def describe_profile(p):
         # touchdown alignment. False for rotary, and the tab says why.
         "alignment": scores_alignment(p),
     }
+
+
+LANDING_KEYS = ("touchdown", "alignment", "float", "touchdown_point")
+
+
+def _landing_source(p):
+    """Where the landing's numbers came from: the touchdown's own sentence of
+    the descent's sources, or its first sentence when it names none."""
+    s = (p.get("phase_sources") or {}).get("descent") or ""
+    i = s.find("Touchdown:")
+    if i < 0:
+        i = 0
+    j = s.find(". ", i)
+    return s[i:j + 1] if j >= 0 else s[i:]
+
+
+def _split_landing(p, phases):
+    """The panel's phases with the landing taken out of the descent."""
+    out = []
+    for ph in phases:
+        if ph["key"] != "descent":
+            out.append(ph)
+            continue
+        d_w, l_w = landing_phase_weights(p)
+        rest = [m for m in ph["metrics"] if m["key"] not in LANDING_KEYS]
+        total = sum(m["weight_pct"] for m in rest if not m.get("cap")) or 1
+        for m in rest:
+            if not m.get("cap"):
+                m["weight_pct"] = round(m["weight_pct"] * 100.0 / total)
+        out.append(dict(ph, weight_pct=round(d_w * 100), metrics=rest))
+        land = [m for m in ph["metrics"] if m["key"] in LANDING_KEYS]
+        on = {"touchdown": True, "touchdown_point": bool(GRADE_TOUCHDOWN_POINT),
+              "float": bool(GRADE_FLOAT)}
+        total = sum(LANDING_WEIGHTS[k] for k in on if on[k])
+        for m in land:
+            if m["key"] in LANDING_WEIGHTS:
+                m["cap"] = False
+                m["weight_pct"] = (round(LANDING_WEIGHTS[m["key"]] * 100 / total)
+                                   if on[m["key"]] else 0)
+        label, blurb = PHASE_WORDS["landing"]
+        if not [m for m in land if m["key"] != "touchdown"]:
+            blurb = "How firmly the aircraft touched down."
+        out.append({
+            "key": "landing",
+            "label": label,
+            "blurb": blurb,
+            # The descent's sources cite the approach as well as the
+            # touchdown; the landing measures cite their own in their text.
+            "source": _landing_source(p),
+            "weight_pct": round(l_w * 100),
+            "metrics": land,
+        })
+    return out
 
 
 def describe():
@@ -1805,7 +2717,7 @@ def describe():
         "alignment_note": (
             "The A-F landing letter comes from how fast the aircraft was "
             "descending when the wheels touched. How straight it arrived can "
-            "then hold that letter down, and the descent phase with it, but "
+            "then hold that letter down, and the %s phase with it, but "
             "can never lift either: a landing that touches gently and then "
             "slides sideways is not a good landing, while arriving straight "
             "is simply what a landing is supposed to do. Bank counts for "
@@ -1818,7 +2730,8 @@ def describe():
             "not scored on this at all, because the sideways measurement is "
             "not available for them, and a missing reading must never pass "
             "for a good one."
-            % (ALIGNMENT_WEIGHTS[0][1] * 100, ALIGNMENT_WEIGHTS[1][1] * 100,
+            % ("landing" if LANDING_PHASE else "descent",
+               ALIGNMENT_WEIGHTS[0][1] * 100, ALIGNMENT_WEIGHTS[1][1] * 100,
                ALIGNMENT_BANK_DEG[0], ALIGNMENT_SCRUB_G[0],
                ALIGNMENT_BANK_DEG[1], ALIGNMENT_SCRUB_G[1])),
         "cap_note": (
@@ -1828,7 +2741,7 @@ def describe():
             "overall grade of at most 70 however good the rest was: a lovely "
             "cruise does not cancel an alarming approach. The phase grades "
             "themselves are never capped - only the overall. Most legs are "
-            "not affected, and a leg's own tooltip says when that leg was "
+            "not affected, and a leg's Grading tab says when that leg was "
             "capped."),
         "limits": [
             "The grades are worked out from the flight track, which is "

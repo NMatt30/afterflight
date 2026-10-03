@@ -146,6 +146,8 @@ _FALLBACK = {
                 "C": ["Touchdown at {rate}."], "D": ["Touchdown at {rate}."],
                 "F": ["Touchdown at {rate}."],
                 "held": ["Touchdown at {rate}, but not straight."],
+                "held_float": ["Touchdown at {rate}, after a long float."],
+                "held_long": ["Touchdown at {rate}, well down the runway."],
                 "none": ["No landing recorded."]},
     "connector": {"up": ["It improved."], "down": ["It did not last."]},
     "closer": {"good": ["A good flight."], "ok": ["A fair flight."],
@@ -167,7 +169,8 @@ def _load_lines(path=None):
     out, missing = {}, []
     for group, keys in (("openings", ("short", "medium", "long", "unknown")),
                         ("ride", ("smooth", "normal", "busy")),
-                        ("landing", ("A", "B", "C", "D", "F", "held", "none")),
+                        ("landing", ("A", "B", "C", "D", "F", "held",
+                                     "held_float", "held_long", "none")),
                         ("connector", ("up", "down")),
                         ("closer", ("good", "ok", "bad", "mixed"))):
         out[group] = {}
@@ -294,9 +297,14 @@ def _ride_pool(ride_grade, peak_vs_fpm, max_bank_deg):
     return "normal", RIDE["normal"]
 
 
+# Which pool describes a landing whose letter was lowered, by what lowered it.
+HELD_POOLS = {"alignment": "held", "float": "held_float",
+              "touchdown_point": "held_long"}
+
+
 def assess(flight_id, leg, aircraft=None, grade=None, rate_fpm=None,
            duration_s=None, peak_vs_fpm=None, max_bank_deg=None, avoid=None,
-           ride_grade=None, overall_grade=None, held_from=None):
+           ride_grade=None, overall_grade=None, held_from=None, held_by=None):
     """Build the four-slot passenger paragraph for one leg.
 
     Three different grades feed three different sentences, which is the
@@ -306,7 +314,11 @@ def assess(flight_id, leg, aircraft=None, grade=None, rate_fpm=None,
     is what let the prose disagree with the pills beside it.
 
     `held_from` is the letter the touchdown rate alone would have earned, when
-    alignment has since pulled it down. It matters because every landing line
+    something has since pulled it down, and `held_by` says what: "alignment"
+    (the default), "float" or "touchdown_point". The float and the touchdown
+    spot lower the letter for floating a long way or landing far down the
+    runway, and a soft touchdown lowered for that is no firmer than one
+    lowered for sliding - each has its own pool. It matters because every landing line
     is written about how HARD the arrival was, and a letter held down for
     sliding sideways is not describing hardness: a gentle 105 fpm touchdown
     marked to C came out as "business-like", which is a sentence about a firm
@@ -347,13 +359,15 @@ def assess(flight_id, leg, aircraft=None, grade=None, rate_fpm=None,
     picks[slot] = _pick(flight_id, leg, slot, ride_pool, avoid)
     ride = ride_pool[picks[slot]]
 
-    # Held down by alignment rather than by the rate: describe what the
-    # passenger actually felt, which was a soft touch and then a slide.
+    # Held down by something other than the rate: describe what the passenger
+    # actually felt - a soft touch, then a slide, or a long float, or a lot of
+    # runway gone by.
     held = bool(held_from) and held_from != grade and grade is not None
     if held:
-        slot = "landing.held"
-        picks[slot] = _pick(flight_id, leg, slot, LANDING["held"], avoid)
-        landing = LANDING["held"][picks[slot]].format(rate=_fmt_rate(rate_fpm))
+        pool_key = HELD_POOLS.get(held_by or "alignment", "held")
+        slot = "landing." + pool_key
+        picks[slot] = _pick(flight_id, leg, slot, LANDING[pool_key], avoid)
+        landing = LANDING[pool_key][picks[slot]].format(rate=_fmt_rate(rate_fpm))
     elif grade in LANDING:
         land_pool = LANDING[grade]
         slot = "landing." + grade
@@ -401,7 +415,8 @@ def assess(flight_id, leg, aircraft=None, grade=None, rate_fpm=None,
         "swing": swing,
         "graded_on": {"landing": grade, "ride": ride_grade,
                       "overall": overall_grade,
-                      "landing_held_from": held_from if held else None},
+                      "landing_held_from": held_from if held else None,
+                      "landing_held_by": (held_by or "alignment") if held else None},
         "source": "template",
         "picks": picks,
     }
@@ -412,7 +427,7 @@ def pool_stats():
     out = {}
     for band, pool in (("short", OPENINGS["short"]), ("medium", OPENINGS["medium"]),
                        ("long", OPENINGS["long"]), ("unknown", OPENINGS["unknown"])):
-        for gr in ["A", "B", "C", "D", "F", "held", None]:
+        for gr in ["A", "B", "C", "D", "F", "held", "held_float", "held_long", None]:
             ride = (RIDE["smooth"] if gr in ("A", "B") else RIDE["normal"])
             land = LANDING.get(gr, LANDING["none"])
             tone = "good" if gr in ("A", "B") else ("ok" if gr in ("C", None) else "bad")
@@ -519,13 +534,14 @@ def self_test(path=None):
             if n > CONNECTOR_MAX_WORDS:
                 problems.append("connector.%s[%d] is %d words; a bridge should "
                                 "be short enough to disappear" % (way, i, n))
-    for i, line in enumerate(pools["landing"]["held"]):
-        low = line.lower()
-        said = [w for w in _HELD_MUST_NOT_SAY if w in low]
-        if said:
-            problems.append("landing.held[%d] calls the touchdown %s; it was "
-                            "gentle, and the letter came down for sliding"
-                            % (i, "/".join(said)))
+    for key in ("held", "held_float", "held_long"):
+        for i, line in enumerate(pools["landing"][key]):
+            low = line.lower()
+            said = [w for w in _HELD_MUST_NOT_SAY if w in low]
+            if said:
+                problems.append("landing.%s[%d] calls the touchdown %s; it was "
+                                "gentle, and the letter came down for something else"
+                                % (key, i, "/".join(said)))
     assert not problems, "\n  ".join([""] + problems)
 
     # And the grades the ladder can actually produce all have a pool.
@@ -544,6 +560,15 @@ def self_test(path=None):
     assert held["landing"] != plain["landing"], (
         "a held-down landing read the same as a genuinely firm one")
     assert held["graded_on"]["landing_held_from"] == "B"
+    # Lowered for a long float or a long landing: each its own words.
+    for by, pool in (("float", "held_float"), ("touchdown_point", "held_long")):
+        got = assess("f", 1, aircraft="C172", rate_fpm=60.0, duration_s=700,
+                     grade="D", held_from="A", held_by=by)
+        assert got["landing"] in [l.format(rate=_fmt_rate(60.0))
+                                  for l in LANDING[pool]], (
+            "a landing lowered by the %s was described from the wrong pool: %r"
+            % (by, got["landing"]))
+        assert got["graded_on"]["landing_held_by"] == by
 
     # A paragraph that changes its mind has to say so, and must not end on a
     # closer that claims the whole flight was one thing.

@@ -1,0 +1,44 @@
+name: Release zip
+# Builds AfterFlight-<version>.zip - the app with its own Python, for people
+# with no Python installed - and runs every test on that bundled Python before
+# keeping it. It does not publish a release: the zip is a workflow artifact,
+# attached to a GitHub release by hand after the change has been flown.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  zip:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0          # git describe needs the tags
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Build
+        run: python build_release.py
+      - name: Every test, on the Python the zip carries
+        shell: pwsh
+        run: |
+          # The same discovery as offline.yml, run with the bundled runtime:
+          # this is the Python a user without one will be running.
+          $py = 'build\AfterFlight\runtime\python.exe'
+          $found = @(Get-ChildItem -Name -File test_*.py | Sort-Object)
+          if ($found.Count -eq 0) { Write-Error 'no test_*.py found'; exit 1 }
+          $tests = $found + @('sampler.py', 'flightprefs.py', 'passenger.py', 'trackexport.py', 'settings.py')
+          Write-Host ('Running: ' + ($tests -join ', '))
+          foreach ($test in $tests) {
+            & $py -B $test
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: AfterFlight-zip
+          path: dist/*
+          if-no-files-found: error

@@ -30,8 +30,9 @@ remember. A flight becomes a *sortie*; a sortie splits into *legs* at each
 takeoff and landing.
 
 **Grades each leg, and shows its working.** Every leg gets a letter and a
-score, broken into four phases - liftoff, climb, cruise and descent - and each
-phase lists the measurements behind it with the band they were scored against:
+score, broken into five phases - liftoff, climb, cruise, descent and landing -
+and the leg's Grading tab lists the measurements behind each one with the band
+they were scored against:
 
 ```
 liftoff   A   96.5
@@ -51,11 +52,21 @@ the sim reports about the airframe, not from its name. The split between light
 and transport is at a 61 kt stall speed because that is where 14 CFR 23.49
 draws it.
 
-**Grades the landing separately.** Touchdown vertical speed sets an A-F letter.
-How *square* the arrival was - bank through the rollout, and sideways
-acceleration after the wheels are down - can hold that letter down but never
-lift it. A gentle arrival that is still sliding sideways is not a good landing;
-a perfectly square arrival at 600 fpm is still an arrival.
+**Gives the landing its own letter.** Touchdown vertical speed sets an A-F
+letter, judged on the aircraft type's own criteria - 200 fpm is a C in a
+light airplane and an A in an airliner. How *square* the arrival was - bank
+through the rollout, and sideways acceleration after the wheels are down - can
+hold that letter down but never lift it. A gentle arrival that is still sliding
+sideways is not a good landing; a perfectly square arrival at 600 fpm is still
+an arrival.
+
+**Knows where on the runway you landed.** For an airplane landing on a
+runway, it asks the sim which runway that was, and measures how far past the
+threshold the wheels touched and how long the aircraft floated first. Both
+are shown. Two switches in Settings, off to begin with, let them count toward
+the landing grade as well, against published criteria: a landing far down
+the runway, or one that floated past the touchdown zone, is marked down.
+Helicopters are never graded on either.
 
 **Writes a passenger's note.** A short paragraph, in the voice of someone
 sitting in the back, about what the flight felt like. Templates and a hash of
@@ -92,20 +103,30 @@ to delete rather than what it intended to.
 
 ## What it needs
 
-Windows 10 or 11, MSFS 2024, and Python 3.10 or newer. Two pip packages:
-`SimConnect` (required) and `Pillow` (optional - without it you lose the baked
-map images and nothing else).
+Windows 10 or 11 and MSFS 2024. Nothing else to install.
+
+Download `AfterFlight-<version>.zip` from the
+[Releases](https://github.com/NMatt30/afterflight/releases) page. It carries
+its own Python, so there is no Python to install and no pip:
+
+1. Unzip it somewhere you can write - your user folder, not `Program Files`.
+2. Double-click **Start AfterFlight.cmd**. The tray icon appears; its menu
+   can make it start with Windows.
+3. Start the sim and fly.
+
+To update, unzip the next release over the same folder. A release never
+contains anyone's data, so your flights and settings stay as they are.
+
+AfterFlight talks to the sim through the sim's own SimConnect DLL. It is not
+in this repository - it is Microsoft's binary - and the watcher finds it in
+your installation, or in the running sim, and copies it beside itself.
 
 There is no build step and no package manager. The interface is plain HTML and
 JavaScript on purpose, and the tray is `ctypes` with no dependencies at all.
 
-Replay and the chase camera additionally need a SimConnect DLL that ships with
-the sim. It is not in this repository - it is Microsoft's binary - and
-`install.ps1 -ResolveDll` copies it out of your own installation. Recording and
-grading work without it.
-
-[INSTALL.md](INSTALL.md) is the step-by-step, written for someone who has just
-downloaded this and has none of it set up.
+**Running from the source instead** needs Python 3.10 or newer, plus `Pillow`
+if you want the baked map images; nothing else is lost without it.
+[INSTALL.md](INSTALL.md) is the step-by-step for both ways.
 
 ---
 
@@ -126,10 +147,10 @@ downloaded this and has none of it set up.
 
 ---
 
-## Run it
+## Run it from the source
 
-What follows assumes the dependencies are already installed; see
-[INSTALL.md](INSTALL.md) if they are not.
+The release zip needs none of this - see above. From a clone, with Python
+installed (see [INSTALL.md](INSTALL.md)):
 
 ```powershell
 .\install.ps1
@@ -300,7 +321,9 @@ failing that, whatever the sim picks by default.
 ## Settings
 
 A **Settings** button in the logbook opens Tier 1 settings: clip windows,
-what a flight gets by default (rating, passenger
+whether the landing float and touchdown point count toward the landing grade
+and the bands they are scored on (airplanes only; the defaults are the
+published figures), what a flight gets by default (rating, passenger
 notes), basemap source and treatment, and replay defaults (start-held, ground
 lift, camera distance/height/orbit).
 
@@ -311,7 +334,9 @@ is not silently overridden by a stale saved copy, and deleting the file returns
 you to known-good.
 
 Everything applies live. Clip windows take effect on the next event, map
-changes trigger a rebuild, and the ring buffer is resized in place.
+and grading changes trigger a rebuild, and the ring buffer is resized in place.
+A rebuild from the command line applies `settings.json` too, so it publishes
+the same logbook the watcher would.
 
 **`BUFFER_SEC` is derived, not configured.** `LANDING_BEFORE` is useless beyond
 what the buffer holds, and offering both invites setting one and forgetting the
@@ -398,13 +423,28 @@ returns the plan and changes nothing.
 
 There is no undo. That is the point of it being a second, separate step.
 
-## Version
+## Versions and branches
+
+**`main` is the latest release** — the default branch, and what a plain
+`git clone` gives you. Every commit on it has been flown in the sim before
+being merged, and each release is tagged `vX.Y.Z`.
+
+**`develop` carries work that has not been released yet.** It passes the same
+automated checks, but nobody has flown it yet; expect it to break
+occasionally. To run it:
+
+```powershell
+git checkout develop
+```
 
 `APP_VERSION` in `watcher.py` is the release number. At startup the watcher
-refines it with `git describe --tags --always --dirty`, so a working copy
-reports exactly which commit is running — `0.4.0 (v0.4-7-gc892e43-dirty)` —
-rather than whatever number was last remembered. It is read once, not per
-request, and falls back to the bare constant when git or the repo is absent.
+refines it with `git describe --tags --match "v*" --always --dirty`, so a
+working copy reports exactly which commit is running —
+`0.6.1 (v0.6.1-3-g1a2b3c4)` is three commits past the 0.6.1 release, which is
+what a `develop` build looks like. Only release tags are considered, so a
+marker tag set for some other purpose can never name a build. It is read once,
+not per request, and falls back to the bare constant when git or the repo is
+absent.
 
 It appears in `/state`, in the startup log line, and in the logbook footer.
 

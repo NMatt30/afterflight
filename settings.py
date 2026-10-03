@@ -1,7 +1,7 @@
 """User-editable settings, applied over the module constants at run time.
 
-The constants in watcher.py, tiles.py, mapbake.py and passenger.py stay the
-source of truth: their values at import are captured as the defaults, and a
+The constants in watcher.py, tiles.py, mapbake.py, passenger.py and grading.py
+stay the source of truth: their values at import are captured as the defaults, and a
 saved setting is an override on top. Delete settings.json and you are back to
 known-good without touching code.
 
@@ -68,6 +68,71 @@ SPEC = [
     #
     # If per-taste grading comes back it has to move the curve and the ladder
     # together, not one of them.
+
+    # ---- float and touchdown point ----
+    #
+    # Unlike the ladder these can be settings: the score, the band text and
+    # the letter cap all read the same constants when called, so a setting
+    # moves all three together. The defaults are the published figures, and
+    # grading.PUBLISHED keeps them so a changed band is labelled as the
+    # owner's own wherever it is printed. Airplanes only - a helicopter is
+    # never measured on either, whatever these say. Changing any of them
+    # rebuilds the logbook, because the build signature carries them.
+    {"key": "grade_float", "module": "grading", "attr": "GRADE_FLOAT",
+     "type": "bool", "group": "Float and touchdown spot",
+     "label": "Count the float in the landing grades", "live": True,
+     "note": "Off: the float is shown on each airplane landing but doesn't "
+             "affect any grade. On: it counts toward the landing score - a "
+             "short float helps, a long one costs - and a long float can also "
+             "lower the landing letter, never raise it. Only measured on a "
+             "runway the sim knows about, so not off airport."},
+    {"key": "float_normal_s", "module": "grading", "attr": "FLOAT_NORMAL_S",
+     "type": "float", "min": 3.0, "max": 20.0, "group": "Float and touchdown spot",
+     "label": "Float: full marks up to (seconds)", "live": True,
+     "note": "How long you can float without losing points. Timed from 50 ft "
+             "above the runway, or from the start of the runway if you "
+             "crossed it lower. The FAA's figure for an average pilot is 7."},
+    {"key": "float_margin_ft", "module": "grading", "attr": "FLOAT_MARGIN_FT",
+     "type": "float", "min": 500.0, "max": 6000.0, "group": "Float and touchdown spot",
+     "label": "Float: extra runway before half marks (feet)", "live": True,
+     "note": "How much more runway you can float over before the score "
+             "drops to half. The FAA's touchdown zone allows about 2,000 ft. "
+             "Turned into seconds using your speed."},
+    {"key": "float_beyond_ft", "module": "grading", "attr": "FLOAT_BEYOND_FT",
+     "type": "float", "min": 100.0, "max": 6000.0, "group": "Float and touchdown spot",
+     "label": "Float: more runway before zero (feet)", "live": True,
+     "note": "How much further after half marks before the score reaches "
+             "zero. Our own choice, not an FAA figure."},
+    {"key": "grade_touchdown_point", "module": "grading", "attr": "GRADE_TOUCHDOWN_POINT",
+     "type": "bool", "group": "Float and touchdown spot",
+     "label": "Count the touchdown spot in the landing grades", "live": True,
+     "note": "Off: how far down the runway you touched down is shown but "
+             "doesn't affect any grade. On: it counts toward the landing "
+             "score - near the aim point helps, far down the runway costs - "
+             "and landing long can also lower the landing letter, never "
+             "raise it. Needs the runway's layout, which the app gets from "
+             "the sim after you park."},
+    {"key": "tdz_target_ft", "module": "grading", "attr": "TDZ_TARGET_FT",
+     "type": "float", "min": 0.0, "max": 4000.0, "group": "Float and touchdown spot",
+     "label": "Touchdown spot: aim point (feet from the runway start)", "live": True,
+     "note": "Where you're aiming to touch down. The FAA suggests about "
+             "1,000 ft."},
+    {"key": "tdz_tolerance_ft", "module": "grading", "attr": "TDZ_TOLERANCE_FT",
+     "type": "float", "min": 0.0, "max": 3000.0, "group": "Float and touchdown spot",
+     "label": "Touchdown spot: allowance past the aim point (feet)", "live": True,
+     "note": "Touching down up to this far past the aim point still gets "
+             "full marks. The private pilot checkride allows 400 ft."},
+    {"key": "tdz_end_ft", "module": "grading", "attr": "TDZ_END_FT",
+     "type": "float", "min": 500.0, "max": 8000.0, "group": "Float and touchdown spot",
+     "label": "Touchdown spot: half marks at (feet from the runway start)", "live": True,
+     "note": "The FAA's touchdown zone ends at 3,000 ft. On a runway shorter "
+             "than three times this, half marks come a third of the way "
+             "down it instead."},
+    {"key": "tdz_beyond_ft", "module": "grading", "attr": "TDZ_BEYOND_FT",
+     "type": "float", "min": 100.0, "max": 6000.0, "group": "Float and touchdown spot",
+     "label": "Touchdown spot: more runway before zero (feet)", "live": True,
+     "note": "How much further after half marks before the score reaches "
+             "zero. Our own choice, not an FAA figure."},
 
     # ---- what a flight gets ----
     # The default for flights nobody has decided about individually. Changing
@@ -324,6 +389,25 @@ def self_test():
         else:
             raise AssertionError("%s accepted a value off its list" % s["key"])
     return True
+
+
+def apply_saved(names):
+    """Register these modules and lay settings.json over them.
+
+    For a process other than the watcher - a command-line build - that must
+    build with the settings the watcher builds with. Without this, a rebuild
+    from the command line published a logbook graded and drawn on the
+    defaults over the one the watcher had made.
+    """
+    import importlib
+    for name in names:
+        try:
+            register(name, importlib.import_module(name))
+        except ImportError:
+            pass
+    capture_defaults()
+    load()
+    return apply()
 
 
 def _register_all():

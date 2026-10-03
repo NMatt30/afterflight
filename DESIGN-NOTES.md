@@ -11,7 +11,12 @@ entry should say so or be deleted.
 
 ## 1. Running on a machine with no Python
 
-**Discussed 2026-09-04. Needed before a public 1.0.**
+**Discussed 2026-09-04. Built 2026-10-03** - kept here for the reasoning.
+The native connection (`SIM_CONNECTION`, `test_native.py`) is step 1 and
+`build_release.py` step 2; both were flown in the sim, the second from an
+unpacked release zip with no Python involved. User data stays in the app
+folder: an update is the zip unpacked over it, and the build refuses to
+carry a data file (`test_release.py`).
 
 ### The measured starting point
 
@@ -57,9 +62,9 @@ cost nothing now and remove two blockers later.
 
 ### Not verified
 
-Whether the ctypes layer can fully own connection lifecycle and quit detection
-in place of Python-SimConnect. Small surface, but it needs a real test against
-a running sim before the plan is committed to.
+A sim killed outright, live: the owner declined that test; `test_native.py`
+covers it offline. A machine that has never had Python installed - the zip
+was run with Python hidden from the PATH, not on a clean machine.
 
 ---
 
@@ -212,3 +217,27 @@ This is the same class of error as the touchdown curve was before 2026-09-05
 — numbers appropriate to one kind of flying applied to another where
 different answers are correct. That one was fixable by splitting a constant.
 This one is not.
+
+### The same idea, for detecting the events themselves
+
+Takeoff and landing detection could be the first customer for a regime
+concept. Today each is decided from one transition of SIM ON GROUND,
+debounced: a takeoff has to stay airborne for two seconds before it counts.
+A windowed classifier would read several markers over the tracker's existing
+60 s buffer - ground state, height above ground, vertical speed, g force,
+speed - and decide from the series rather than from one state change.
+
+Raised on 2026-09-21, after a load-in blip became a one-second phantom leg,
+and deliberately not built. The phantom was fixed instead by closing an
+asymmetry: the takeoff side checked that the aircraft stayed up, but the
+landing side never checked that it had been up in the first place. A landing
+now needs the aircraft to have been airborne for the same two seconds since
+the last one. That fixed every observed failure with no new threshold.
+
+Why not the classifier now: event times feed the grading slices, the clip
+windows and the touchdown-rate capture, so rewriting detection risks moving
+every grade in the book. Every marker is a threshold needing sim evidence,
+and helicopters defeat most of them - air-taxi near the ground, sliding
+landings, touch-and-goes. One phantom in about thirty flights supported a
+targeted fix, not a new detector. If failures of this kind keep turning up,
+this is where they point.

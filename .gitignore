@@ -46,6 +46,10 @@ _patch_in/
 __pycache__/
 *.py[cod]
 
+# build_release.py's downloads, staging folder and release zips.
+/build/
+/dist/
+
 # Your saved settings - overrides only, and machine-specific.
 settings.json
 

@@ -373,6 +373,92 @@ def test_a_path_under_base_is_still_recorded_relative():
         "expected a relative path under BASE, got %r" % (got,))
 
 
+# --------------------------------------------------------------------------
+# 4. what a rebuild costs when little has changed
+# --------------------------------------------------------------------------
+
+def test_the_build_cache_is_read_once_and_written_only_when_it_changes():
+    """The build cache grows with the logbook, and was read three times and
+    written twice per build - indented, fsynced, changed or not. Measured at
+    16x this logbook, that was 80% of a rebuild that changed nothing."""
+    t = Tree()
+    names = ("BASE", "LOGBOOK_JSON", "DETAIL_DIR")
+    keep = {n: getattr(logbook_build, n) for n in names}
+    real = (logbook_build.read_cache, logbook_build.read_json,
+            logbook_build.persistence.atomic_text)
+    reads, writes, stray = [], [], []
+
+    def read_cache():
+        reads.append(1)
+        return real[0]()
+
+    def read_json(path):
+        if os.path.abspath(path) == os.path.abspath(logbook_build.CACHE_JSON):
+            stray.append(path)
+        return real[1](path)
+
+    def atomic_text(path, text, **kw):
+        if os.path.abspath(path) == os.path.abspath(logbook_build.CACHE_JSON):
+            writes.append(text)
+        return real[2](path, text, **kw)
+
+    def build():
+        del reads[:], writes[:], stray[:]
+        logbook_build.build(bake_maps=False, allow_network=False)
+        return len(reads), len(writes), len(stray)
+
+    try:
+        logbook_build.BASE = t.dir
+        logbook_build.LOGBOOK_JSON = os.path.join(t.dir, "logbook.json")
+        logbook_build.DETAIL_DIR = os.path.join(t.dir, "detail")
+        logbook_build.read_cache = read_cache
+        logbook_build.read_json = read_json
+        logbook_build.persistence.atomic_text = atomic_text
+        t.track()
+        t.meta(40.0)
+        r, w, s = build()
+        assert (r, s) == (1, 0), "the first build read the cache %d times" % (r + s)
+        assert w == 1, "the first build wrote the cache %d times" % w
+        first = writes and writes[0]
+        r, w, s = build()
+        assert (r, s) == (1, 0), "a rebuild read the cache %d times" % (r + s)
+        assert w == 0, "a rebuild that changed nothing rewrote the cache"
+        t.meta(100.0)
+        r, w, s = build()
+        assert w == 1, (
+            "a corrected meta wrote the cache %d times; once is the "
+            "change, none loses it" % w)
+        assert writes[0] != first and "  " not in writes[0][:200], (
+            "the cache is written indented, or did not change")
+        assert json.load(open(logbook_build.CACHE_JSON, encoding="utf-8"))[
+            "flights"][FID]["rec"]["vs0"] == 100.0
+    finally:
+        (logbook_build.read_cache, logbook_build.read_json,
+         logbook_build.persistence.atomic_text) = real
+        for n, v in keep.items():
+            setattr(logbook_build, n, v)
+        t.close()
+
+
+def test_a_compact_document_is_the_same_document():
+    """atomic_json moved from json.dump to json.dumps for the C encoder.
+    The bytes must not change - settings.json is meant to be read by hand."""
+    import persistence
+    d = tempfile.mkdtemp()
+    try:
+        doc = {"b": [1, 2.5, None, True], "a": {"x": "é ⅓", "y": []}}
+        for compact in (False, True):
+            p = persistence.atomic_json(os.path.join(d, "x.json"), doc, compact=compact)
+            want = (json.dumps(doc, separators=(",", ":")) if compact
+                    else json.dumps(doc, indent=2)) + "\n"
+            with io.open(p, encoding="utf-8") as f:
+                got = f.read()
+            assert got == want, "compact=%s wrote %r" % (compact, got[:80])
+            assert json.loads(got) == doc
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def main():
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]

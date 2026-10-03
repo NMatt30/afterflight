@@ -40,7 +40,7 @@ HTTP_HOST = "127.0.0.1"
 # Bump on a release. describe_version() refines this from git when the repo is
 # there, so a working copy reports exactly which commit is running rather than
 # just the last version someone remembered to edit.
-APP_VERSION = "0.6.1"
+APP_VERSION = "0.7.0"
 HTTP_PORT = 8742
 # How the detect loop gets its data.
 #   legacy - one blocking python-SimConnect get() per variable. ~2.8 Hz.
@@ -115,6 +115,16 @@ FLIGHT_ARM_WINDOW_SEC = 60.0
 # measured in single metres per minute, from reading as a reposition.
 FLIGHT_ARM_REPOSITION_FLOOR_M = 5.0
 FLIGHT_ARM_REPOSITION_MARGIN = 1.5
+# "Not on the ground" is not the same as flying, either. While the sim loads an
+# aircraft in it can report SIM ON GROUND false for a single sample with the
+# aircraft still frozen on its pad, and the airborne trigger took that as a
+# lift-off. A frozen aircraft reads G FORCE at or near zero - it is not being
+# simulated - where every recorded lift-off read 0.997 to 1.5 g on its first
+# airborne sample. Airborne therefore promotes unless there is positive
+# evidence the sim is not running. A missing reading is not that evidence:
+# legacy-fallback samples carry no g at all, and must not stop a real flight
+# from starting.
+FLIGHT_ARM_SIMULATING_MIN_G = 0.8
 RECONNECT_SEC = 5.0
 CONNECT_TIMEOUT = 15.0
 BOUNCE_SEC = 2.0
@@ -165,6 +175,22 @@ LOG_MAX_BYTES = 4 * 1024 * 1024
 LOG_KEEP = 2
 # A deferred rebuild may run once the aircraft has sat still this long.
 LOGBOOK_PARKED_SEC = 60.0
+# Once parked after a landing, ask the sim for the runways of the airports
+# around the touchdown and cache them for the builder (runways.py), which works
+# out where on the runway the wheels touched. Read-only - facility data is
+# static scenery and nothing is sent to any aircraft - on a short-lived
+# connection of its own, so the 3 MB airport list never passes through the
+# connection the recording rides on. Never in flight or on the rollout.
+#
+# On by default, unlike the grading switches: this only adds data, and
+# grading.GRADE_TOUCHDOWN_POINT decides whether that data moves a grade.
+RUNWAY_LOOKUP = True
+RUNWAY_LOOKUP_PARKED_SEC = 10.0
+RUNWAY_LOOKUP_RADIUS_NM = 3.0
+RUNWAY_LOOKUP_TIMEOUT = 10.0
+# The first lookup of a session also fills in airports for landings recorded
+# before their runways were cached, at most this many airports per pass.
+RUNWAY_BACKFILL_MAX = 60
 # 60 s per clip either way: a takeoff is mostly what happens after it, a
 # landing mostly what happens before it.
 TAKEOFF_BEFORE = 5.0
@@ -353,6 +379,24 @@ SIMCONNECT_RECV_ID_ASSIGNED_OBJECT_ID = 12
 SIMCONNECT_RECV_ID_CAMERA_STATUS = 41
 SIMCONNECT_RECV_ID_CAMERA = 40
 SIMCONNECT_RECV_ID_SIMOBJECT_DATA = 8
+SIMCONNECT_RECV_ID_SYSTEM_STATE = 15
+# Facility data. Measured against a running sim before anything relied on
+# them, as everything SimConnect says here has to be: the airport list arrives
+# as 18 in parts of up to 1,139 entries of 36 bytes (a 9-byte ident, a 3-byte
+# region, then latitude, longitude and altitude as doubles); runway data as 28,
+# one message per record, and 29 once a request is complete.
+SIMCONNECT_RECV_ID_AIRPORT_LIST = 18
+SIMCONNECT_RECV_ID_FACILITY_DATA = 28
+SIMCONNECT_RECV_ID_FACILITY_DATA_END = 29
+FACILITY_DEFINE_ID = 7701
+FACILITY_FIELDS = (
+    "OPEN AIRPORT", "LATITUDE", "LONGITUDE", "ALTITUDE", "N_RUNWAYS",
+    "OPEN RUNWAY", "LATITUDE", "LONGITUDE", "ALTITUDE", "HEADING", "LENGTH",
+    "WIDTH", "PRIMARY_NUMBER", "PRIMARY_DESIGNATOR", "SECONDARY_NUMBER",
+    "SECONDARY_DESIGNATOR",
+    "OPEN PRIMARY_THRESHOLD", "LENGTH", "CLOSE PRIMARY_THRESHOLD",
+    "OPEN SECONDARY_THRESHOLD", "LENGTH", "CLOSE SECONDARY_THRESHOLD",
+    "CLOSE RUNWAY", "CLOSE AIRPORT")
 
 # The real camera struct is 84 bytes. CameraSet's packet is 0x68 = 104 = a
 # 16-byte header + an 84-byte struct + a 4-byte mask, and CameraGet replies with
@@ -957,7 +1001,139 @@ def set_below_normal_priority():
     except Exception as e:
         log("priority set failed %s" % repr(e))
 
+# How the watcher talks to the sim.
+#
+# "python-simconnect" is the long-standing path: the Python-SimConnect package
+# opens the main connection and reports a clean quit, and whenever the push
+# sampler has nothing fresh it is read one variable at a time - which is also
+# how a crashed sim was noticed, by that read failing.
+#
+# "native", the default, needs no third-party package, which is what running
+# without a Python install needs. The push sampler's own connection is the
+# main one; a state the sim stops pushing - a pause, a loading screen - is
+# held, as the one-at-a-time read would have returned it; and a heartbeat,
+# RequestSystemState every NATIVE_PING_SEC, answered even while paused,
+# notices a sim that has gone without saying so. Verified against a running
+# sim: connecting, a full circuit recorded, a minute in the Escape menu, a
+# clean quit and a reconnect. A sim killed outright was not tested live; the
+# tests cover it. It needs the sim's own SimConnect DLL; without one, and with
+# the package installed, it falls back to "python-simconnect" and says so.
+# AFTERFLIGHT_SIM_CONNECTION in the environment overrides this.
+SIM_CONNECTION = os.environ.get("AFTERFLIGHT_SIM_CONNECTION") or "native"
+NATIVE_PING_SEC = 5.0
+NATIVE_LOST_SEC = 15.0
+NATIVE_PING_FAILURES = 2
+
+
+class NativeSim(object):
+    """The main sim connection without Python-SimConnect.
+
+    Shaped like the Python-SimConnect object where the loop touches it - a
+    `quit` flag and `exit()` - plus `lost()`, the heartbeat.
+    """
+
+    def __init__(self, gsc, smp):
+        self.gsc, self.smp = gsc, smp
+        self.started = time.time()
+        self.last_ping = 0.0
+        self.ping_failures = 0
+
+    @property
+    def quit(self):
+        return 1 if self.gsc._quit else 0
+
+    def lost(self, now=None):
+        """Why the sim is gone, or None. Cheap: a clock check per tick and a
+        request every NATIVE_PING_SEC."""
+        now = now or time.time()
+        if now - self.last_ping >= NATIVE_PING_SEC:
+            self.last_ping = now
+            if self.gsc.ping():
+                self.ping_failures = 0
+            else:
+                self.ping_failures += 1
+                if self.ping_failures >= NATIVE_PING_FAILURES:
+                    return "the sim could not be asked %d times running" % self.ping_failures
+        heard = self.gsc._last_pong or self.started
+        if now - heard > NATIVE_LOST_SEC:
+            return "no answer from the sim for %.0f s" % (now - heard)
+        return None
+
+    def exit(self):
+        self.gsc.close()
+
+
+def native_sample(fast, last, now=None):
+    """(sample for this tick, last fresh sample).
+
+    A fresh push is used as it is. Without one - paused, loading - the last is
+    held, timestamped now as the one-at-a-time read would have been, carrying
+    no extremes of its own. Before the first push there is nothing to hold.
+    """
+    if fast is not None:
+        return fast, fast
+    if last is None:
+        return None, None
+    held = dict(last)
+    held["t"] = now or time.time()
+    held["ts"] = now_iso()
+    held["held"] = True
+    held.pop("peaks", None)
+    return held, last
+
+
+def connect_native():
+    """The push sampler's connection, as the main one. (NativeSim, None) or
+    (None, why)."""
+    info = game_dll_status()
+    if not info.get("ok"):
+        return None, "the sim's SimConnect DLL is not available"
+    try:
+        import sampler as sampler_mod
+    except Exception as e:
+        return None, "sampler import failed %r" % (e,)
+    gsc = GameSimConnect()
+    if not gsc.open(quiet=True):
+        gsc.close()
+        return None, "the sim is not answering"
+    smp = sampler_mod.StateSampler(gsc.fns, gsc._h, log=log)
+    gsc.state_sampler = smp
+    if not smp.subscribe():
+        gsc.close()
+        return None, "could not subscribe to the aircraft's state"
+    return NativeSim(gsc, smp), None
+
+
+_FALLBACK_SAID = [False]
+
+
+def use_native():
+    """Native, unless it cannot work here and the package can.
+
+    Native needs the sim's SimConnect DLL. Without it - not resolved yet, a
+    sim update moved it - an install that still has the Python-SimConnect
+    package keeps recording through that rather than failing every attempt.
+    """
+    if SIM_CONNECTION != "native":
+        return False
+    if game_dll_status().get("ok"):
+        return True
+    try:
+        import importlib.util
+        have_package = importlib.util.find_spec("SimConnect") is not None
+    except Exception:
+        have_package = False
+    if have_package and not _FALLBACK_SAID[0]:
+        _FALLBACK_SAID[0] = True
+        log("native connection needs the sim's SimConnect DLL, which is not "
+            "available; using the Python-SimConnect package instead. Run "
+            "install.ps1 -ResolveDll with the sim installed.")
+    return not have_package
+
+
 def connect_sim():
+    if use_native():
+        return connect_native()
     holder = {"sm": None, "err": None}
 
     def do_connect():
@@ -1119,6 +1295,10 @@ def clip_point(s):
         "gear": s.get("gear"),
         "flaps": s.get("flaps"),
         "spoilers": s.get("spoilers"),
+        # The sim's height above the ground beneath. The runway is not flat
+        # and the sim gives it one elevation, so this is how a landing learns
+        # the shape of the runway it landed on - see grading.RunwaySurface.
+        "agl": s.get("agl"),
     }
 
 def list_clip_summaries():
@@ -1274,6 +1454,16 @@ def describe_version():
             text = "%s (%s)" % (APP_VERSION, described)
     except Exception:
         pass
+    if text == APP_VERSION:
+        # A release has no .git, and may run where git is not installed:
+        # build_release.py wrote down what describe said when it was built.
+        try:
+            with open(os.path.join(BASE, "VERSION"), encoding="utf-8") as f:
+                described = f.read().strip()
+            if described:
+                text = "%s (%s)" % (APP_VERSION, described)
+        except OSError:
+            pass
     _version_cache[0] = text
     return text
 
@@ -1283,12 +1473,13 @@ def load_settings_at_startup():
     try:
         import settings as settings_mod
         import passenger, tiles, mapbake       # so capture_defaults can see them
-        import flightprefs
+        import flightprefs, grading
         settings_mod.register("watcher", sys.modules[__name__])
         settings_mod.register("flightprefs", flightprefs)
         settings_mod.register("passenger", passenger)
         settings_mod.register("tiles", tiles)
         settings_mod.register("mapbake", mapbake)
+        settings_mod.register("grading", grading)
         settings_mod.capture_defaults()
         saved = settings_mod.load()
         settings_mod.apply(on_buffer=resize_live_buffer)
@@ -1335,9 +1526,12 @@ def apply_settings(values):
     # every save, so testing for presence made each save force a full rebuild -
     # and a topo rebuild is several minutes of tile work for nothing.
     # The landing ladder used to be in here, because changing it rewrote every
-    # stored grade. It is a constant now, so the only settings that still
-    # invalidate the built logbook are the two that change how a map is drawn.
-    watched = ("tile_source", "map_style")
+    # stored grade. It is a constant now. What still invalidates the built
+    # logbook: the two that change how a map is drawn, and the float and
+    # touchdown-point bands, which change grades.
+    watched = ("tile_source", "map_style", "grade_float", "float_normal_s",
+               "float_margin_ft", "float_beyond_ft", "grade_touchdown_point",
+               "tdz_target_ft", "tdz_tolerance_ft", "tdz_end_ft", "tdz_beyond_ft")
     changed = [k for k in watched if before.get(k) != after.get(k)]
     # Clip windows decide a clip's shape at commit, so they are staged rather
     # than applied when a clip is mid-capture; the buffer resize is held with
@@ -2192,17 +2386,31 @@ def same_sortie(flight, s):
 
 
 def restore_tracker_leg(flight_id):
+    """The highest leg this flight already has a clip for, or 0.
+
+    Through clipfile, which knows both suffixes. This used to scan for
+    ".json" alone, and every clip has been ".jsonl" since clips became
+    append-only - so a flight resumed from disk restarted its count at leg 1,
+    and its next takeoff and landing were appended to leg 1's files. Replaying
+    either leg then played leg 1.
+    """
     best = 0
+    prefix = str(flight_id) + "-leg"
     try:
-        for name in os.listdir(CLIPS_DIR):
-            if not name.startswith(str(flight_id) + "-") or not name.endswith(".json"):
+        for cid, _paths in clipfile.iter_clip_files(CLIPS_DIR):
+            if not cid.startswith(prefix):
                 continue
-            m = re.search(r"-leg(\d+)-", name)
+            m = re.match(r"(\d+)-", cid[len(prefix):])
             if m:
                 best = max(best, int(m.group(1)))
     except Exception:
         pass
     return best
+
+
+def clip_on_disk(flight_id, leg, kind):
+    """True if this flight already has a recording for this leg and kind."""
+    return bool(clipfile.paths_for(CLIPS_DIR, "%s-leg%s-%s" % (flight_id, leg, kind)))
 
 
 def carry_sortie_id(s, snap):
@@ -2366,8 +2574,9 @@ class PendingFlight:
         self.ring.append(snap)
 
         # Airborne settles it on its own, and has to: a helicopter can lift off
-        # from its spawn without ever travelling 50 m along the ground.
-        if s.get("on_ground") is False:
+        # from its spawn without ever travelling 50 m along the ground. Unless
+        # the sim says it is not simulating the aircraft yet.
+        if s.get("on_ground") is False and not self._frozen(snap):
             return "airborne"
 
         t = snap.get("t")
@@ -2388,6 +2597,18 @@ class PendingFlight:
 
     def history(self):
         return list(self.ring)
+
+    @staticmethod
+    def _frozen(snap):
+        """True only on positive evidence the sim is not simulating the aircraft.
+
+        Every g reading this sample carries - the instant one and the peak since
+        the last point - is below FLIGHT_ARM_SIMULATING_MIN_G. No readings at all
+        is not evidence of anything, and answers False.
+        """
+        readings = [snap.get("gforce"), (snap.get("peaks") or {}).get("gforce_max")]
+        readings = [float(g) for g in readings if finite(g)]
+        return bool(readings) and max(readings) < FLIGHT_ARM_SIMULATING_MIN_G
 
 
 class Flight:
@@ -2817,6 +3038,10 @@ class ClipTracker:
         self.open = []
         self.vs_air = deque(maxlen=12)
         self.airborne_since = None
+        # Whether the aircraft has really flown since it last landed: airborne
+        # for BOUNCE_SEC, the same test a takeoff has to pass to count. A
+        # landing needs it. See the landing branch in feed().
+        self.flown = False
 
     def attach(self, flight):
         self.flight = flight
@@ -2833,6 +3058,7 @@ class ClipTracker:
         self.last_lon = None
         self.pending = None
         self.airborne_since = None
+        self.flown = False
         self.vs_air.clear()
         with RUNTIME_LOCK:
             RUNTIME["flight_id"] = None
@@ -2913,6 +3139,21 @@ class ClipTracker:
             if self.flight:
                 self.flight.landing_rate_fpm = rate_fpm
                 self.flight.landed = True
+        # Never append to a recording that is already on disk. A clip file is
+        # appended from open to finish, so a second recording opened on the
+        # same name lands at the end of the first, and the replay plays the
+        # first. The leg count is what keeps names apart; if it is ever wrong
+        # again - a resume that miscounts, a file this tracker did not write -
+        # this costs a leg number, never a recording. A takeoff needs a leg
+        # with nothing recorded yet; a landing needs one with no landing.
+        counted = self.leg
+        fid = self.flight.flight_id
+        while (clip_on_disk(fid, self.leg, kind)
+               or (kind == "takeoff" and clip_on_disk(fid, self.leg, "landing"))):
+            self.leg += 1
+        if self.leg != counted:
+            log("%s: leg %s already has a recording on disk; recording this "
+                "as leg %s instead" % (kind, counted, self.leg))
         # Window around the TRANSITION sample (first airborne / first ground), not bounce-commit time.
         prefix = self._window(event_s["t"], before)
         if not any(abs((p.get("t") or 0) - event_s["t"]) < 0.25 for p in prefix):
@@ -2983,6 +3224,10 @@ class ClipTracker:
             append_jsonl(EVENTS_JSONL, ev_line)
         except Exception as e:
             log("events.jsonl write failed %s" % repr(e))
+        if kind == "landing":
+            queue_runway_lookup(ev_line.get("lat"), ev_line.get("lon"),
+                                self.flight.category, self.flight.vs0,
+                                self.flight.aircraft)
         with RUNTIME_LOCK:
             RUNTIME["recent_events"].append(ev_line)
             RUNTIME["leg"] = self.leg
@@ -3017,6 +3262,8 @@ class ClipTracker:
         if nowg is False:
             if self.airborne_since is None:
                 self.airborne_since = s.get("t")
+            elif finite(s.get("t")) and                     float(s["t"]) - float(self.airborne_since) >= BOUNCE_SEC:
+                self.flown = True
         else:
             self.airborne_since = None
 
@@ -3076,6 +3323,8 @@ class ClipTracker:
                 contacts = self.pending.get("contacts")
                 heights = self.pending.get("heights")
                 self.pending = None
+                if kind == "landing":
+                    self.flown = False
                 self._commit(kind, ev, rate, contacts=contacts, heights=heights)
 
         if self.flight is not None and self.pending is None and replay_in_progress():
@@ -3086,6 +3335,19 @@ class ClipTracker:
             pass
         elif self.flight is not None and self.pending is None and self.prev_on_ground is True and nowg is False:
             self.pending = {"kind": "takeoff", "since": s.get("t"), "event": dict(s), "rate_fpm": None}
+        elif self.flight is not None and self.pending is None and self.prev_on_ground is False                 and nowg is True and not self.flown:
+            # Down again without ever having flown. The takeoff debounce already
+            # threw away the lift-off as too brief to be one, and until now the
+            # landing side trusted it anyway - it checked the aircraft had been
+            # down long enough, never that it had been up. A single sample of
+            # "not on the ground" while the sim was still loading the aircraft
+            # became a landing at 0 fpm, graded A, a second into the flight.
+            #
+            # A bounce needs no exemption. flown is cleared only when a landing
+            # commits, and a bounce exists only while its landing has not, so an
+            # aircraft coming down from one is always still marked as flying.
+            log("ignored touchdown: not airborne for %.0f s since the last "
+                "landing, so there was no flight to land from" % BOUNCE_SEC)
         elif self.flight is not None and self.pending is None and self.prev_on_ground is False and nowg is True:
             rate = None
             if self.vs_air:
@@ -3459,6 +3721,10 @@ def load_game_simconnect_dll():
     "SimConnect_MapClientEventToSimEvent",
     "SimConnect_TransmitClientEvent",
     "SimConnect_AICreateNonATCAircraft_EX1",
+    "SimConnect_RequestFacilitiesList",
+    "SimConnect_AddToFacilityDefinition",
+    "SimConnect_RequestFacilityData",
+    "SimConnect_RequestSystemState",
     ):
         try:
             fns[name] = getattr(dll, name)
@@ -3479,6 +3745,9 @@ def load_game_simconnect_dll():
     c_float = ctypes.c_float
     fns["SimConnect_Open"].restype = HRESULT
     fns["SimConnect_Open"].argtypes = [POINTER(HANDLE), LPCSTR, HWND, DWORD, HANDLE, DWORD]
+    if "SimConnect_RequestSystemState" in fns:
+        fns["SimConnect_RequestSystemState"].restype = HRESULT
+        fns["SimConnect_RequestSystemState"].argtypes = [HANDLE, DWORD, c_char_p]
     fns["SimConnect_Close"].restype = HRESULT
     fns["SimConnect_Close"].argtypes = [HANDLE]
     fns["SimConnect_GetNextDispatch"].restype = HRESULT
@@ -3542,6 +3811,15 @@ def load_game_simconnect_dll():
         # ObjectID, EventID, dwData, GroupID, Flags
         fns["SimConnect_TransmitClientEvent"].argtypes = [
             HANDLE, DWORD, DWORD, DWORD, DWORD, DWORD]
+    # Facility data. Optional: without it the runway lookup simply does not
+    # run, and nothing else depends on it.
+    for name, args in (("SimConnect_RequestFacilitiesList", [HANDLE, DWORD, DWORD]),
+                       ("SimConnect_AddToFacilityDefinition", [HANDLE, DWORD, c_char_p]),
+                       ("SimConnect_RequestFacilityData",
+                        [HANDLE, DWORD, DWORD, c_char_p, c_char_p])):
+        if name in fns:
+            fns[name].restype = HRESULT
+            fns[name].argtypes = args
     _GAME_BIND["ok"] = True
     log("game SimConnect exports bound path=%s (CameraSetRelative6DOF not used)" % path)
     return _GAME_BIND
@@ -3581,6 +3859,12 @@ class GameSimConnect:
         self._att_unit = None
         self._cam_state = None
         self._cam_game = None
+        # request id -> {"parts": [raw message bytes], "done": bool}. The
+        # dispatch thread only copies bytes in; the caller parses them.
+        self._fac = {}
+        self._fac_defined = False
+        # When the sim last answered a heartbeat (ping). None until it has.
+        self._last_pong = None
 
     def _h(self):
         return self.handle
@@ -3591,7 +3875,10 @@ class GameSimConnect:
             self._next_req += 1
             return rid
 
-    def open(self, timeout=CONNECT_TIMEOUT):
+    def open(self, timeout=CONNECT_TIMEOUT, quiet=False):
+        """quiet: the caller reports a failure itself - the main connection
+        retries every few seconds while the sim is closed, and one line per
+        attempt is enough."""
         try:
             hr = self.fns["SimConnect_Open"](
                 byref(self.handle),
@@ -3605,7 +3892,8 @@ class GameSimConnect:
             log("game SimConnect_Open OSError %s dll=%s" % (repr(e), self.dll_path))
             return False
         if not _is_hr(hr, 0):
-            log("game SimConnect_Open failed hr=%s dll=%s" % (hr, self.dll_path))
+            if not quiet:
+                log("game SimConnect_Open failed hr=%s dll=%s" % (hr, self.dll_path))
             return False
         self._opened = True
         self._thread = threading.Thread(target=self._dispatch_loop, daemon=True, name="game-simconnect")
@@ -3638,6 +3926,8 @@ class GameSimConnect:
                         self._ok = True
                     elif dwid == SIMCONNECT_RECV_ID_QUIT:
                         self._quit = True
+                    elif dwid == SIMCONNECT_RECV_ID_SYSTEM_STATE:
+                        self._last_pong = time.time()
                     elif dwid == SIMCONNECT_RECV_ID_ASSIGNED_OBJECT_ID:
                         assigned = cast(pp, POINTER(_SC_RECV_ASSIGNED)).contents
                         with self._lock:
@@ -3662,6 +3952,18 @@ class GameSimConnect:
                             "CAMERA_STATUS acquiredState=%s game_controlled=%s"
                             % (st.dwAcquiredState, int(st.bGameControlled))
                         )
+                    elif dwid in (SIMCONNECT_RECV_ID_AIRPORT_LIST,
+                                  SIMCONNECT_RECV_ID_FACILITY_DATA,
+                                  SIMCONNECT_RECV_ID_FACILITY_DATA_END):
+                        raw = ctypes.string_at(pp, int(recv.dwSize))
+                        req = struct.unpack_from("<I", raw, 12)[0] if len(raw) >= 16 else None
+                        with self._lock:
+                            ent = self._fac.get(req)
+                            if ent is not None:
+                                if dwid == SIMCONNECT_RECV_ID_FACILITY_DATA_END:
+                                    ent["done"] = True
+                                else:
+                                    ent["parts"].append(raw)
                     elif dwid == SIMCONNECT_RECV_ID_EXCEPTION:
                         exc = cast(pp, POINTER(_SC_RECV_EXCEPTION)).contents
                         with self._lock:
@@ -3670,6 +3972,118 @@ class GameSimConnect:
                 except Exception as e:
                     log("dispatch parse failed %s" % repr(e))
             time.sleep(0.002)
+
+    def ping(self):
+        """Ask the sim something it answers even when paused. False if the
+        question could not be sent - itself a sign the sim has gone."""
+        fn = self.fns.get("SimConnect_RequestSystemState")
+        if fn is None or not self._opened or self._closed:
+            return False
+        try:
+            hr = fn(self._h(), DWORD(self.new_request_id()), b"Sim")
+        except Exception as e:
+            log("RequestSystemState failed %s" % repr(e))
+            return False
+        return _is_hr(hr, 0)
+
+    def _fac_wait(self, rid, ready, timeout):
+        t0 = time.time()
+        while time.time() - t0 < timeout and not self._quit:
+            with self._lock:
+                ent = self._fac.get(rid)
+                if ent is not None and ready(ent):
+                    return self._fac.pop(rid)
+            time.sleep(0.02)
+        with self._lock:
+            self._fac.pop(rid, None)
+        return None
+
+    def facility_airports(self, timeout=RUNWAY_LOOKUP_TIMEOUT):
+        """Every airport the sim knows, as [(ident, region, lat, lon, alt_m)].
+
+        Read-only. The sim answers with the whole world - 84,354 airports on
+        the machine this was measured on - in parts, each saying how many
+        there are; this waits for all of them.
+        """
+        fn = self.fns.get("SimConnect_RequestFacilitiesList")
+        if fn is None:
+            return None
+        rid = self.new_request_id()
+        with self._lock:
+            self._fac[rid] = {"parts": [], "done": False}
+        if not _is_hr(fn(self._h(), 0, rid), 0):
+            with self._lock:
+                self._fac.pop(rid, None)
+            return None
+
+        def complete(ent):
+            parts = ent["parts"]
+            if not parts or len(parts[0]) < 28:
+                return False
+            return len(parts) >= struct.unpack_from("<I", parts[0], 24)[0]
+        ent = self._fac_wait(rid, complete, timeout)
+        if ent is None:
+            return None
+        out = []
+        for raw in ent["parts"]:
+            n = struct.unpack_from("<I", raw, 16)[0]
+            if not n:
+                continue
+            size = (len(raw) - 28) // n
+            if size < 24 + 12:
+                continue
+            for k in range(n):
+                e = raw[28 + k * size: 28 + (k + 1) * size]
+                names = e[:size - 24]
+                la, lo, al = struct.unpack_from("<ddd", e, size - 24)
+                out.append((names[:9].split(b"\0")[0].decode("ascii", "replace"),
+                            names[9:12].split(b"\0")[0].decode("ascii", "replace"),
+                            la, lo, al))
+        return out
+
+    def facility_runways(self, ident, region, timeout=RUNWAY_LOOKUP_TIMEOUT):
+        """One airport's runways as a runways.py cache document, or None. Read-only."""
+        add = self.fns.get("SimConnect_AddToFacilityDefinition")
+        req = self.fns.get("SimConnect_RequestFacilityData")
+        if add is None or req is None:
+            return None
+        if not self._fac_defined:
+            for field in FACILITY_FIELDS:
+                if not _is_hr(add(self._h(), FACILITY_DEFINE_ID, field.encode()), 0):
+                    return None
+            self._fac_defined = True
+        rid = self.new_request_id()
+        with self._lock:
+            self._fac[rid] = {"parts": [], "done": False}
+        if not _is_hr(req(self._h(), FACILITY_DEFINE_ID, rid,
+                          str(ident).encode("ascii", "replace"),
+                          str(region).encode("ascii", "replace")), 0):
+            with self._lock:
+                self._fac.pop(rid, None)
+            return None
+        ent = self._fac_wait(rid, lambda e: e["done"], timeout)
+        if ent is None:
+            return None
+        airport, rws, thresholds = None, {}, {}
+        for raw in ent["parts"]:
+            if len(raw) < 40:
+                continue
+            _user, uniq, parent, typ = struct.unpack_from("<IIII", raw, 12)
+            data = raw[40:]
+            if typ == 0 and len(data) == 28:
+                airport = struct.unpack_from("<dddi", data)
+            elif typ == 1 and len(data) == 52:
+                rws[uniq] = struct.unpack_from("<dddfffiiii", data)
+            elif len(data) == 4:
+                thresholds.setdefault(parent, []).append(struct.unpack_from("<f", data)[0])
+        if airport is None:
+            return None
+        import runways as runways_mod
+        recs = []
+        for uniq in sorted(rws):
+            disp = (thresholds.get(uniq, []) + [0.0, 0.0])[:2]
+            recs.append(tuple(rws[uniq]) + (disp[0], disp[1]))
+        return runways_mod.from_facility(ident, region, airport, recs)
 
     def wait_object_id(self, request_id, timeout=4.0):
         t0 = time.time()
@@ -5236,6 +5650,11 @@ def _begin_new_flight(s, tracker, sortie_id=None, lift_at=None, history=None,
     tracker.reset()
     flight = Flight(s, sortie_id=sortie_id, lift_at=lift_at, history=history)
     tracker.attach(flight)
+    # A reconnect in the air is a flight already under way. Without this a
+    # watcher restarted in the last two seconds before touchdown would refuse
+    # the landing, having not yet seen the aircraft airborne for long enough.
+    if sortie_id and s.get("on_ground") is False:
+        tracker.flown = True
     # reset() above cleared the tracker's ground memory, and takeoff detection
     # is exactly "was on the ground, now is not". The sample that promotes a
     # candidate can be the one that leaves the ground - a helicopter lifting
@@ -5298,6 +5717,8 @@ def arm_or_begin(s, tracker, pending, resume_snap):
 
 def _keep_existing_flight(flight, tracker, s, why):
     tracker.attach(flight)
+    if s.get("on_ground") is False:
+        tracker.flown = True          # resumed in the air: see _begin_new_flight
     if tracker.leg < 1:
         tracker.leg = restore_tracker_leg(flight.flight_id)
         with RUNTIME_LOCK:
@@ -5307,14 +5728,176 @@ def _keep_existing_flight(flight, tracker, s, why):
     return flight
 
 
-def run_connected(sm, flight=None, tracker=None, resume_snap=None):
-    from SimConnect import AircraftRequests
-    aq = AircraftRequests(sm, _time=200)
-    for key in ("PLANE_PITCH_DEGREES", "PLANE_BANK_DEGREES", "IS_SLEW_ACTIVE"):
+RUNWAYS_DIR = os.path.join(SESSIONS, "runways")
+_runway_queue = []                 # (lat, lon) of landings not yet looked up
+_runway_state = {"thread": None, "backfilled": False}
+_runway_lock = threading.Lock()
+
+
+def queue_runway_lookup(lat, lon, category=None, vs0=None, aircraft=None):
+    """Ask for this landing's runways at the next parked moment - for an
+    airplane. A helicopter landing asks the sim for nothing."""
+    if not RUNWAY_LOOKUP or not (finite(lat) and finite(lon)):
+        return
+    if not measures_runway(category, vs0, aircraft):
+        return
+    with _runway_lock:
+        _runway_queue.append((float(lat), float(lon)))
+
+
+def measures_runway(category, vs0=None, aircraft=None):
+    """Whether a landing in this aircraft is measured against a runway.
+
+    The same profile test the builder uses, so a helicopter landing - at a
+    heliport, a pad or a field - asks the sim for nothing. Without a category
+    the answer is no: profile_for files an unknown as rotary.
+    """
+    try:
+        import grading as grading_mod
+        return grading_mod.scores_float(grading_mod.profile_for(
+            aircraft, category=category, vs0_kt=vs0))
+    except Exception:
+        return False
+
+
+def runway_lookup_wanted():
+    with _runway_lock:
+        return bool(_runway_queue) or not _runway_state["backfilled"]
+
+
+def _landing_points_on_record():
+    """Every airplane landing in events.jsonl, as (lat, lon).
+
+    The aircraft class comes from each flight's meta, read once per flight.
+    """
+    out = []
+    kinds = {}
+    try:
+        with open(EVENTS_JSONL, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if not (e.get("kind") == "landing" and finite(e.get("lat"))
+                        and finite(e.get("lon"))):
+                    continue
+                fid = e.get("flight_id")
+                if fid not in kinds:
+                    meta = (read_json(os.path.join(SESSIONS, fid + ".meta.json"))
+                            if isinstance(fid, str) else None) or {}
+                    kinds[fid] = measures_runway(
+                        meta.get("category"), meta.get("vs0"),
+                        meta.get("aircraft") or e.get("aircraft"))
+                if kinds[fid]:
+                    out.append((float(e["lat"]), float(e["lon"])))
+    except OSError:
+        pass
+    return out
+
+
+def lookup_runways(points, backfill=False):
+    """Cache the runways of every airport near these points that is not cached.
+
+    Runs on its own thread and its own SimConnect connection; returns the
+    number of airports written. With backfill, landings already on record whose
+    airports have no runways cached are added, up to RUNWAY_BACKFILL_MAX.
+    """
+    import runways as runways_mod
+    index = runways_mod.load_index(RUNWAYS_DIR)
+
+    # Covered is a cached runway under the touchdown, not a cached airport
+    # nearby: an airport near a landing is not necessarily the one it was at.
+    # A landing off airport stays uncovered, and costs one airport list per
+    # session, parked, on this thread - nothing new is fetched for it.
+    def uncovered(pts):
+        return [p for p in pts
+                if not runways_mod.runway_at(index, p[0], p[1], RUNWAY_LOOKUP_RADIUS_NM)]
+
+    want = uncovered(points)
+    if backfill:
+        want += uncovered(_landing_points_on_record())
+    if not want:
+        return 0
+    # A coarse grid, so 84,000 airports are not each measured against every
+    # point: only the cells around a point are looked in.
+    cells = {}
+    for p in want:
+        cells.setdefault((int(p[0] * 10), int(p[1] * 10)), []).append(p)
+
+    gsc = GameSimConnect()
+    try:
+        if not gsc.open():
+            log("runways: SimConnect open failed")
+            return 0
+        listed = gsc.facility_airports()
+        if not listed:
+            log("runways: the sim returned no airport list")
+            return 0
+        targets = {}
+        for ident, region, la, lo, al in listed:
+            ci, cj = int(la * 10), int(lo * 10)
+            for di in (-1, 0, 1):
+                for dj in (-1, 0, 1):
+                    for p in cells.get((ci + di, cj + dj), ()):
+                        if runways_mod.nm_apart(p[0], p[1], la, lo) <= RUNWAY_LOOKUP_RADIUS_NM:
+                            targets[ident] = region
+        saved = 0
+        for ident in sorted(targets):
+            if ident in index:
+                continue
+            if saved >= RUNWAY_BACKFILL_MAX:
+                break
+            doc = gsc.facility_runways(ident, targets[ident])
+            if doc is None:
+                continue
+            # Saved even with no runways: a heliport is still an airport that
+            # has been asked about, and asking again would find the same.
+            os.makedirs(RUNWAYS_DIR, exist_ok=True)
+            persistence.atomic_json(runways_mod.cache_path(RUNWAYS_DIR, ident), doc)
+            saved += 1
+        log("runways: %d point(s), %d airport(s) nearby, %d cached"
+            % (len(want), len(targets), saved))
+        return saved
+    finally:
+        gsc.close()
+
+
+def start_runway_lookup():
+    """Start a lookup on its own thread unless one is already running."""
+    with _runway_lock:
+        t = _runway_state["thread"]
+        if t is not None and t.is_alive():
+            return False
+        points, _runway_queue[:] = list(_runway_queue), []
+        backfill = not _runway_state["backfilled"]
+        _runway_state["backfilled"] = True
+
+    def work():
         try:
-            aq.get(key)
+            if lookup_runways(points, backfill=backfill):
+                schedule_logbook_rebuild(reason="runways cached", bake_maps=False)
         except Exception as e:
-            log("optional var %s not subscribed %s" % (key, repr(e)))
+            log("runways: lookup failed %r" % (e,))
+
+    t = threading.Thread(target=work, daemon=True, name="runway-lookup")
+    with _runway_lock:
+        _runway_state["thread"] = t
+    t.start()
+    return True
+
+
+def run_connected(sm, flight=None, tracker=None, resume_snap=None):
+    native = sm if isinstance(sm, NativeSim) else None
+    aq = None
+    if native is None:
+        from SimConnect import AircraftRequests
+        aq = AircraftRequests(sm, _time=200)
+        for key in ("PLANE_PITCH_DEGREES", "PLANE_BANK_DEGREES", "IS_SLEW_ACTIVE"):
+            try:
+                aq.get(key)
+            except Exception as e:
+                log("optional var %s not subscribed %s" % (key, repr(e)))
     if tracker is None:
         tracker = ClipTracker()
         LIVE_TRACKER[0] = tracker
@@ -5328,11 +5911,18 @@ def run_connected(sm, flight=None, tracker=None, resume_snap=None):
         log("reconnect with surviving flight_id %s started_at=%s" % (flight.flight_id, flight.started_at))
     stale = 0
     last_detect = 0.0
-    sampler_conn, state_sampler = open_state_sampler()
+    if native is not None:
+        # The main connection is the sampler's; there is no second one.
+        sampler_conn, state_sampler = native.gsc, native.smp
+    else:
+        sampler_conn, state_sampler = open_state_sampler()
+    last_fresh = None
+    held_ticks = 0
     last_compare = 0.0
     loop_count = 0
     loop_mark = time.time()
     parked_since = None
+    runway_parked_since = None
     fast_used = 0
     fast_missing = 0
     # Extremes since the last recorded point. Handed to the recorder by
@@ -5346,8 +5936,9 @@ def run_connected(sm, flight=None, tracker=None, resume_snap=None):
         RUNTIME["replay"]["chase"]["camera_acquired"] = False
     info = game_dll_status()
     log(
-        "simconnect session ready pid=%s python-simconnect detect; game_dll=%s camera_exports=%s"
-        % (os.getpid(), info.get("path"), info.get("ok"))
+        "simconnect session ready pid=%s %s; game_dll=%s camera_exports=%s"
+        % (os.getpid(), "native connection" if native is not None
+           else "python-simconnect detect", info.get("path"), info.get("ok"))
     )
     try:
         while True:
@@ -5361,9 +5952,36 @@ def run_connected(sm, flight=None, tracker=None, resume_snap=None):
                 tracker.reset()
                 write_current("idle", None, None, None, extra={"connected": False, "error": "sim quit"})
                 return "quit", None, tracker
+            if native is not None:
+                # A sim that has gone without saying so - crashed, killed.
+                # Handled as the one-at-a-time read failing was: the flight is
+                # kept, and the next connection may resume it.
+                why = native.lost(loop_t)
+                if why:
+                    log("sim connection lost: %s" % why)
+                    write_current(
+                        "idle",
+                        flight.flight_id if flight else None,
+                        flight.started_at if flight else None,
+                        None,
+                        extra={"connected": False, "error": "sim not answering"},
+                        sortie_id=getattr(flight, "sortie_id", None) if flight else None,
+                    )
+                    return "error", flight, tracker
             try:
-                s = sample(aq) if SAMPLER_MODE != "fast" else None
-                if state_sampler is not None:
+                if native is not None:
+                    fast = sample_from_state(state_sampler.latest())
+                    merge_peaks(peak_acc, (fast or {}).get("peaks"))
+                    s, last_fresh = native_sample(fast, last_fresh, loop_t)
+                    if fast is not None:
+                        fast_used += 1
+                    elif s is not None:
+                        held_ticks += 1
+                    if s is not None:
+                        s["peaks"] = peak_acc
+                else:
+                    s = sample(aq) if SAMPLER_MODE != "fast" else None
+                if native is None and state_sampler is not None:
                     fast = sample_from_state(state_sampler.latest())
                     merge_peaks(peak_acc, (fast or {}).get("peaks"))
                     if SAMPLER_MODE == "fast":
@@ -5403,6 +6021,13 @@ def run_connected(sm, flight=None, tracker=None, resume_snap=None):
                 except Exception:
                     pass
                 return "error", flight, tracker
+            if s is None:
+                # Connected, and the sim has pushed nothing yet - the first
+                # moments of a native connection. Nothing below has anything
+                # to work on; the rest of the loop assumed a sample and ended
+                # the session on the first tick, before a single push.
+                time.sleep(SAMPLE_SEC)
+                continue
             try:
                 tracker.feed(s)
             except PermissionError as e:
@@ -5488,6 +6113,15 @@ def run_connected(sm, flight=None, tracker=None, resume_snap=None):
             if cs is not None:
                 with RUNTIME_LOCK:
                     RUNTIME["camera_state"] = cs
+            if RUNWAY_LOOKUP and runway_lookup_wanted() and game_dll_status().get("ok"):
+                parked = bool(s.get("on_ground")) and (as_float(s.get("gs")) or 0.0) < 1.0
+                if not parked:
+                    runway_parked_since = None
+                elif runway_parked_since is None:
+                    runway_parked_since = loop_t
+                elif (loop_t - runway_parked_since) >= RUNWAY_LOOKUP_PARKED_SEC:
+                    runway_parked_since = None
+                    start_runway_lookup()
             if _logbook_pending[0]:
                 still = bool(s.get("on_ground")) and (as_float(s.get("gs")) or 0.0) < 1.0
                 if not still:
@@ -5513,7 +6147,10 @@ def run_connected(sm, flight=None, tracker=None, resume_snap=None):
         log("run error %s (flight kept)" % repr(e))
         return "error", flight, tracker
     finally:
-        if SAMPLER_MODE == "fast" and (fast_used or fast_missing):
+        if native is not None and (fast_used or held_ticks):
+            log("sampler: %d ticks from pushes, %d held the last state" %
+                (fast_used, held_ticks))
+        elif SAMPLER_MODE == "fast" and (fast_used or fast_missing):
             log("sampler: %d ticks from pushes, %d fell back to legacy" %
                 (fast_used, fast_missing))
         if sampler_conn is not None:
