@@ -30,8 +30,9 @@ remember. A flight becomes a *sortie*; a sortie splits into *legs* at each
 takeoff and landing.
 
 **Grades each leg, and shows its working.** Every leg gets a letter and a
-score, broken into four phases - liftoff, climb, cruise and descent - and each
-phase lists the measurements behind it with the band they were scored against:
+score, broken into five phases - liftoff, climb, cruise, descent and landing -
+and the leg's Grading tab lists the measurements behind each one with the band
+they were scored against:
 
 ```
 liftoff   A   96.5
@@ -51,11 +52,21 @@ the sim reports about the airframe, not from its name. The split between light
 and transport is at a 61 kt stall speed because that is where 14 CFR 23.49
 draws it.
 
-**Grades the landing separately.** Touchdown vertical speed sets an A-F letter.
-How *square* the arrival was - bank through the rollout, and sideways
-acceleration after the wheels are down - can hold that letter down but never
-lift it. A gentle arrival that is still sliding sideways is not a good landing;
-a perfectly square arrival at 600 fpm is still an arrival.
+**Gives the landing its own letter.** Touchdown vertical speed sets an A-F
+letter, judged on the aircraft type's own criteria - 200 fpm is a C in a
+light airplane and an A in an airliner. How *square* the arrival was - bank
+through the rollout, and sideways acceleration after the wheels are down - can
+hold that letter down but never lift it. A gentle arrival that is still sliding
+sideways is not a good landing; a perfectly square arrival at 600 fpm is still
+an arrival.
+
+**Knows where on the runway you landed.** For an airplane landing on a
+runway, it asks the sim which runway that was, and measures how far past the
+threshold the wheels touched and how long the aircraft floated first. Both
+are shown. Two switches in Settings, off to begin with, let them count toward
+the landing grade as well, against published criteria: a landing far down
+the runway, or one that floated past the touchdown zone, is marked down.
+Helicopters are never graded on either.
 
 **Writes a passenger's note.** A short paragraph, in the voice of someone
 sitting in the back, about what the flight felt like. Templates and a hash of
