@@ -111,7 +111,14 @@ profiles. **The clock starts at the later of 50 ft and the threshold**: the
 AC assumes 50 ft over the threshold, and an arrival crossing lower had its
 approach counted as float. So the float needs the runway, and an
 off-airport landing has none. The height over the threshold is recorded
-beside it as information and graded nowhere. It is scored on the standard's *zones*, not a slope: 100 for a 7 s
+beside it as information and graded nowhere.
+**Runways are not flat, and the sim gives them one elevation.** Heights for
+both - the threshold crossing and the float's 50 ft point - are above the
+runway's surface, read from PLANE ALT ABOVE GROUND as the aircraft passed
+over it (`grading.RunwaySurface`). Above the touchdown spot was off by 20-40
+ft on runways that climb 2%. Only this landing's readings, over this runway:
+a track is the whole flight, and "past the threshold" is a distance along a
+heading - the departure and a downwind leg are past it too. It is scored on the standard's *zones*, not a slope: 100 for a 7 s
 flare, 50 at the end of the touchdown zone (AC 91-79A), 0 a further 1,000 ft
 on. A first version sloped linearly to zero at the end of the zone and
 failed a jet touching down inside it, which the AC calls typical. It is

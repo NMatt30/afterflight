@@ -58,7 +58,7 @@ SCHEMA = 2
 # Bumped for: markers at the leg events, jump-splitting, stop markers, and
 # not splitting a jump the aircraft plainly flew across, the landing float, and
 # the touchdown point.
-BUILDER_VERSION = 36
+BUILDER_VERSION = 37
 EXCLUDED_JSON = os.path.join(BASE, "excluded.json")
 DETAIL_DIR = os.path.join(SESSIONS, "detail")
 
@@ -943,12 +943,32 @@ def landing_touchdown_point(clip_id, track, t_land, aircraft=None,
                 hit["distance_ft"], hit["length_ft"]), 1)
             hit["source"] = source
             # How high it crossed the threshold - shown, never graded.
+            past = lambda q: runways.past_threshold(hit, q["lat"], q["lon"])
             hit["threshold_height_ft"] = grading.threshold_height(
-                points, t_land, past=lambda q: runways.past_threshold(
-                    hit, q["lat"], q["lon"]))
+                points, t_land, past=past,
+                surface=landing_surface(clip_id, track, t_land, hit))
             return hit
         return None
     return None
+
+
+def landing_surface(clip_id, track, t_land, hit):
+    """The runway surface for this landing (grading.RunwaySurface), or None.
+
+    From the landing clip when its points carry the height above ground - at
+    10 Hz the readings start a few feet past the threshold - and from the
+    1 Hz track otherwise, which has carried it all along. Clips recorded
+    before it was added have none. hit is the located runway.
+    """
+    past = lambda q: runways.past_threshold(hit, q["lat"], q["lon"])
+    beside = lambda q: runways.beside_threshold(hit, q["lat"], q["lon"])
+    length_ft = hit.get("available_ft")
+    pts = clip_points(clip_id) if clip_id else []
+    if pts and any(p.get("agl") is not None for p in pts):
+        surface = grading.runway_surface(pts, past, t_land, length_ft, beside)
+        if surface is not None:
+            return surface
+    return grading.runway_surface(track, past, t_land, length_ft, beside)
 
 
 def clip_touchdown_rate_fpm(clip_id):
@@ -1629,15 +1649,18 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
                 if touchdown_point:
                     tp = touchdown_point
                     past = lambda q: runways.past_threshold(tp, q["lat"], q["lon"])
+                    surface = landing_surface(ld_clip, track, t1, tp)
                     pts = clip_points(ld_clip) if ld_clip else []
                     if pts:
                         landing_float = grading.landing_float_for(
                             pts, aircraft, category=category, vs0_kt=vs0_kt,
-                            t_land=t1, source="clip", track=track, past=past)
+                            t_land=t1, source="clip", track=track, past=past,
+                            surface=surface)
                     if landing_float is None:
                         landing_float = grading.landing_float_for(
                             track, aircraft, category=category, vs0_kt=vs0_kt,
-                            t_land=t1, source="track", past=past)
+                            t_land=t1, source="track", past=past,
+                            surface=surface)
                 held = grading.worse_letter(
                     grade, grading.float_ceiling_letter(landing_float))
                 if landing_float and held and held != grade:

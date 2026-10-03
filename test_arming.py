@@ -950,6 +950,12 @@ def test_a_free_leg_is_used_as_counted():
         c.close()
 
 
+def test_a_clip_records_the_height_above_ground():
+    """How a landing learns the shape of the runway it landed on."""
+    p = watcher.clip_point({"t": 1.0, "alt": 5000.0, "agl": 31.5})
+    assert p.get("agl") == 31.5, "clip points do not carry the height above ground"
+
+
 def test_a_frozen_airborne_sample_does_not_arm():
     p = watcher.PendingFlight(sample(0))
     p.feed(sample(0))

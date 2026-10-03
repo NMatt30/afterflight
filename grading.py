@@ -584,16 +584,125 @@ def _threshold_crossing(points, idx, past):
     return None, None
 
 
-def threshold_height(points, t_land=None, past=None):
-    """Height over the landing threshold, above where the wheels touched.
+# How far apart the two readings a slope is taken from must be, at least. The
+# 10 Hz clip puts readings 15 ft apart at approach speed, where a tenth of a
+# foot of rounding in the height above ground is a 0.7% slope.
+SURFACE_BASE_FT = 100.0
+# Which readings are this landing's: from a while before touchdown to shortly
+# after, and only along the runway. A track is the whole flight, and "past
+# the threshold" is a distance along a heading - every point ahead on that
+# line, the departure included, is past it.
+SURFACE_BEFORE_S = 120.0
+SURFACE_AFTER_S = 20.0
+# ...and only on it: two minutes before touchdown can be the downwind leg,
+# abeam the runway and half a mile to one side of it, over other ground.
+SURFACE_LATERAL_FT = 250.0
+
+
+class RunwaySurface(object):
+    """The runway's elevation along its length, as the sim models it.
+
+    The sim gives a runway one elevation, and its runways are not flat: some
+    rise or fall by 2% or more, which is 20 ft over the first 1,000 ft. So the
+    surface is read from the aircraft itself - its altitude less its height
+    above the ground beneath (PLANE ALT ABOVE GROUND), wherever it was over
+    the runway. Only readings past the threshold are used: before it is
+    whatever lies off the end, a field or the edge of a mesa, and an approach
+    over a drop would otherwise put the runway hundreds of feet low.
+
+    at(x) is the elevation x feet past the threshold: interpolated between
+    readings, and beyond them extended along the slope of the nearest two that
+    are SURFACE_BASE_FT apart. Before the threshold that extension is the
+    runway's plane, which is what "50 ft above the landing surface" means.
+    ref is the aircraft's own height above the ground on its wheels, the
+    offset between where its altitude is measured and its wheels.
+    """
+
+    def __init__(self, xs, gs, ref):
+        self.xs, self.gs, self.ref = xs, gs, ref
+
+    def _slope(self, i, j):
+        return (self.gs[j] - self.gs[i]) / (self.xs[j] - self.xs[i])
+
+    def _far(self, i, step):
+        j = i + step
+        while 0 <= j < len(self.xs) and abs(self.xs[j] - self.xs[i]) < SURFACE_BASE_FT:
+            j += step
+        return j if 0 <= j < len(self.xs) else None
+
+    def at(self, x):
+        xs, gs = self.xs, self.gs
+        if x <= xs[0]:
+            j = self._far(0, 1)
+            return gs[0] + (self._slope(0, j) * (x - xs[0]) if j is not None else 0.0)
+        if x >= xs[-1]:
+            n = len(xs) - 1
+            j = self._far(n, -1)
+            return gs[n] + (self._slope(j, n) * (x - xs[n]) if j is not None else 0.0)
+        for k in range(1, len(xs)):
+            if x <= xs[k]:
+                f = (x - xs[k - 1]) / (xs[k] - xs[k - 1]) if xs[k] > xs[k - 1] else 0.0
+                return gs[k - 1] + f * (gs[k] - gs[k - 1])
+        return gs[-1]
+
+    def height(self, q, past):
+        """How high the wheels were above the runway, at this point."""
+        return float(q["alt"]) - self.at(past(q)) - self.ref
+
+
+def runway_surface(samples, past, t_land=None, length_ft=None, beside=None):
+    """A RunwaySurface from samples carrying alt, agl, lat and lon, or None.
+
+    Only readings from SURFACE_BEFORE_S before touchdown to SURFACE_AFTER_S
+    after it, between the threshold and length_ft past it, and - given
+    beside(point), feet from the centreline - within SURFACE_LATERAL_FT of
+    the centreline, are runway.
+    None without at least two of them SURFACE_BASE_FT apart, or without a
+    reading on the wheels after touchdown to take ref from.
+    """
+    if not samples or past is None:
+        return None
+    pts = [q for q in samples if _finite(q.get("alt")) and _finite(q.get("agl"))
+           and _finite(q.get("t"))]
+    idx = landing_index(pts, t_land)
+    if not idx:
+        return None
+    ref = [float(q["agl"]) for q in pts[idx:idx + 10] if q.get("on_ground")]
+    if not ref:
+        return None
+    ref = sorted(ref)[len(ref) // 2]
+    t_td = float(pts[idx]["t"])
+    end = float(length_ft) if _finite(length_ft) else float("inf")
+    over = []
+    for q in pts:
+        if not (t_td - SURFACE_BEFORE_S <= float(q["t"]) <= t_td + SURFACE_AFTER_S):
+            continue
+        try:
+            x = past(q)
+            if beside is not None and abs(beside(q)) > SURFACE_LATERAL_FT:
+                continue
+        except (KeyError, TypeError, ValueError):
+            continue
+        if 0 <= x <= end:
+            over.append((x, float(q["alt"]) - float(q["agl"])))
+    over.sort()
+    if len(over) < 2 or over[-1][0] - over[0][0] < SURFACE_BASE_FT:
+        return None
+    return RunwaySurface([x for x, _ in over], [g for _, g in over], ref)
+
+
+def threshold_height(points, t_land=None, past=None, surface=None):
+    """How high the wheels crossed the landing threshold, above the runway.
 
     Information, not a grade: the float and the touchdown point already say
-    what a high or low crossing cost. Above the touchdown point because the
-    sim gives a runway one elevation, so on a sloped runway this is off by the
-    difference between its threshold and where the wheels touched. None when
-    the recording does not reach back to the threshold.
+    what a high or low crossing cost. Measured against the runway surface at
+    the threshold (RunwaySurface). It used to be measured above where the
+    wheels touched, which on a sloped runway is off by the rise between the
+    two - 30 ft and more on runways that climb 2%. Without a surface it is
+    None, not that guess. None too when the recording does not reach back to
+    the threshold.
     """
-    if not points or past is None:
+    if not points or past is None or surface is None:
         return None
     idx = landing_index(points, t_land)
     if not idx or not _finite(points[idx].get("alt")):
@@ -605,10 +714,10 @@ def threshold_height(points, t_land=None, past=None):
     if not (_finite(a.get("alt")) and _finite(b.get("alt"))):
         return None
     alt = float(a["alt"]) + frac * (float(b["alt"]) - float(a["alt"]))
-    return round(alt - float(points[idx]["alt"]), 1)
+    return round(alt - surface.at(0.0) - surface.ref, 1)
 
 
-def landing_float(points, t_land=None, source=None, past=None):
+def landing_float(points, t_land=None, source=None, past=None, surface=None):
     """How long the airplane was held off over the runway, or None.
 
     The clock starts at whichever comes later: the 50 ft point (AC 25-32's air
@@ -638,7 +747,16 @@ def landing_float(points, t_land=None, source=None, past=None):
     td = points[idx]
     if not (_finite(td.get("t")) and _finite(td.get("alt"))):
         return None
-    ground = float(td["alt"])
+    # Height above the runway where there is one (RunwaySurface): above where
+    # the wheels touched is off by the runway's rise on a sloped one.
+    if surface is not None and past is not None:
+        def height(q):
+            return surface.height(q, past)
+    else:
+        ground = float(td["alt"])
+
+        def height(q):
+            return float(q["alt"]) - ground
 
     # Back from contact through the flare to the last sample above 50 ft.
     j = idx - 1
@@ -648,14 +766,14 @@ def landing_float(points, t_land=None, source=None, past=None):
             return None
         if not (_finite(q.get("t")) and _finite(q.get("alt"))):
             return None
-        if float(q["alt"]) - ground > FLOAT_HEIGHT_FT:
+        if height(q) > FLOAT_HEIGHT_FT:
             break
         j -= 1
     if j < 0:
         return None
     above, below = points[j], points[j + 1]
-    h_a = float(above["alt"]) - ground
-    h_b = float(below["alt"]) - ground
+    h_a = height(above)
+    h_b = height(below)
     frac = (h_a - FLOAT_HEIGHT_FT) / (h_a - h_b) if h_a > h_b else 0.0
     t_cross = float(above["t"]) + frac * (float(below["t"]) - float(above["t"]))
     start = "50 ft"
@@ -720,7 +838,8 @@ def scores_float(profile):
 
 
 def landing_float_for(points, aircraft=None, category=None, vs0_kt=None,
-                      t_land=None, source=None, track=None, past=None):
+                      t_land=None, source=None, track=None, past=None,
+                      surface=None):
     """The float for this leg's landing, or None if it is not measured here.
 
     Profile routing is the same as alignment's and for the same reason. track,
@@ -732,7 +851,8 @@ def landing_float_for(points, aircraft=None, category=None, vs0_kt=None,
         category = infer_category(track or points)
     if not scores_float(profile_for(aircraft, category=category, vs0_kt=vs0_kt)):
         return None
-    return landing_float(points, t_land=t_land, source=source, past=past)
+    return landing_float(points, t_land=t_land, source=source, past=past,
+                         surface=surface)
 
 
 def float_score(seconds, zone_end_s, zero_s):

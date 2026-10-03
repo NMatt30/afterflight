@@ -224,8 +224,14 @@ def _east_of(lat, lon, ft):
     return lat, lon + ft / (60.0 * runways.FT_PER_NM * math.cos(math.radians(lat)))
 
 
-def _flight(tree, touchdown_past_threshold_ft):
-    """A jet arriving eastbound on runway 09 and touching down where asked."""
+def _flight(tree, touchdown_past_threshold_ft, slope=0.0, cliff_ft=0.0):
+    """A jet arriving eastbound on runway 09 and touching down where asked.
+
+    slope tilts the runway's surface (rise per foot past the threshold, its
+    plane extended before it); cliff_ft drops the ground before the threshold
+    below that plane. agl is the height above the ground beneath, as the sim
+    reports it; with neither, the runway is flat at 0 ft.
+    """
     thr = _east_of(LAT0, LON0, -2865.0 * runways.FT_PER_M / 2.0)
     td = _east_of(thr[0], thr[1], touchdown_past_threshold_ft)
     fps = 120 * 1.68781
@@ -244,6 +250,16 @@ def _flight(tree, touchdown_past_threshold_ft):
         la, lo = _east_of(td[0], td[1], k * 100.0)
         rows.append({"t": t, "lat": la, "lon": lo, "alt": 0.0, "on_ground": True, "gs": 60, "vs": 0.0})
         t += 1.0
+    # Tilt the world to the runway's slope, near it, and record the height
+    # above the ground beneath. past is feet past the threshold along the
+    # runway, which these rows fly straight down.
+    for r in rows:
+        e, n = runways._local_ft(thr[0], thr[1], r["lat"], r["lon"])
+        past = e
+        plane = slope * max(past, -3000.0)
+        terrain = plane - (cliff_ft if past < 0 else 0.0)
+        r["alt"] = r["alt"] + plane
+        r["agl"] = r["alt"] - terrain
     t_land = next(r["t"] for r in rows[25:] if r["on_ground"])
     import datetime as dt
     for r in rows:
@@ -307,6 +323,34 @@ def test_no_runway_means_no_float_and_no_touchdown_point():
         h = leg["touchdown_point"].get("threshold_height_ft")
         assert h is not None and abs(h - 94) < 6, (
             "crossed the threshold at about 94 ft, measured %r" % h)
+    finally:
+        t.close()
+
+
+def test_the_threshold_height_is_measured_against_a_sloped_runway():
+    """The builder reads the runway's shape from the track's height above
+    ground, so a crossing reads the same on a runway that climbs - and the
+    ground falling away before the threshold is not the runway."""
+    t = Tree()
+    try:
+        _flight(t, 1800.0, slope=0.02, cliff_ft=300.0)
+        # One reading from the downwind leg, abeam the threshold half a mile
+        # to the north over lower ground: not the runway.
+        path = os.path.join(t.dir, FID + ".jsonl")
+        rows = [json.loads(l) for l in open(path, encoding="utf-8")]
+        td = next(i for i in range(25, len(rows)) if rows[i]["on_ground"])
+        thr = _east_of(LAT0, LON0, -2865.0 * runways.FT_PER_M / 2.0 - 10.0)
+        r = rows[td - 40]
+        r["lat"], r["lon"] = thr[0] + 3000.0 / (60.0 * runways.FT_PER_NM), thr[1] + 20.0 / (60.0 * runways.FT_PER_NM * math.cos(math.radians(thr[0])))
+        r["agl"] = r["alt"] + 400.0
+        with open(path, "w", encoding="utf-8") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
+        t.runway()
+        tp = _leg(t)["touchdown_point"]
+        h = tp.get("threshold_height_ft")
+        assert h is not None and abs(h - 94) < 6, (
+            "crossed about 94 ft over a runway climbing 2%%, measured %r" % h)
     finally:
         t.close()
 

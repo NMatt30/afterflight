@@ -759,12 +759,11 @@
     var tp = leg.touchdown_point;
     if (tp && tp.threshold_height_ft != null) {
       row("Over threshold", Math.round(tp.threshold_height_ft) + " ft",
-          "How high the aircraft crossed the landing threshold of "
-          + (tp.runway || "the runway") + ", measured above where the wheels "
-          + "touched. Shown, not graded. Published glidepaths cross at about "
-          + "50 ft. On a sloped runway this is off by the difference in "
-          + "height between the threshold and the touchdown spot, because the "
-          + "sim gives a runway a single elevation.");
+          "How high the wheels crossed the landing threshold of "
+          + (tp.runway || "the runway") + ", above the runway there. Shown, "
+          + "not graded. Published glidepaths cross at about 50 ft. Runways "
+          + "are not flat, so the runway's surface is read from the sim's own "
+          + "height above the ground as the aircraft passed over it.");
     }
     row("Max alt", leg.max_alt_ft != null ? Math.round(leg.max_alt_ft) + " ft" : "—");
     row("Max GS", leg.max_gs_kt != null ? Math.round(leg.max_gs_kt) + " kt" : "—");

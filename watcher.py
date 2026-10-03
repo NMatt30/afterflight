@@ -1162,6 +1162,10 @@ def clip_point(s):
         "gear": s.get("gear"),
         "flaps": s.get("flaps"),
         "spoilers": s.get("spoilers"),
+        # The sim's height above the ground beneath. The runway is not flat
+        # and the sim gives it one elevation, so this is how a landing learns
+        # the shape of the runway it landed on - see grading.RunwaySurface.
+        "agl": s.get("agl"),
     }
 
 def list_clip_summaries():

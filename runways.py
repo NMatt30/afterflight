@@ -77,6 +77,13 @@ def _local_ft(lat0, lon0, lat, lon):
     return east, north
 
 
+def beside_threshold(hit, lat, lon):
+    """Feet from the extended centreline of a located runway, right positive."""
+    h = math.radians(float(hit["landing_heading"]))
+    east, north = _local_ft(hit["threshold_lat"], hit["threshold_lon"], lat, lon)
+    return east * math.cos(h) - north * math.sin(h)
+
+
 def offset_ft(lat, lon, bearing_deg, ft):
     """The point ft feet from (lat, lon) along bearing_deg. Flat, like _local_ft."""
     b = math.radians(bearing_deg)
@@ -312,6 +319,8 @@ def _self_test():
     assert abs(past_threshold(r, q[0], q[1]) + 3000) <= 2
     q = _offset(*_offset(east_end[0], east_end[1], 270.0, 1000.0), 0.0, 60.0)
     assert abs(past_threshold(r, q[0], q[1])) <= 2
+    # 60 ft north of runway 27 is to the right of an aircraft landing west.
+    assert abs(beside_threshold(r, q[0], q[1]) - 60) <= 2, beside_threshold(r, q[0], q[1])
 
     # Before the threshold is negative, not discarded.
     p = _offset(west_end[0], west_end[1], 270.0, 300.0)

@@ -1131,12 +1131,147 @@ def test_touching_down_short_of_the_threshold_measures_no_float():
 
 def test_the_height_over_the_threshold_is_measured():
     pts = _arrival(20.0, kt=100.0)
+    for p in pts:
+        p["agl"] = p["alt"] - 1000.0             # a flat runway at 1,000 ft
     t50 = next(p["t"] for p in pts if p["alt"] - 1000.0 <= 50.5)
+    past = _threshold_at(pts, t50 + 5.0)
+    surface = grading.runway_surface(pts, past)
     # 5 s into a float that sinks 50 ft evenly over 20 s.
-    h = grading.threshold_height(pts, past=_threshold_at(pts, t50 + 5.0))
+    h = grading.threshold_height(pts, past=past, surface=surface)
     assert h is not None and abs(h - 38.0) < 2.0, (
         "crossed at about 38 ft, measured %r" % h)
     assert grading.threshold_height(pts) is None, "a height with no runway"
+    assert grading.threshold_height(pts, past=past) is None, (
+        "a height with no runway surface to measure it from")
+
+
+def _sloped(cross_ft, slope, cliff_ft=0.0, td_x=1000.0, kt=100.0, hz=10.0, ref=4.0):
+    """An arrival over a sloped runway, and past() for its threshold.
+
+    Northbound. The runway's surface is slope x feet past the threshold, its
+    plane extended before it; the terrain before the threshold is that plane
+    less cliff_ft, the edge of a mesa. The wheels descend to cross_ft over the
+    threshold, then sink evenly to touch down td_x past it. alt is where the
+    sim measures the aircraft, ref above the wheels; agl is alt above the
+    terrain beneath, as PLANE ALT ABOVE GROUND reports it.
+    """
+    fps = kt * 1.68781
+    lat0, base, pts, t, x = 47.0, 1000.0, [], 1000.0, -2500.0
+    while x < td_x + 1500.0:
+        if x < 0:
+            h = cross_ft + (150.0 - cross_ft) * (-x / 2500.0)
+        elif x < td_x:
+            h = cross_ft * (1.0 - x / td_x)
+        else:
+            h = 0.0
+        plane = base + slope * x
+        terrain = plane if x >= 0 else plane - cliff_ft
+        alt = plane + h + ref
+        pts.append({"t": t, "lat": lat0 + x / 364000.0, "lon": -122.0, "alt": alt,
+                    "agl": alt - terrain, "on_ground": x >= td_x, "gs": kt})
+        t += 1.0 / hz
+        x += fps / hz
+    return pts, (lambda q: (q["lat"] - lat0) * 364000.0)
+
+
+def test_the_threshold_height_is_above_the_runway_not_where_it_touched():
+    """The sim gives a runway one elevation and its runways are not flat. On
+    one that climbs 2%, height above where the wheels touched 1,000 ft on put
+    a 30 ft crossing at 10 ft; on one that falls 2%, at 50."""
+    for slope in (0.02, -0.02, 0.0):
+        pts, past = _sloped(30.0, slope)
+        idx = grading.landing_index(pts)
+        thr = min(range(len(pts)), key=lambda i: abs(past(pts[i])))
+        naive = pts[thr]["alt"] - pts[idx]["alt"]
+        if slope:
+            assert abs(naive - 30.0) > 15, "the fixture is not sloped enough to tell"
+        h = grading.threshold_height(pts, past=past,
+                                     surface=grading.runway_surface(pts, past))
+        assert h is not None and abs(h - 30.0) < 1.5, (
+            "crossed 30 ft over a runway sloping %+.0f%%, measured %r"
+            % (slope * 100, h))
+
+
+def test_ground_before_the_threshold_is_not_the_runway():
+    """Off the end of a runway on a mesa the ground drops away. A reading over
+    it is not the runway, and must not move the runway 300 ft down."""
+    pts, past = _sloped(30.0, 0.02, cliff_ft=300.0)
+    before = [p for p in pts if -200 < past(p) < 0]
+    assert before and min(p["agl"] for p in before) > 300, "the fixture has no cliff"
+    h = grading.threshold_height(pts, past=past,
+                                 surface=grading.runway_surface(pts, past))
+    assert h is not None and abs(h - 30.0) < 1.5, (
+        "a drop before the threshold moved the crossing to %r" % h)
+
+
+def test_the_float_starts_50_ft_above_the_runway():
+    """Crossing high on a runway that climbs, 50 ft above where the wheels
+    touched comes long before 50 ft above the runway."""
+    td_x = 1500.0
+    pts, past = _sloped(70.0, 0.02, td_x=td_x)
+    surface = grading.runway_surface(pts, past)
+    flt = grading.landing_float(pts, past=past, surface=surface)
+    fps = 100.0 * 1.68781
+    want = (td_x - td_x * (20.0 / 70.0)) / fps          # sinks 70 -> 0 over td_x
+    assert flt and flt["from"] == "50 ft" and abs(flt["seconds"] - want) < 0.15, (
+        "the float from 50 ft above the runway is %.1f s, measured %r"
+        % (want, flt and flt["seconds"]))
+    flat = grading.landing_float(pts, past=past)
+    assert abs(flat["seconds"] - want) > 1.0, "the fixture cannot tell the two apart"
+
+
+def test_the_runway_surface_is_extended_along_its_slope():
+    """The first reading past the threshold can be a whole 1 Hz sample in -
+    200 ft at jet speed, 4 ft of rise on a 2% runway. The surface at the
+    threshold is extended back along the slope, not taken from that reading."""
+    s = grading.RunwaySurface([150.0, 350.0, 550.0], [3.0, 7.0, 11.0], 0.0)
+    assert abs(s.at(0.0) - 0.0) < 1e-9, s.at(0.0)
+    assert abs(s.at(250.0) - 5.0) < 1e-9 and abs(s.at(750.0) - 15.0) < 1e-9
+    # Two readings closer than SURFACE_BASE_FT do not set the slope alone.
+    s = grading.RunwaySurface([10.0, 12.0, 210.0], [0.2, 0.5, 4.2], 0.0)
+    assert abs(s.at(0.0) - 0.0) < 0.05, (
+        "a slope taken over 2 ft put the threshold at %.2f" % s.at(0.0))
+
+
+def test_only_this_landing_on_this_runway_is_the_runway():
+    """A track is the whole flight, and past() is a distance along a heading:
+    the departure, a hundred miles down the same line, is "past the
+    threshold" too. Measured on real tracks, that put a 30 ft crossing at
+    hundreds of feet."""
+    pts, past = _sloped(30.0, 0.02)
+    beside = lambda q: (q["lon"] + 122.0) * 364000.0 * 0.682     # ft east
+    t0 = pts[0]["t"]
+    td_t = next(p["t"] for p in pts if p["on_ground"])
+
+    def stray(t, x, east, ground):
+        return {"t": t, "lat": 47.0 + x / 364000.0,
+                "lon": -122.0 + east / (364000.0 * 0.682), "alt": ground + 900.0,
+                "agl": 900.0, "on_ground": False, "gs": 100.0}
+    strays = {
+        # the departure, an hour earlier, off this same runway's threshold
+        "time": stray(t0 - 3600.0, 1.0, 0.0, 5000.0),
+        # the downwind leg, abeam the threshold, half a mile to one side
+        "lateral": stray(td_t - 90.0, 1.0, 3000.0, 400.0),
+    }
+    for name, q in strays.items():
+        mixed = sorted(pts + [q], key=lambda p: p["t"])
+        s = grading.runway_surface(mixed, past, beside=beside, length_ft=5000.0)
+        h = grading.threshold_height(mixed, past=past, surface=s)
+        assert h is not None and abs(h - 30.0) < 1.5, (
+            "a reading from elsewhere (%s) moved a 30 ft crossing to %r" % (name, h))
+    # Beyond the far end is not this runway either.
+    q = stray(td_t + 5.0, 9000.0, 0.0, 0.0)
+    s = grading.runway_surface(sorted(pts + [q], key=lambda p: p["t"]), past,
+                               beside=beside, length_ft=5000.0)
+    assert max(s.xs) <= 5000.0, "a reading past the end of the runway was used"
+
+
+def test_a_runway_surface_needs_readings_over_the_runway():
+    pts, past = _sloped(30.0, 0.0)
+    for p in pts:
+        p.pop("agl")
+    assert grading.runway_surface(pts, past) is None, (
+        "a surface was made from no height-above-ground readings")
 
 
 def test_helicopters_and_gyroplanes_are_not_measured():
