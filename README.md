@@ -92,22 +92,30 @@ to delete rather than what it intended to.
 
 ## What it needs
 
-Windows 10 or 11, MSFS 2024, and Python 3.10 or newer. One optional pip
-package: `Pillow` - without it you lose the baked map images and nothing else.
-The watcher talks to the sim through the sim's own SimConnect DLL, which the
-installer finds and copies; the `SimConnect` pip package is no longer needed,
-and is used only as a fallback if that DLL cannot be found.
+Windows 10 or 11 and MSFS 2024. Nothing else to install.
+
+Download `AfterFlight-<version>.zip` from the
+[Releases](https://github.com/NMatt30/afterflight/releases) page. It carries
+its own Python, so there is no Python to install and no pip:
+
+1. Unzip it somewhere you can write - your user folder, not `Program Files`.
+2. Double-click **Start AfterFlight.cmd**. The tray icon appears; its menu
+   can make it start with Windows.
+3. Start the sim and fly.
+
+To update, unzip the next release over the same folder. A release never
+contains anyone's data, so your flights and settings stay as they are.
+
+AfterFlight talks to the sim through the sim's own SimConnect DLL. It is not
+in this repository - it is Microsoft's binary - and the watcher finds it in
+your installation, or in the running sim, and copies it beside itself.
 
 There is no build step and no package manager. The interface is plain HTML and
 JavaScript on purpose, and the tray is `ctypes` with no dependencies at all.
 
-Replay and the chase camera additionally need a SimConnect DLL that ships with
-the sim. It is not in this repository - it is Microsoft's binary - and
-`install.ps1 -ResolveDll` copies it out of your own installation. Recording and
-grading work without it.
-
-[INSTALL.md](INSTALL.md) is the step-by-step, written for someone who has just
-downloaded this and has none of it set up.
+**Running from the source instead** needs Python 3.10 or newer, plus `Pillow`
+if you want the baked map images; nothing else is lost without it.
+[INSTALL.md](INSTALL.md) is the step-by-step for both ways.
 
 ---
 
@@ -128,10 +136,10 @@ downloaded this and has none of it set up.
 
 ---
 
-## Run it
+## Run it from the source
 
-What follows assumes the dependencies are already installed; see
-[INSTALL.md](INSTALL.md) if they are not.
+The release zip needs none of this - see above. From a clone, with Python
+installed (see [INSTALL.md](INSTALL.md)):
 
 ```powershell
 .\install.ps1

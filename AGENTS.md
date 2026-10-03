@@ -227,10 +227,10 @@ default, placed near the other tunables at the top of its module.
 | `efb-pkg/` | The in-sim EFB app. Byte-exact — see `.gitattributes`. |
 
 `DESIGN-NOTES.md` holds decisions taken far enough to write down and deliberately
-not built yet - running without a Python install, a shareable debug bundle, and
-why pattern work needs a flight-regime concept rather than another threshold.
-Read it before designing either; it records what was measured and what is still
-unverified.
+not built yet - a shareable debug bundle, and why pattern work needs a
+flight-regime concept rather than another threshold - plus the reasoning behind
+running without a Python install, which is now built. Read it before designing
+either; it records what was measured and what is still unverified.
 
 `LICENSE` is the PolyForm Noncommercial License 1.0.0. Anyone may use, modify
 and redistribute this; nobody may sell it or a derivative of it. Do not add a

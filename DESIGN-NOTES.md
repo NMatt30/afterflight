@@ -11,7 +11,12 @@ entry should say so or be deleted.
 
 ## 1. Running on a machine with no Python
 
-**Discussed 2026-09-04. Needed before a public 1.0.**
+**Discussed 2026-09-04. Built 2026-10-03** - kept here for the reasoning.
+The native connection (`SIM_CONNECTION`, `test_native.py`) is step 1 and
+`build_release.py` step 2; both were flown in the sim, the second from an
+unpacked release zip with no Python involved. User data stays in the app
+folder: an update is the zip unpacked over it, and the build refuses to
+carry a data file (`test_release.py`).
 
 ### The measured starting point
 
@@ -57,9 +62,9 @@ cost nothing now and remove two blockers later.
 
 ### Not verified
 
-Whether the ctypes layer can fully own connection lifecycle and quit detection
-in place of Python-SimConnect. Small surface, but it needs a real test against
-a running sim before the plan is committed to.
+A sim killed outright, live: the owner declined that test; `test_native.py`
+covers it offline. A machine that has never had Python installed - the zip
+was run with Python hidden from the PATH, not on a clean machine.
 
 ---
 

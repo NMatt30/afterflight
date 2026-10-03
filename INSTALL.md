@@ -39,8 +39,8 @@ The rest of this page is for running from a source checkout.
 There is no build step and no package manager. The UI is plain HTML and
 JavaScript on purpose, and the tray has no pip dependencies at all.
 
-> **Why Python at all?** Shipping without it is a known gap, written up in
-> `DESIGN-NOTES.md`. Until that lands you need an interpreter on the machine.
+> **Why Python at all?** Only because this is the source. The release zip
+> above carries its own; this section is for running from a clone.
 
 ### Install Python
 
