@@ -474,7 +474,17 @@ def _descent_parts(pg):
     return {q["key"]: q for q in (pg["phases"]["descent"]["parts"])}
 
 
-def test_alignment_is_listed_in_descent_as_a_cap_not_a_weight():
+def _landing_of(pg):
+    """The phase that carries the landing: its own with LANDING_PHASE on,
+    the descent's otherwise."""
+    return pg["phases"].get("landing") or pg["phases"]["descent"]
+
+
+def _landing_parts(pg):
+    return {q["key"]: q for q in _landing_of(pg)["parts"]}
+
+
+def test_alignment_is_listed_with_the_landing_as_a_cap_not_a_weight():
     """A weight on it pays out the gap between rollout and touchdown.
 
     Measured against real legs, weighting alignment at w changes a descent by
@@ -485,8 +495,8 @@ def test_alignment_is_listed_in_descent_as_a_cap_not_a_weight():
     al = grading.touchdown_alignment(_roll(7.54, 0.31 * grading.G_FT_S2))
     pg = grading.grade_leg(_leg_track(), 120.0, category="Airplane",
                            vs0_kt=40.0, alignment=al)
-    parts = _descent_parts(pg)
-    assert "alignment" in parts, "Alignment is not listed in the Descent phase"
+    parts = _landing_parts(pg)
+    assert "alignment" in parts, "Alignment is not listed with the landing"
     assert parts["alignment"]["weight_pct"] == 0, (
         "alignment carries a weight; it must cap instead")
     assert parts["alignment"].get("cap") is True
@@ -495,7 +505,7 @@ def test_alignment_is_listed_in_descent_as_a_cap_not_a_weight():
         "the weighted metrics no longer sum to 100%%: %d" % weighted)
 
 
-def test_alignment_can_only_lower_a_descent_score():
+def test_alignment_can_only_lower_the_landing_score():
     """Square never earns; crooked always costs."""
     square = grading.touchdown_alignment(_roll(0.2, 0.0))
     crooked = grading.touchdown_alignment(_roll(9.0, 0.5 * grading.G_FT_S2))
@@ -504,12 +514,12 @@ def test_alignment_can_only_lower_a_descent_score():
                                     vs0_kt=40.0, alignment=square)
     with_crooked = grading.grade_leg(_leg_track(), 120.0, category="Airplane",
                                      vs0_kt=40.0, alignment=crooked)
-    b = base["phases"]["descent"]["score"]
-    assert with_square["phases"]["descent"]["score"] == b, (
-        "a square landing raised the descent score from %s to %s"
-        % (b, with_square["phases"]["descent"]["score"]))
-    assert with_crooked["phases"]["descent"]["score"] < b, (
-        "a crooked landing did not lower the descent score")
+    b = _landing_of(base)["score"]
+    assert _landing_of(with_square)["score"] == b, (
+        "a square landing raised the landing score from %s to %s"
+        % (b, _landing_of(with_square)["score"]))
+    assert _landing_of(with_crooked)["score"] < b, (
+        "a crooked landing did not lower the landing score")
 
 
 def test_a_leg_with_no_measurable_descent_is_capped_too():
@@ -1301,7 +1311,7 @@ def test_off_by_default_and_shown_but_not_counted():
         "bands had been reviewed against real landings")
     f, g, ceiling = _graded(30.0, False)
     assert ceiling is None, "with the flag off the float still capped the letter"
-    part = next(p for p in g["phases"]["descent"]["parts"] if p["key"] == "float")
+    part = next(p for p in _landing_of(g)["parts"] if p["key"] == "float")
     assert part["counted"] is False and part["held"] is False, (
         "the float part claims to count while the flag is off")
     assert part["band"], "the float part carries no band"
@@ -1312,12 +1322,12 @@ def test_a_long_float_holds_the_landing_down():
     f_long, g_long, c_long = _graded(30.0, True)
     assert c_short is None or c_short == "A", "a normal flare was capped"
     assert c_long == "F", "a float far past the touchdown zone kept %r" % c_long
-    d_short = g_short["phases"]["descent"]["score"]
-    d_long = g_long["phases"]["descent"]["score"]
+    d_short = _landing_of(g_short)["score"]
+    d_long = _landing_of(g_long)["score"]
     assert d_long < d_short, (
-        "the descent phase scored %.1f with a 30 s float and %.1f with a "
+        "the landing scored %.1f with a 30 s float and %.1f with a "
         "normal flare" % (d_long, d_short))
-    part = next(p for p in g_long["phases"]["descent"]["parts"] if p["key"] == "float")
+    part = next(p for p in _landing_of(g_long)["parts"] if p["key"] == "float")
     assert part["held"] and part["counted"]
 
 
@@ -1328,9 +1338,10 @@ def test_the_touchdown_only_descent_is_capped_too():
     path would leave it as the one way round the float - the same hole
     alignment had to close.
     """
-    keep = grading.GRADE_FLOAT
+    keep = grading.GRADE_FLOAT, grading.LANDING_PHASE
     try:
         grading.GRADE_FLOAT = True
+        grading.LANDING_PHASE = False          # the branch only exists without it
         full = _departure(fpm=1000.0)
         top = max(p["alt"] for p in full)
         cut = max(i for i, p in enumerate(full) if p["alt"] >= top)
@@ -1344,6 +1355,27 @@ def test_the_touchdown_only_descent_is_capped_too():
         part = next((p for p in d["parts"] if p["key"] == "float"), None)
         assert part is not None, "the touchdown-only descent does not show the float"
         assert part["held"], "a 30 s float did not hold the touchdown-only descent down"
+    finally:
+        grading.GRADE_FLOAT, grading.LANDING_PHASE = keep
+
+
+def test_a_leg_with_no_descent_still_has_a_capped_landing():
+    """With the landing a phase of its own, a leg that climbs to its
+    destination has no descent - and still has its landing, limits and all."""
+    keep = grading.GRADE_FLOAT
+    try:
+        grading.GRADE_FLOAT = True
+        full = _departure(fpm=1000.0)
+        top = max(p["alt"] for p in full)
+        cut = max(i for i, p in enumerate(full) if p["alt"] >= top)
+        f = grading.landing_float(_arrival(30.0, kt=105.0))
+        with LandingPhase():
+            g = grading.grade_leg(full[:cut + 1], 80.0, "Test Jet", category="Airplane",
+                                  vs0_kt=90.0, landing_float=f)
+        land = g["phases"].get("landing")
+        assert land, "a leg with no descent lost its landing"
+        part = next((p for p in land["parts"] if p["key"] == "float"), None)
+        assert part and part["held"], "a 30 s float did not hold the landing down"
     finally:
         grading.GRADE_FLOAT = keep
 
@@ -1513,11 +1545,14 @@ def test_the_helicopter_lift_off_is_left_alone():
 # --------------------------------------------------------------------------
 
 class LandingPhase(object):
-    """LANDING_PHASE on for the duration, and back as it was after."""
+    """LANDING_PHASE set for the duration (on unless told), and back after."""
+
+    def __init__(self, on=True):
+        self.on = on
 
     def __enter__(self):
         self.keep = grading.LANDING_PHASE
-        grading.LANDING_PHASE = True
+        grading.LANDING_PHASE = self.on
         return self
 
     def __exit__(self, *exc):
@@ -1530,12 +1565,15 @@ def _jet(fpm=80.0, **kw):
                              category="Airplane", vs0_kt=90.0, **kw)
 
 
-def test_the_landing_phase_is_off_by_default():
-    assert grading.LANDING_PHASE is False, (
-        "the landing became a phase by default; it moves grades, and was to "
-        "stay off until the owner had seen which")
+def test_the_landing_is_a_phase_by_default():
+    """Turned on by the owner after seeing which legs it moved."""
+    assert grading.LANDING_PHASE is True
     g = _jet()
-    assert "landing" not in g["phases"]
+    assert "landing" in g["phases"]
+    assert "touchdown" not in [p["key"] for p in g["phases"]["descent"]["parts"]]
+    with LandingPhase(on=False):
+        g = _jet()
+    assert "landing" not in g["phases"], "the flag no longer turns it off"
     assert "touchdown" in [p["key"] for p in g["phases"]["descent"]["parts"]]
 
 
@@ -1577,7 +1615,9 @@ def test_a_hard_landing_now_holds_the_leg_down():
     with LandingPhase():
         g = _jet(fpm=480.0)
     land = g["phases"]["landing"]["score"]
-    assert _jet(fpm=480.0)["overall"] > land + grading.PHASE_CAP_POINTS, (
+    with LandingPhase(on=False):
+        before = _jet(fpm=480.0)["overall"]
+    assert before > land + grading.PHASE_CAP_POINTS, (
         "the fixture's landing was held down without the change too")
     assert g["worst_phase"] == "landing", g["worst_phase"]
     assert g["overall"] <= land + grading.PHASE_CAP_POINTS + 0.05, (
@@ -1587,7 +1627,8 @@ def test_a_hard_landing_now_holds_the_leg_down():
 
 def test_the_ride_leaves_out_the_landing():
     """The ride is the flying, and the landing has its own sentence."""
-    off = _jet(fpm=480.0)
+    with LandingPhase(on=False):
+        off = _jet(fpm=480.0)
     with LandingPhase():
         on = _jet(fpm=480.0)
     assert on["ride_score"] == off["ride_score"], (on["ride_score"], off["ride_score"])

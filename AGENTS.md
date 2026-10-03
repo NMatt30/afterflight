@@ -138,13 +138,14 @@ carries the values (`runway_tunables`), because a setting changes them without
 changing `grading.py`. No setting reaches a helicopter: every use is gated on
 the profile, and the watcher asks the sim for no runway after one lands.
 
-**The landing can be a phase of its own, and is not yet** (`LANDING_PHASE`).
-Off, the touchdown is 45% of the descent as well as the landing letter. On,
-the descent is the approach and "landing" is a phase holding the touchdown
-and the landing limits; the descent's weight is split by the touchdown's
-share of it, so the averages are unchanged and only the weakest-phase cap
-sees more. Measured, that moves grades down and never up: an approach no
-longer hides behind a good touchdown. The owner decides when it goes on.
+**The landing is a phase of its own** (`LANDING_PHASE`, on). The descent is
+the approach; "landing" holds the touchdown and the landing limits. The
+descent's weight is split by the touchdown's share of it, so the averages
+are what they were with the touchdown inside the descent, and only the
+weakest-phase cap sees more. Measured when it went on, that moved grades
+down and never up: an approach no longer hides behind a good touchdown.
+Off, the touchdown is 45% of the descent as well as the landing letter, and
+the Grading tab listed it twice.
 
 **This logbook is one person's habits, not a sample of how aircraft are
 flown.** The owner is a sim pilot, not a rated one, and their flying is

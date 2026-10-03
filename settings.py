@@ -79,49 +79,58 @@ SPEC = [
     # never measured on either, whatever these say. Changing any of them
     # rebuilds the logbook, because the build signature carries them.
     {"key": "grade_float", "module": "grading", "attr": "GRADE_FLOAT",
-     "type": "bool", "group": "Float and touchdown point",
-     "label": "Count the float in the landing grade", "live": True,
-     "note": "Off: measured and shown on every airplane landing on a "
-             "runway the sim has described, but it changes no grade. On: a "
-             "long float can hold the landing letter down. It never raises "
-             "one. Off airport there is no float to count."},
+     "type": "bool", "group": "Float and touchdown spot",
+     "label": "Let a long float lower the landing grade", "live": True,
+     "note": "Off: the float is shown on each airplane landing but doesn't "
+             "affect any grade. On: floating too long before touching down "
+             "lowers the landing grade. It can never raise it. Only measured "
+             "on a runway the sim knows about, so not off airport."},
     {"key": "float_normal_s", "module": "grading", "attr": "FLOAT_NORMAL_S",
-     "type": "float", "min": 3.0, "max": 20.0, "group": "Float and touchdown point",
-     "label": "Float: full marks up to (s)", "live": True,
-     "note": "From 50 ft, or from the threshold if the airplane was "
-             "already lower there. 7 s is the average pilot in AC 25-32."},
+     "type": "float", "min": 3.0, "max": 20.0, "group": "Float and touchdown spot",
+     "label": "Float: full marks up to (seconds)", "live": True,
+     "note": "How long you can float without losing points. Timed from 50 ft "
+             "above the runway, or from the start of the runway if you "
+             "crossed it lower. The FAA's figure for an average pilot is 7."},
     {"key": "float_margin_ft", "module": "grading", "attr": "FLOAT_MARGIN_FT",
-     "type": "float", "min": 500.0, "max": 6000.0, "group": "Float and touchdown point",
-     "label": "Float: touchdown zone past a normal flare (ft)", "live": True,
-     "note": "Scores 50 here. 2,000 ft is AC 91-79A's zone, 1,000 to "
-             "3,000 ft. Turned into seconds at the speed flown."},
+     "type": "float", "min": 500.0, "max": 6000.0, "group": "Float and touchdown spot",
+     "label": "Float: extra runway before half marks (feet)", "live": True,
+     "note": "How much more runway you can float over before the score "
+             "drops to half. The FAA's touchdown zone allows about 2,000 ft. "
+             "Turned into seconds using your speed."},
     {"key": "float_beyond_ft", "module": "grading", "attr": "FLOAT_BEYOND_FT",
-     "type": "float", "min": 100.0, "max": 6000.0, "group": "Float and touchdown point",
-     "label": "Float: zero this far past the zone (ft)", "live": True,
-     "note": "A judgment, not a published figure."},
+     "type": "float", "min": 100.0, "max": 6000.0, "group": "Float and touchdown spot",
+     "label": "Float: more runway before zero (feet)", "live": True,
+     "note": "How much further after half marks before the score reaches "
+             "zero. Our own choice, not an FAA figure."},
     {"key": "grade_touchdown_point", "module": "grading", "attr": "GRADE_TOUCHDOWN_POINT",
-     "type": "bool", "group": "Float and touchdown point",
-     "label": "Count the touchdown point in the landing grade", "live": True,
-     "note": "Same rule as the float: off is measured and shown only; on "
-             "can hold the letter down, never raise it. Needs the runway, "
-             "which the sim describes after you park."},
+     "type": "bool", "group": "Float and touchdown spot",
+     "label": "Let a long touchdown lower the landing grade", "live": True,
+     "note": "Same as the float. Off: how far down the runway you touched "
+             "down is shown but doesn't affect any grade. On: touching down "
+             "too far along lowers the landing grade, never raises it. Needs "
+             "the runway's layout, which the app gets from the sim after "
+             "you park."},
     {"key": "tdz_target_ft", "module": "grading", "attr": "TDZ_TARGET_FT",
-     "type": "float", "min": 0.0, "max": 4000.0, "group": "Float and touchdown point",
-     "label": "Touchdown point: aim point past the threshold (ft)", "live": True,
-     "note": "About 1,000 ft in AC 91-79A."},
+     "type": "float", "min": 0.0, "max": 4000.0, "group": "Float and touchdown spot",
+     "label": "Touchdown spot: aim point (feet from the runway start)", "live": True,
+     "note": "Where you're aiming to touch down. The FAA suggests about "
+             "1,000 ft."},
     {"key": "tdz_tolerance_ft", "module": "grading", "attr": "TDZ_TOLERANCE_FT",
-     "type": "float", "min": 0.0, "max": 3000.0, "group": "Float and touchdown point",
-     "label": "Touchdown point: full marks this far past the aim (ft)", "live": True,
-     "note": "400 ft is the Private Pilot ACS tolerance."},
+     "type": "float", "min": 0.0, "max": 3000.0, "group": "Float and touchdown spot",
+     "label": "Touchdown spot: allowance past the aim point (feet)", "live": True,
+     "note": "Touching down up to this far past the aim point still gets "
+             "full marks. The private pilot checkride allows 400 ft."},
     {"key": "tdz_end_ft", "module": "grading", "attr": "TDZ_END_FT",
-     "type": "float", "min": 500.0, "max": 8000.0, "group": "Float and touchdown point",
-     "label": "Touchdown point: end of the touchdown zone (ft)", "live": True,
-     "note": "Scores 50 here. 3,000 ft in AC 91-79A. A runway shorter than "
-             "three times this ends the zone at its first third instead."},
+     "type": "float", "min": 500.0, "max": 8000.0, "group": "Float and touchdown spot",
+     "label": "Touchdown spot: half marks at (feet from the runway start)", "live": True,
+     "note": "The FAA's touchdown zone ends at 3,000 ft. On a runway shorter "
+             "than three times this, half marks come a third of the way "
+             "down it instead."},
     {"key": "tdz_beyond_ft", "module": "grading", "attr": "TDZ_BEYOND_FT",
-     "type": "float", "min": 100.0, "max": 6000.0, "group": "Float and touchdown point",
-     "label": "Touchdown point: zero this far past the zone (ft)", "live": True,
-     "note": "A judgment, not a published figure."},
+     "type": "float", "min": 100.0, "max": 6000.0, "group": "Float and touchdown spot",
+     "label": "Touchdown spot: more runway before zero (feet)", "live": True,
+     "note": "How much further after half marks before the score reaches "
+             "zero. Our own choice, not an FAA figure."},
 
     # ---- what a flight gets ----
     # The default for flights nobody has decided about individually. Changing

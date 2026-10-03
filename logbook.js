@@ -451,7 +451,7 @@
         }).join(", ")
       : "Every measure at full marks");
     (ph.parts || []).forEach(function (p) {
-      if (p.held) lines.push("Held to " + Math.round(p.held_to) + " by "
+      if (p.held) lines.push("Lowered to " + Math.round(p.held_to) + " by "
                              + p.label.toLowerCase());
     });
     if (opens) lines.push("Click for the full grading");
@@ -482,8 +482,8 @@
   // measured but switched off says so, or it would read as a limit that
   // simply did not bite.
   function countsText(p) {
-    if (p.counted === false) return "not counted";
-    if (p.cap || p.weight_pct === 0) return p.held ? "limit, held it" : "limit";
+    if (p.counted === false) return "shown only";
+    if (p.cap || p.weight_pct === 0) return p.held ? "lowered it" : "can only lower";
     return p.weight_pct != null ? p.weight_pct + "%" : "";
   }
 
@@ -502,15 +502,17 @@
       row: function (cells, cls) {
         var r = el("tr", cls || null);
         cells.forEach(function (c, i) {
-          r.appendChild(el("td", i === 2 ? "num" : (i === 4 ? "band" : null),
-                           c === null || c === undefined ? "" : String(c)));
+          var text = c === null || c === undefined ? "" : String(c);
+          // Every band reads as a sentence; older ones start lowercase.
+          if (i === 4 && text) text = text.charAt(0).toUpperCase() + text.slice(1);
+          r.appendChild(el("td", i === 2 ? "num" : (i === 4 ? "band" : null), text));
         });
         body.appendChild(r);
         return r;
       },
       part: function (p, cls) {
         this.row([p.label, p.measured || "", scoreText(p.score), countsText(p),
-                  p.band || (p.cap ? "can only hold the grade down" : "")], cls);
+                  p.band || (p.cap ? "Can lower the grade, never raise it" : "")], cls);
         var self = this;
         (p.sub || []).forEach(function (q) {
           self.row([q.label, q.measured || "", scoreText(q.score),
@@ -545,15 +547,16 @@
     gtHead(sec, "Landing", leg.landing_grade, own ? own.score : null,
            leg.landing_grade_name || "");
     sec.appendChild(el("div", "gt-note",
-      "The touchdown rate sets the letter. A limit can only hold it down."));
+      "Your touchdown rate sets the landing grade. The measures below it "
+      + "can only lower it, never raise it."));
     var t = gtTable();
     var td = byKey.touchdown;
     t.row(["Touchdown", fmtRate(leg.landing_rate_fpm), scoreText(td && td.score),
-           "sets the letter", (td && td.band) || ""]);
+           "sets the grade", (td && td.band) || ""]);
     var tp = leg.touchdown_point;
     if (tp && tp.threshold_height_ft != null) {
-      t.row(["Over the threshold", Math.round(tp.threshold_height_ft) + " ft", "–",
-             "information", "published glidepaths cross at about 50 ft"]);
+      t.row(["Height over runway start", Math.round(tp.threshold_height_ft) + " ft", "–",
+             "for information", "Approach paths usually cross at about 50 ft"]);
     }
     ["touchdown_point", "float", "alignment"].forEach(function (k) {
       if (byKey[k]) t.part(byKey[k]);
@@ -561,18 +564,18 @@
     sec.appendChild(t.table);
     // What held the letter down, in the order it was applied.
     [["Alignment", leg.landing_alignment], ["The float", leg.landing_float],
-     ["The touchdown point", leg.touchdown_point]].forEach(function (pair) {
+     ["The touchdown spot", leg.touchdown_point]].forEach(function (pair) {
       var m = pair[1];
       if (m && m.held_from) {
-        sec.appendChild(el("div", "gt-held", pair[0] + " held the letter down from "
+        sec.appendChild(el("div", "gt-held", pair[0] + " lowered the landing grade from "
                            + m.held_from + "."));
       }
     });
     var airplane = pg && pg.profile && pg.profile !== "rotary";
     if (airplane && !tp) {
       sec.appendChild(el("div", "gt-note",
-        "No runway matched this landing - off airport, or not looked up yet - "
-        + "so there is no float or touchdown point."));
+        "No runway matched this landing (off airport, or its runway hasn't "
+        + "been looked up yet), so the float and touchdown spot weren't measured."));
     }
     return sec;
   }
@@ -598,13 +601,13 @@
     sec.appendChild(t.table);
     (ph.parts || []).forEach(function (p) {
       if (p.held) {
-        sec.appendChild(el("div", "gt-held", p.label + " held this phase down to "
-                           + Math.round(p.held_to) + ", from " + Math.round(p.held_from) + "."));
+        sec.appendChild(el("div", "gt-held", p.label + " lowered this phase from "
+                           + Math.round(p.held_from) + " to " + Math.round(p.held_to) + "."));
       }
     });
     if (limits.length && !limits.some(function (p) { return p.held; })) {
-      sec.appendChild(el("div", "gt-note", "The landing limits below can hold this "
-                         + "phase down too. None did."));
+      sec.appendChild(el("div", "gt-note", "The landing measures below can also "
+                         + "lower this phase. None did."));
     }
     return sec;
   }
@@ -624,14 +627,14 @@
     var capped = pg.overall, raw = pg.overall_uncapped;
     var worst = pg.phases[pg.worst_phase];
     if (typeof capped === "number" && typeof raw === "number" && raw - capped > 0.05) {
-      sec.appendChild(el("div", "gt-note", "Held down to " + Math.round(capped)
-        + " from " + Math.round(raw) + ": a leg is never more than one band - ten "
-        + "points - above its weakest phase, and " + pg.worst_phase + " scored "
-        + Math.round(worst ? worst.score : 0) + "."));
+      sec.appendChild(el("div", "gt-note", "Lowered from " + Math.round(raw)
+        + " to " + Math.round(capped) + ": a leg's grade can't be more than 10 "
+        + "points above its weakest phase (" + pg.worst_phase + ", "
+        + Math.round(worst ? worst.score : 0) + ")."));
     } else {
-      sec.appendChild(el("div", "gt-note", "The phases weighted together. A leg is "
-        + "never more than one band - ten points - above its weakest phase"
-        + (pg.worst_phase ? ", " + pg.worst_phase + " here" : "") + "."));
+      sec.appendChild(el("div", "gt-note", "All the phases combined. A leg's grade "
+        + "can't be more than 10 points above its weakest phase"
+        + (pg.worst_phase ? " (" + pg.worst_phase + " here)" : "") + "."));
     }
     return sec;
   }
@@ -1002,12 +1005,11 @@
     // what a high or low crossing cost. No row when there is no runway.
     var tp = leg.touchdown_point;
     if (tp && tp.threshold_height_ft != null) {
-      row("Over threshold", Math.round(tp.threshold_height_ft) + " ft",
-          "How high the wheels crossed the landing threshold of "
-          + (tp.runway || "the runway") + ", above the runway there. Shown, "
-          + "not graded. Published glidepaths cross at about 50 ft. Runways "
-          + "are not flat, so the runway's surface is read from the sim's own "
-          + "height above the ground as the aircraft passed over it.");
+      row("Over runway start", Math.round(tp.threshold_height_ft) + " ft",
+          "How high the wheels were as you crossed the start of "
+          + (tp.runway ? "runway " + tp.runway : "the runway")
+          + ". Shown for information, not graded. Approach paths usually "
+          + "cross at about 50 ft.");
     }
     row("Max alt", leg.max_alt_ft != null ? Math.round(leg.max_alt_ft) + " ft" : "—");
     row("Max GS", leg.max_gs_kt != null ? Math.round(leg.max_gs_kt) + " kt" : "—");
@@ -2093,7 +2095,11 @@
       if (ph.source) sec.appendChild(el("p", "gx-source", ph.source));
       (ph.metrics || []).forEach(function (m) {
         var row = el("div", "gx-metric");
-        row.appendChild(el("b", null, m.label + "  " + m.weight_pct + "%"));
+        // A measure with no weight is not worth nothing: it either lowers the
+        // grade (a limit) or is shown only until switched on in Settings.
+        var share = m.weight_pct ? m.weight_pct + "%"
+                  : (m.cap ? "can only lower" : "shown only");
+        row.appendChild(el("b", null, m.label + "  " + share));
         var right = el("span", "gx-why", m.why || "");
         // A metric whose range cannot be two numbers - the float's zero moves
         // with speed - says it in words instead.

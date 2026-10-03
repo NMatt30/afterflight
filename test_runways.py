@@ -443,10 +443,12 @@ def _with(tree, values, force=True):
 
 
 def _descent_part(leg, key):
-    pg = leg.get("phase_grade") or {}
-    for p in ((pg.get("phases") or {}).get("descent") or {}).get("parts") or []:
-        if p.get("key") == key:
-            return p
+    """A part of the phase that carries the landing - its own, or the descent."""
+    phases = (leg.get("phase_grade") or {}).get("phases") or {}
+    for name in ("landing", "descent"):
+        for p in (phases.get(name) or {}).get("parts") or []:
+            if p.get("key") == key:
+                return p
     return None
 
 
@@ -494,7 +496,7 @@ def test_a_band_setting_moves_the_score_and_the_letter_together():
             "where the uncounted letter is %s"
             % (own["landing_grade"], free["landing_grade"]))
         part = _descent_part(own, "touchdown_point")
-        assert part and part["band"].startswith("full marks 3,000 ft"), (
+        assert part and part["band"].startswith("Full marks within 3,000 ft"), (
             "the leg prints a band other than the one it was scored on: %r"
             % (part and part["band"]))
 
@@ -502,9 +504,8 @@ def test_a_band_setting_moves_the_score_and_the_letter_together():
         def why(values):
             st = Settings(t.root, values)
             try:
-                descent = next(p for p in grading.describe_profile(grading.FIXED_WING)["phases"]
-                               if p["key"] == "descent")
-                return next(m for m in descent["metrics"]
+                return next(m for ph in grading.describe_profile(grading.FIXED_WING)["phases"]
+                            for m in ph["metrics"]
                             if m["key"] == "touchdown_point")["why"]
             finally:
                 st.close()
@@ -565,11 +566,10 @@ def test_no_setting_reaches_a_helicopter():
 
         st = Settings(t.root, HARSHEST)
         try:
-            descent = next(p for p in grading.describe_profile(grading.ROTARY)["phases"]
-                           if p["key"] == "descent")
+            panel = grading.describe_profile(grading.ROTARY)["phases"]
         finally:
             st.close()
-        keys = {m["key"] for m in descent["metrics"]}
+        keys = {m["key"] for ph in panel for m in ph["metrics"]}
         assert not keys & {"float", "touchdown_point"}, (
             "the helicopter tab explains %s" % sorted(keys & {"float", "touchdown_point"}))
     finally:
