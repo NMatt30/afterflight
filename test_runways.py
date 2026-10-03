@@ -460,6 +460,24 @@ HARSHEST = {"grade_float": True, "float_normal_s": 3.0, "float_margin_ft": 500.0
             "tdz_beyond_ft": 100.0}
 
 
+def test_the_built_letter_is_the_types_own_verdict():
+    """Through the builder: a jet's touchdown is lettered on the transport
+    curve, not the light-aircraft ladder."""
+    t = Tree()
+    try:
+        _flight(t, 1800.0)
+        leg = _leg(t)
+        want = grading.touchdown_letter(leg["landing_rate_fpm"], grading.FIXED_WING)
+        assert leg["landing_grade"] == want, (
+            "a jet at %s fpm was lettered %s; its own criteria say %s"
+            % (leg["landing_rate_fpm"], leg["landing_grade"], want))
+        import passenger
+        assert passenger.grade_for_rate(leg["landing_rate_fpm"])[0] != want, (
+            "the fixture cannot tell the type's letter from the fixed ladder")
+    finally:
+        t.close()
+
+
 def test_the_passenger_is_told_why_a_soft_landing_was_lowered():
     """A gentle touchdown 3,800 ft down the runway, with the touchdown spot
     counted: the letter comes down, and the passenger line must describe the

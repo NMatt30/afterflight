@@ -1606,7 +1606,13 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
                     rate_recovered = True
                 else:
                     rate = None
-            grade, grade_name = passenger.grade_for_rate(rate)
+            # The letter is the touchdown judged on this type's own criteria -
+            # rotary, light airplane, transport - the curve it is scored on.
+            letter_profile = grading.profile_for(
+                aircraft, category=category or grading.infer_category(track),
+                vs0_kt=vs0_kt)
+            grade = grading.touchdown_letter(rate, letter_profile)
+            grade_name = passenger.name_for_grade(grade)
             # A gentle arrival that is still sliding sideways is not a good
             # landing. Alignment can only hold the letter DOWN, never lift it,
             # and is None for any track without the lateral accelerations -

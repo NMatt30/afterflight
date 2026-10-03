@@ -665,21 +665,20 @@ def test_the_curve_still_meets_the_lower_boundaries():
             "%s fpm scores %s, not %s - a boundary moved" % (fpm, got, want))
 
 
-def test_the_letter_never_comes_from_the_curve():
-    """The two ladders are separate, which is what lets the plateau exist.
-
-    The landing letter is a function of the rate, in passenger.py. If anything
-    ever derived it from the phase score instead, the plateau would start
-    handing out As.
-    """
-    import passenger
-    assert passenger.grade_for_rate(105.0)[0] == "B", (
-        "105 fpm should be a B by the rate ladder")
-    assert grading.letter_for_score(
-        grading.score_for_touchdown_fpm(105.0)) == "A", (
-        "this is the divergence the separation permits; if it ever stops "
-        "being true the curve and the ladder have been re-coupled and the "
-        "plateau needs rethinking")
+def test_the_touchdown_letter_follows_the_aircraft_types_own_criteria():
+    """One verdict per touchdown, on the criteria for its type. The letter
+    was a fixed rate ladder for every aircraft, and called a jet's 200 fpm -
+    the middle of the airline target - Firm, beside a touchdown score of 100."""
+    for prof in (grading.ROTARY, grading.LIGHT_GA, grading.FIXED_WING):
+        for fpm in (20, 60, 90, 140, 200, 300, 450, 700):
+            score = grading.score_for_touchdown_fpm(fpm, prof)
+            assert grading.touchdown_letter(fpm, prof) == grading.letter_for_score(score), (
+                "%s at %d fpm: the letter and the score disagree" % (prof["name"], fpm))
+    assert grading.touchdown_letter(200, grading.FIXED_WING) == "A", (
+        "a jet's 200 fpm is inside the airline target and is not Firm")
+    assert grading.touchdown_letter(200, grading.LIGHT_GA) == "C", (
+        "a light airplane's 200 fpm is firm by its own criteria")
+    assert grading.touchdown_letter(None, grading.LIGHT_GA) is None
 
 
 # --------------------------------------------------------------------------
@@ -809,14 +808,33 @@ def test_the_ride_grade_is_capped_like_the_overall():
         % grading.letter_for_score(ride))
 
 
-def test_the_descent_does_not_drag_the_ride_down():
-    """The landing gets its own sentence; it must not color this one too."""
-    weights = {"liftoff": 0.10, "climb": 0.20, "cruise": 0.25, "descent": 0.45}
-    good_air = {"liftoff": 95.0, "climb": 96.0, "cruise": 94.0, "descent": 20.0}
-    ride = grading._ride_score(good_air, weights)
-    assert ride > 90.0, (
-        "a dreadful descent pulled the in-flight grade to %.1f; the ride is "
-        "everything except the descent" % ride)
+def test_the_landing_does_not_drag_the_ride_down():
+    """The landing gets its own sentence; it must not color this one too.
+    Without the landing phase the touchdown lives in the descent, so there
+    the descent is what the ride leaves out."""
+    weights = {"liftoff": 0.10, "climb": 0.20, "cruise": 0.25,
+               "descent": 0.25, "landing": 0.20}
+    with LandingPhase():
+        ride = grading._ride_score({"liftoff": 95.0, "climb": 96.0, "cruise": 94.0,
+                                    "descent": 93.0, "landing": 20.0}, weights)
+    assert ride > 90.0, "a dreadful landing pulled the ride to %.1f" % ride
+    with LandingPhase(on=False):
+        ride = grading._ride_score({"liftoff": 95.0, "climb": 96.0, "cruise": 94.0,
+                                    "descent": 20.0}, weights)
+    assert ride > 90.0, "a dreadful touchdown in the descent pulled the ride to %.1f" % ride
+
+
+def test_a_bad_approach_is_part_of_the_ride():
+    """With the landing a phase of its own, the descent is the approach -
+    flying - and the passenger who said the ride was smooth over an F
+    approach was contradicting the pill beside the paragraph."""
+    weights = {"liftoff": 0.10, "climb": 0.20, "cruise": 0.25,
+               "descent": 0.25, "landing": 0.20}
+    with LandingPhase():
+        ride = grading._ride_score({"liftoff": 95.0, "climb": 96.0, "cruise": 94.0,
+                                    "descent": 40.0, "landing": 98.0}, weights)
+    assert ride <= 40.0 + grading.PHASE_CAP_POINTS + 0.05, (
+        "an F approach left the ride at %.1f" % ride)
 
 
 def test_a_bad_cruise_cannot_read_as_ordinary_flying():
@@ -1728,13 +1746,13 @@ def test_a_hard_landing_now_holds_the_leg_down():
 
 
 def test_the_ride_leaves_out_the_landing():
-    """The ride is the flying, and the landing has its own sentence."""
-    with LandingPhase(on=False):
-        off = _jet(fpm=480.0)
+    """The ride is the flying - the approach included - and the landing has
+    its own sentence: a hard landing behind a good approach leaves it alone."""
     with LandingPhase():
-        on = _jet(fpm=480.0)
-    assert on["ride_score"] == off["ride_score"], (on["ride_score"], off["ride_score"])
-    assert on["ride_worst_phase"] not in ("landing", "descent")
+        hard = _jet(fpm=480.0)
+        soft = _jet(fpm=80.0)
+    assert hard["ride_score"] == soft["ride_score"], (hard["ride_score"], soft["ride_score"])
+    assert hard["ride_worst_phase"] != "landing"
 
 
 def test_a_helicopter_landing_phase_has_no_limits():

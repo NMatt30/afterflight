@@ -213,6 +213,17 @@ def letter_for_score(score):
     return LETTER_WORST
 
 
+def touchdown_letter(rate_fpm, profile=None):
+    """The touchdown's A-F letter, on this aircraft type's own criteria.
+
+    The same curve the touchdown is scored on, so the letter and the score
+    are one verdict. It was a fixed rate ladder for every aircraft - A under
+    60 fpm, C under 300 - which called a jet's 200 fpm, the middle of the
+    airline target, "Firm", beside a touchdown score of 100.
+    """
+    return letter_for_score(score_for_touchdown_fpm(rate_fpm, profile))
+
+
 def score_for_touchdown_fpm(rate_fpm, profile=None):
     """0-100 for a touchdown rate, sign ignored.
 
@@ -2154,6 +2165,14 @@ def _score_phase(metrics, spec, extra=None):
 PHASE_CAP_POINTS = 10.0
 
 
+# What the ride leaves out: whatever carries the touchdown, which has its own
+# sentence. With the landing a phase of its own that is the landing, and the
+# descent - now the approach - is flying like any other; left out of the
+# ride, an F approach sat under "smooth enough that I forgot to hold on".
+def _not_ride():
+    return ("landing",) if LANDING_PHASE else ("descent", "landing")
+
+
 def _ride_score(scored, weights):
     """The in-flight part of the leg: everything except the descent.
 
@@ -2166,7 +2185,7 @@ def _ride_score(scored, weights):
     F cruise averaged to a C, and C is the "ordinary flying" pool - printed
     next to an F CRUISE pill, on the same row.
     """
-    keys = [k for k in scored if k not in ("descent", "landing")]
+    keys = [k for k in scored if k not in _not_ride()]
     if not keys:
         return scored.get("descent", scored.get("landing"))
     total = sum(weights[k] for k in keys)
@@ -2442,9 +2461,9 @@ def grade_leg(track, landing_rate_fpm=None, aircraft=None,
         "ride_letter": letter_for_score(ride),
         # The in-flight phase that set the ride grade, so the UI can say why
         # the paragraph reads the way it does.
-        "ride_worst_phase": (min([k for k in scored if k not in ("descent", "landing")],
+        "ride_worst_phase": (min([k for k in scored if k not in _not_ride()],
                                  key=lambda k: scored[k])
-                             if [k for k in scored if k not in ("descent", "landing")]
+                             if [k for k in scored if k not in _not_ride()]
                              else None),
     }
 

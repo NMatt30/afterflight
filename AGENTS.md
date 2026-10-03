@@ -157,6 +157,15 @@ touchdown alone, so precision cannot rescue a hard landing; and a spot or
 float past the touchdown zone caps it as well as weighing in, because a
 soft touchdown otherwise averaged a landing far down the runway up to a C.
 
+**The touchdown letter is judged on the aircraft type's own criteria** -
+`grading.touchdown_letter`, the same curve the touchdown is scored on - so
+a letter and its score never disagree. It was one rate ladder for every
+aircraft, which called a jet's 200 fpm, inside the airline target, Firm.
+**And the ride is everything flown except the landing**, the approach
+included: the passenger paragraph once called a ride smooth beside an F
+approach. Check the prose against the pills when grading changes - an
+audit of every leg, not a sample.
+
 **This logbook is one person's habits, not a sample of how aircraft are
 flown.** The owner is a sim pilot, not a rated one, and their flying is
 evidence about them - not about what a correct number looks like. So it can
