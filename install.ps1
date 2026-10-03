@@ -59,13 +59,20 @@ Say ""
 # ---------------------------------------------------------------- python
 Say "Python"
 $py = $null
-foreach ($cand in @("py", "python")) {
+# A release carries its own Python in runtime\; a source checkout uses the
+# machine's.
+$bundled = Join-Path $Base "runtime\python.exe"
+if (Test-Path $bundled) {
+  $v = & $bundled -c "import sys; print('%d.%d.%d' % sys.version_info[:3])" 2>$null
+  if ($LASTEXITCODE -eq 0 -and $v) { $py = $bundled; Ok "bundled Python $v (runtime\)" }
+}
+if (-not $py) { foreach ($cand in @("py", "python")) {
   try {
     $v = & $cand -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null
     if ($LASTEXITCODE -eq 0 -and $v) { $py = $cand; Ok "$cand -> Python $v"; break }
   } catch { }
-}
-if (-not $py) { Bad "No Python found on PATH. Install Python 3.10+ and re-run."; exit 1 }
+} }
+if (-not $py) { Bad "No Python found. The release download carries its own; a source checkout needs Python 3.10+ on PATH."; exit 1 }
 
 $pyExe = & $py -c "import sys; print(sys.executable)"
 $pywExe = Join-Path (Split-Path -Parent $pyExe) "pythonw.exe"

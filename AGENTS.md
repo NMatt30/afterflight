@@ -208,7 +208,8 @@ default, placed near the other tunables at the top of its module.
 | `mapbake.py`, `tiles.py` | Track map PNGs and OSM basemap tiles. |
 | `trackexport.py` | KML and GPX of a track, built on demand. |
 | `settings.py` | User-editable Tier 1 settings, applied over module constants. |
-| `install.ps1` | Checks the machine, stages the sim's DLL, autostart and shortcut. Checks only unless given a switch. |
+| `install.ps1` | Checks the machine, stages the sim's DLL, autostart and shortcut. Checks only unless given a switch. Prefers a release's bundled `runtime\python.exe`. |
+| `build_release.py` | The release zip: tracked app files, python.org's embeddable Python and Pillow (pinned, SHA-256 checked), `VERSION` and a launcher. Never anything of a user's - an update is a zip unpacked over an install. `.github/workflows/release.yml` builds it on a `v*` tag. |
 | `persistence.py` | Shared document, maintenance and recording locks plus atomic JSON/JSONL helpers. |
 | `clipfile.py` | Where a clip lives on disk and how to read one. The only place that knows the layout. |
 | `runways.py` | Which runway a touchdown was on and how far past its threshold - geometry, and the per-airport runway cache under `sessions/runways/`. |
@@ -217,6 +218,7 @@ default, placed near the other tunables at the top of its module.
 | `test_arming.py` | When a reported aircraft becomes a flight, and what a rebuild publishes. |
 | `test_map.py` | What the route map draws as one line, and where it breaks - and so where it puts markers. |
 | `test_efb.py` | When a deploy may rewrite the EFB package's committed `layout.json` - only when its files changed. |
+| `test_release.py` | What the release zip carries and must never carry: no user data, no missing module, a Python that finds the app, a version without git. |
 | `test_runways.py` | The touchdown point end to end: geometry, the zone score, facility-message parsing in the measured layout, the builder, and the cache signature. |
 | `test_native.py` | The sim connection without Python-SimConnect: quit, heartbeat, a held pause, and the recording loop run with the package unimportable. |
 | `backup.ps1` | Copies what git deliberately does not, with a SHA-256 manifest and consistency status. |
@@ -388,6 +390,7 @@ py -3 test_arming.py        # a menu is not a flight; a parked aircraft is not o
 py -3 test_map.py           # a sim skip is not a landing and a takeoff
 py -3 test_efb.py           # a deploy does not dirty the committed EFB layout
 py -3 test_runways.py       # where on the runway, and what the sim really sends
+py -3 test_release.py       # the release zip: no user data in it, nothing missing
 py -3 test_native.py        # the sim connection with no Python-SimConnect
 py -3 test_integrity.py     # locks, partial deletes, backup round trip
 py -3 sampler.py            # offline self-test: state block layout and peaks

@@ -1454,6 +1454,16 @@ def describe_version():
             text = "%s (%s)" % (APP_VERSION, described)
     except Exception:
         pass
+    if text == APP_VERSION:
+        # A release has no .git, and may run where git is not installed:
+        # build_release.py wrote down what describe said when it was built.
+        try:
+            with open(os.path.join(BASE, "VERSION"), encoding="utf-8") as f:
+                described = f.read().strip()
+            if described:
+                text = "%s (%s)" % (APP_VERSION, described)
+        except OSError:
+            pass
     _version_cache[0] = text
     return text
 
