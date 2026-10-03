@@ -552,12 +552,7 @@
       ? " touchdown (" + leg.landing_grade + ")" : "");
     if (own) gtHead(sec, "Landing", own.letter, own.score, feel);
     else gtHead(sec, "Landing", leg.landing_grade, null, leg.landing_grade_name || "");
-    sec.appendChild(el("div", "gt-note", own
-      ? "The landing score blends how firmly you touched down with where on "
-        + "the runway and how long you floated. The touchdown letter is how it "
-        + "felt: the rate sets it, and the other measures can only lower it."
-      : "Your touchdown rate sets the landing grade. The measures below it "
-        + "can only lower it, never raise it."));
+    sec.appendChild(el("div", "gt-note", landingIntro(own, byKey, leg)));
     if (own && own.note) sec.appendChild(el("div", "gt-held", own.note));
     var t = gtTable();
     var td = byKey.touchdown;
@@ -598,6 +593,41 @@
         + "been looked up yet), so the float and touchdown spot weren't measured."));
     }
     return sec;
+  }
+
+  // What the landing card says it is made of - exactly what was in play for
+  // this leg. A float or touchdown spot switched off in Settings is shown but
+  // counted nowhere, and the sentence must not claim otherwise.
+  function landingIntro(own, byKey, leg) {
+    var on = function (k) { return !!(byKey[k] && byKey[k].counted); };
+    var lowers = [];
+    if (byKey.alignment) lowers.push("alignment");
+    if (on("float")) lowers.push("the float");
+    if (on("touchdown_point")) lowers.push("the touchdown spot");
+    var letter = leg.landing_grade
+      ? "The touchdown letter (" + leg.landing_grade + ") is how it felt: the "
+        + "rate sets it" + (lowers.length
+          ? ", and " + lowers.join(lowers.length > 2 ? ", " : " and ")
+            .replace(/, (?=[^,]*$)/, " or ") + " can only lower it."
+          : ".")
+      : "";
+    if (!own) return "Your touchdown rate sets the landing grade."
+      + (lowers.length ? " " + lowers.join(", ") + " can only lower it." : "");
+    var blended = [];
+    if (on("touchdown_point")) blended.push("where on the runway");
+    if (on("float")) blended.push("how long you floated");
+    var score;
+    if (blended.length) {
+      score = "The landing score blends how firmly you touched down with "
+        + blended.join(" and ") + ", and is never more than 10 points above "
+        + "the touchdown alone.";
+    } else if (byKey.float || byKey.touchdown_point) {
+      score = "The landing score is the touchdown alone: the float and "
+        + "touchdown spot are shown only. Switch them on in Settings to count them.";
+    } else {
+      score = "The landing score is the touchdown.";
+    }
+    return score + (letter ? " " + letter : "");
   }
 
   function phaseSection(key, title, ph) {

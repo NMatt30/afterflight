@@ -460,6 +460,28 @@ HARSHEST = {"grade_float": True, "float_normal_s": 3.0, "float_margin_ft": 500.0
             "tdz_beyond_ft": 100.0}
 
 
+def test_the_passenger_is_told_why_a_soft_landing_was_lowered():
+    """A gentle touchdown 3,800 ft down the runway, with the touchdown spot
+    counted: the letter comes down, and the passenger line must describe the
+    runway used - not a firm arrival the touchdown never was."""
+    import passenger
+    t = Tree()
+    try:
+        _flight(t, 3800.0)
+        t.runway()
+        leg = _with(t, {"grade_touchdown_point": True})
+        on = leg["passenger"]["graded_on"]
+        assert on["landing_held_by"] == "touchdown_point", on
+        assert on["landing_held_from"] and on["landing_held_from"] != leg["landing_grade"], on
+        rate = passenger._fmt_rate(leg["landing_rate_fpm"])
+        assert leg["passenger"]["landing"] in [
+            l.format(rate=rate) for l in passenger.LANDING["held_long"]], (
+            "the passenger described a landing lowered for landing long as %r"
+            % leg["passenger"]["landing"])
+    finally:
+        t.close()
+
+
 def test_every_band_is_a_setting_whose_default_is_the_published_figure():
     import settings
     by_attr = {s["attr"]: s for s in settings.SPEC if s["module"] == "grading"}

@@ -952,6 +952,19 @@ def landing_touchdown_point(clip_id, track, t_land, aircraft=None,
     return None
 
 
+def _held(alignment, landing_float, touchdown_point):
+    """(letter the touchdown rate alone earned, what last lowered it), or
+    (None, None). The measures lower the letter in this order, each from the
+    letter the one before left; the last one to bite set what was printed."""
+    held_from = held_by = None
+    for key, m in (("alignment", alignment), ("float", landing_float),
+                   ("touchdown_point", touchdown_point)):
+        if m and m.get("held_from"):
+            held_from = held_from or m["held_from"]
+            held_by = key
+    return held_from, held_by
+
+
 def landing_surface(clip_id, track, t_land, hit):
     """The runway surface for this landing (grading.RunwaySurface), or None.
 
@@ -1811,9 +1824,12 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
                 # what let the prose contradict the pills beside it.
                 ride_grade=(phase_grade or {}).get("ride_letter"),
                 overall_grade=(phase_grade or {}).get("letter") or grade,
-                # So the landing line can say "soft, then it slid" rather
-                # than describing a firmness the touchdown never had.
-                held_from=(alignment or {}).get("held_from"),
+                # So the landing line describes what lowered the letter - a
+                # slide, a long float, a long landing - rather than a firmness
+                # the touchdown never had. held_from is the letter the rate
+                # alone earned: the first one any measure lowered.
+                held_from=_held(alignment, landing_float, touchdown_point)[0],
+                held_by=_held(alignment, landing_float, touchdown_point)[1],
                 avoid=recent_picks,
             )
 
