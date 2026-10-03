@@ -411,19 +411,34 @@
   .phase .grade.opens { cursor: pointer; }
   .phase .grade.opens:hover { outline: 1px solid var(--accent); outline-offset: 1px; }
 
-  .gt-view { margin-top: 4px; }
-  .gt-phase { padding: 12px 0 6px; border-top: 1px solid var(--line); }
-  .gt-phase:first-child { border-top: none; }
-  .gt-head { display: flex; align-items: center; gap: 10px; margin: 0 0 6px; }
-  .gt-head h4 { margin: 0; font-size: 13px; min-width: 70px; }
+  /* One card per phase, in the order flown, each edged in its grade's color
+     so where one ends and the next begins - and how it went - reads at a
+     glance. Capped in width: full-width tables on a wide window put the
+     columns hundreds of pixels apart. */
+  .gt-view { margin-top: 12px; max-width: 1100px; display: flex;
+             flex-direction: column; gap: 10px; }
+  .gt-phase { background: var(--panel); border: 1px solid var(--line);
+              border-left: 3px solid var(--line); border-radius: 8px;
+              padding: 10px 16px 10px 14px; }
+  .gt-phase[data-grade="A"] { border-left-color: var(--ok); }
+  .gt-phase[data-grade="B"] { border-left-color: #9fd6a8; }
+  .gt-phase[data-grade="C"] { border-left-color: var(--warn); }
+  .gt-phase[data-grade="D"] { border-left-color: #e79a5e; }
+  .gt-phase[data-grade="F"] { border-left-color: #b3382f; }
+  .gt-overall { background: var(--panel-2); }
+  .gt-head { display: flex; align-items: center; gap: 10px; margin: 0 0 8px;
+             flex-wrap: wrap; }
+  .gt-head h4 { margin: 0; font-size: 14px; min-width: 72px; }
   .gt-head .muted { font-size: 12px; }
   /* Fixed widths, so the columns line up from one phase's table to the next
      rather than each table sizing itself to its own contents. */
   .gt { width: 100%; border-collapse: collapse; font-size: 12.5px; table-layout: fixed; }
-  .gt th:nth-child(1) { width: 20%; }
-  .gt th:nth-child(2) { width: 22%; }
+  .gt th:nth-child(1) { width: 21%; }
+  .gt th:nth-child(2) { width: 24%; }
   .gt th:nth-child(3) { width: 7%; }
-  .gt th:nth-child(4) { width: 14%; }
+  .gt th:nth-child(4) { width: 15%; }
+  .gt tbody tr + tr td { border-top: 1px solid rgba(58,71,87,.45); }
+  .gt tbody tr.sub td { border-top: none; }
   .gt td { overflow-wrap: anywhere; }
   .gt th { text-align: left; font-weight: 500; font-size: 11px; color: var(--muted);
            padding: 3px 14px 3px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
@@ -432,7 +447,8 @@
   .gt td:nth-child(2) { font-variant-numeric: tabular-nums; }
   .gt td.band { color: var(--muted); }
   .gt tr.sub td:first-child { padding-left: 14px; color: var(--muted); }
-  .gt-note { color: var(--muted); font-size: 12px; margin: 0 0 6px; }
+  .gt-note { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
+  .gt-head + .gt-note { margin: 0 0 8px; }
   .gt-held { font-size: 12px; margin: 6px 0 0; padding-left: 10px;
              border-left: 2px solid var(--warn); }
 

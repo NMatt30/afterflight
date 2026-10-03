@@ -468,6 +468,9 @@
 
   var PHASES = [["liftoff", "Lift-off"], ["climb", "Climb"],
                 ["cruise", "Cruise"], ["descent", "Descent"]];
+  // Measured at the landing, and able to hold both its letter and the
+  // descent down. Listed under Landing only.
+  var LANDING_LIMITS = { alignment: true, float: true, touchdown_point: true };
 
   function legKey(sortie, leg) { return sortie.sortie_id + ":" + leg.seq; }
 
@@ -519,6 +522,7 @@
   }
 
   function gtHead(sec, title, letter, score, extra) {
+    if (letter) sec.dataset.grade = letter;
     var head = el("div", "gt-head");
     head.appendChild(el("h4", null, title));
     if (letter) head.appendChild(gradePill(letter, title + " " + letter, score));
@@ -577,8 +581,15 @@
     }
     gtHead(sec, title, ph.letter, ph.score, ph.seconds ? fmtDuration(ph.seconds) : "");
     if (ph.note) sec.appendChild(el("div", "gt-note", ph.note));
+    // The landing limits - alignment, float, touchdown point - can hold the
+    // descent down too, but they are the landing's measures and are listed
+    // there, once. Here: what they did to this phase, if anything.
     var t = gtTable();
-    (ph.parts || []).forEach(function (p) { t.part(p); });
+    var limits = [];
+    (ph.parts || []).forEach(function (p) {
+      if (LANDING_LIMITS[p.key]) limits.push(p);
+      else t.part(p);
+    });
     sec.appendChild(t.table);
     (ph.parts || []).forEach(function (p) {
       if (p.held) {
@@ -586,14 +597,25 @@
                            + Math.round(p.held_to) + ", from " + Math.round(p.held_from) + "."));
       }
     });
+    if (limits.length && !limits.some(function (p) { return p.held; })) {
+      sec.appendChild(el("div", "gt-note", "The landing limits below can hold this "
+                         + "phase down too. None did."));
+    }
     return sec;
   }
 
   function overallSection(leg, pg) {
     if (!pg || !pg.phases) return null;
-    var sec = el("section", "gt-phase");
+    var sec = el("section", "gt-phase gt-overall");
     sec.dataset.phase = "overall";
-    gtHead(sec, "Overall", leg.grade || pg.letter, pg.overall, null);
+    var chain = PHASES.filter(function (ph) {
+      var p = pg.phases[ph[0]];
+      return p && p.score !== null && p.score !== undefined;
+    }).map(function (ph) {
+      var p = pg.phases[ph[0]];
+      return ph[1] + " " + p.letter + " " + Math.round(p.score);
+    }).join("  ·  ");
+    gtHead(sec, "Overall", leg.grade || pg.letter, pg.overall, chain);
     var capped = pg.overall, raw = pg.overall_uncapped;
     var worst = pg.phases[pg.worst_phase];
     if (typeof capped === "number" && typeof raw === "number" && raw - capped > 0.05) {
@@ -610,15 +632,17 @@
   }
 
   function gradingView(leg) {
+    // In the order it was flown: the phases, the landing the descent ends in,
+    // then the rollup. Landing first read as the flight starting at its end.
     var box = el("div", "gt-view");
     var pg = leg.phase_grade || null;
-    var landing = landingSection(leg, pg);
-    if (landing) box.appendChild(landing);
     if (pg && pg.phases) {
       PHASES.forEach(function (ph) {
         if (pg.phases[ph[0]]) box.appendChild(phaseSection(ph[0], ph[1], pg.phases[ph[0]]));
       });
     }
+    var landing = landingSection(leg, pg);
+    if (landing) box.appendChild(landing);
     var overall = overallSection(leg, pg);
     if (overall) box.appendChild(overall);
     return box;
