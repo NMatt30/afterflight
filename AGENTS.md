@@ -314,7 +314,14 @@ Data lives in `sessions/` and is **not** in git: flight tracks, clips, maps,
   per-sortie value into `sortie_signature()` instead.
 - **The filter bar is sticky.** Anything added to it costs viewport on every
   screen for ever. Check it at 1024 px wide with many airframes and months
-  before adding a control.
+  before adding a control. Its height, and the header's, are watched, not
+  measured once: the bar wraps after the flights load, and a height taken at
+  start pinned the camera bar behind it.
+- **A reload must not move the reader.** Every rebuild reloads the list, and
+  rebuilds come after each takeoff, landing, runway lookup and watcher start.
+  `load()` keeps the flight at the top of the screen where it was, and open
+  flights show their old detail until the new arrives. Verify with the page
+  scrolled and flights open - a reload at the top of the page proves nothing.
 - **A watcher runs the code it started with, and says so.** `/state` reports
   `code_stale` when any imported module on disk is newer than the process, and
   the logbook shows it beside the version. Comparing `/state` to `git describe`

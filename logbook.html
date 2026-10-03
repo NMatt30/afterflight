@@ -194,7 +194,7 @@
 
   /* ---- filter bar ---- */
   .filters {
-    position: sticky; top: 57px; z-index: 18;
+    position: sticky; top: var(--header-h, 57px); z-index: 18;
     display: flex; flex-wrap: wrap; gap: 12px 18px; align-items: center;
     padding: 12px 24px; background: rgba(14,17,22,.94); backdrop-filter: blur(6px);
     border-bottom: 1px solid var(--line);
@@ -423,10 +423,12 @@
                border-bottom: 1px solid var(--line); font-family: ui-monospace, Consolas, monospace;
                display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 
-  /* Third in the sticky stack, under the header (57px) and the filter bar.
-     --filters-h is measured at runtime, since the filter row wraps on a narrow
-     window and a hardcoded offset would leave a gap or overlap. */
-  .chasebar { position: sticky; top: calc(57px + var(--filters-h, 49px)); z-index: 15;
+  /* Third in the sticky stack, under the header and the filter bar. Both
+     heights are measured at runtime and re-measured whenever either changes
+     size: the filter row wraps once the flights and month bar are drawn, which
+     is after the page starts, and an offset measured at start then pinned
+     this bar behind the filter row - it looked collapsed on every scroll. */
+  .chasebar { position: sticky; top: calc(var(--header-h, 57px) + var(--filters-h, 49px)); z-index: 15;
               background: rgba(21,26,34,.96); backdrop-filter: blur(6px);
               border-bottom: 1px solid var(--line); padding: 10px 24px;
               display: flex; flex-wrap: wrap; gap: 18px; align-items: center; }

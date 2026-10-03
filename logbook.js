@@ -36,6 +36,9 @@
     sort: "desc",      // desc = newest first
     expanded: {},      // sortie_id -> true
     detail: {},        // sortie_id -> fetched detail doc
+    staleDetail: {},   // the same, from before the last reload; shown until replaced
+    place: null,       // {id, top}: the flight a reload puts back on screen
+    placeUntil: 0,     // ...until then, or until the reader scrolls
     buildSeq: null,    // completed-build counter as of our last load()
     lastStateAt: 0,    // when /state last answered, for the banner watchdog
     sawBuild: false    // a rebuild was seen running while this page was open
@@ -876,10 +879,18 @@
     body.innerHTML = "";
     var cached = state.detail[s.sortie_id];
     if (cached) { renderDetail(body, cached); return; }
-    body.appendChild(el("div", "muted pad", "Loading flight…"));
+    // After a rebuild, show what was there until the new detail arrives: a
+    // placeholder one line high shrank the page under the reader.
+    var stale = (state.staleDetail || {})[s.sortie_id];
+    if (stale) renderDetail(body, stale);
+    else body.appendChild(el("div", "muted pad", "Loading flight…"));
     fetch(LOGGER + "/" + s.detail, { cache: "no-store" })
       .then(function (r) { if (!r.ok) throw new Error("http " + r.status); return r.json(); })
-      .then(function (doc) { state.detail[s.sortie_id] = doc; renderDetail(body, doc); })
+      .then(function (doc) {
+        state.detail[s.sortie_id] = doc;
+        renderDetail(body, doc);
+        holdPlace();
+      })
       .catch(function (e) {
         // The filled flag is set before the fetch so a second click cannot
         // start a second request. On failure it has to come back off, or the
@@ -1029,19 +1040,23 @@
 
   // Everything the list needs, fetched and then rendered. Called instead of
   // renderList() wherever a change could need a month that is not loaded yet.
-  async function showList() {
+  // quiet: a reload under a list already on screen. The months are refetched
+  // behind it rather than replacing it with "Loading…", which emptied the
+  // page under the reader.
+  async function showList(quiet) {
     var need = searching() ? monthsForFilter()
              : (state.month ? [state.month] : []);
     var missing = need.filter(function (ym) { return !state.months[ym]; });
     if (missing.length) {
       state.loadingMonths = true;
-      renderList();
+      if (!quiet) renderList();
       // Sequential on purpose: a search across three years should not open
       // thirty-six requests at once against a single-threaded local server.
       for (var i = 0; i < missing.length; i++) await fetchMonth(missing[i]);
       state.loadingMonths = false;
     }
     renderList();
+    holdPlace();
   }
 
   // ------------------------------------------------------------ filtering
@@ -1551,11 +1566,76 @@
   }
 
   function measureStickyStack() {
+    var root = document.documentElement.style;
+    var h = document.querySelector("header.top");
     var f = document.querySelector(".filters");
-    if (!f) return;
-    document.documentElement.style.setProperty(
-      "--filters-h", Math.round(f.getBoundingClientRect().height) + "px");
+    if (h) root.setProperty("--header-h", Math.round(h.getBoundingClientRect().height) + "px");
+    if (f) root.setProperty("--filters-h", Math.round(f.getBoundingClientRect().height) + "px");
   }
+
+  // Measured once at start, the filter row was one line high - the chips and
+  // the month bar are drawn after the logbook loads - and nothing measured it
+  // again unless the window was resized. Watch the bars themselves instead.
+  function watchStickyStack() {
+    measureStickyStack();
+    window.addEventListener("resize", measureStickyStack);
+    if (typeof ResizeObserver === "function") {
+      var ro = new ResizeObserver(measureStickyStack);
+      ["header.top", ".filters"].forEach(function (sel) {
+        var n = document.querySelector(sel);
+        if (n) ro.observe(n);
+      });
+    }
+  }
+
+  // ------------------------------------------------------------ keeping place
+  //
+  // A rebuild reloads the list, and the list is drawn from scratch. Every
+  // open flight went back to "Loading flight…", the page shrank, and the
+  // browser put the reader back near the top - after every takeoff, landing,
+  // runway lookup and watcher start. So a reload notes which flight is at the
+  // top of the screen and where, and puts it back there; and open flights
+  // keep showing what they showed until their new detail arrives, so the page
+  // does not shrink in the meantime.
+
+  var PLACE_HOLD_MS = 5000;     // long enough for open flights to refetch
+
+  function stickyBottom() {
+    var line = 0;
+    ["header.top", ".filters", ".chasebar"].forEach(function (sel) {
+      var n = document.querySelector(sel);
+      if (n && !n.hidden) line = Math.max(line, n.getBoundingClientRect().bottom);
+    });
+    return line;
+  }
+
+  function readerPlace() {
+    if (window.scrollY <= 0) return null;          // at the top: nothing to keep
+    var line = stickyBottom();
+    var rows = document.querySelectorAll("#sorties .sortie");
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i].getBoundingClientRect();
+      if (r.bottom > line) return { id: rows[i].dataset.sortieId, top: r.top };
+    }
+    return null;
+  }
+
+  function holdPlace() {
+    var p = state.place;
+    if (!p) return;
+    if (Date.now() > state.placeUntil) { state.place = null; return; }
+    var rows = document.querySelectorAll("#sorties .sortie");
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].dataset.sortieId === p.id) {
+        var dy = rows[i].getBoundingClientRect().top - p.top;
+        if (Math.abs(dy) >= 1) window.scrollBy(0, dy);
+        return;
+      }
+    }
+  }
+
+  // The reader's own scrolling always wins over putting them back.
+  function releasePlace() { state.place = null; }
 
   function schedulePoll(ms) {
     if (pollTimer) clearTimeout(pollTimer);
@@ -1890,11 +1970,20 @@
   // ------------------------------------------------------------ boot
 
   async function load() {
+    // A reload under a list the reader is looking at keeps their place.
+    var reload = !!(state.index && document.querySelector("#sorties .sortie"));
+    var place = reload ? readerPlace() : null;
     try {
       var r = await fetch(LOGGER + "/logbook.json", { cache: "no-store" });
       if (!r.ok) throw new Error("http " + r.status);
       state.index = await r.json();
+      // Kept until each open flight's new detail arrives; see fillDetail.
+      state.staleDetail = state.detail;
       state.detail = {};
+      if (place) {
+        state.place = place;
+        state.placeUntil = Date.now() + PLACE_HOLD_MS;
+      }
       // A rebuild rewrites the month files, so anything held from before it
       // is stale. Cheaper and safer than working out which months moved.
       state.months = {};
@@ -1921,7 +2010,7 @@
       renderSummary(state.index);
       renderHidden(state.index);
       renderFilters();
-      await showList();
+      await showList(reload);
     } catch (e) {
       $("#sorties").innerHTML = "";
       // A first run has no logbook.json yet. Asking 'is the watcher
@@ -2058,8 +2147,10 @@
       if (document.visibilityState === "visible") pollState();
     });
 
-    measureStickyStack();
-    window.addEventListener("resize", measureStickyStack);
+    watchStickyStack();
+    ["wheel", "touchstart", "keydown", "mousedown"].forEach(function (ev) {
+      window.addEventListener(ev, releasePlace, { passive: true });
+    });
     load();
     // The camera knobs carry the HTML defaults until something tells them
     // otherwise, and pollState skips entirely while the tab is in the
