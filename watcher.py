@@ -1008,15 +1008,18 @@ def set_below_normal_priority():
 # sampler has nothing fresh it is read one variable at a time - which is also
 # how a crashed sim was noticed, by that read failing.
 #
-# "native" needs no third-party package, which is what running without a
-# Python install needs. The push sampler's own connection is the main one; a
-# state the sim stops pushing - a pause, a loading screen - is held, as the
-# one-at-a-time read would have returned it; and a heartbeat, RequestSystemState
-# every NATIVE_PING_SEC, answered even while paused, notices a sim that has
-# gone without saying so. Not the default until it has been verified against
-# a running sim: a clean quit, a pause, and a sim killed outright.
-# AFTERFLIGHT_SIM_CONNECTION=native in the environment tries it.
-SIM_CONNECTION = os.environ.get("AFTERFLIGHT_SIM_CONNECTION") or "python-simconnect"
+# "native", the default, needs no third-party package, which is what running
+# without a Python install needs. The push sampler's own connection is the
+# main one; a state the sim stops pushing - a pause, a loading screen - is
+# held, as the one-at-a-time read would have returned it; and a heartbeat,
+# RequestSystemState every NATIVE_PING_SEC, answered even while paused,
+# notices a sim that has gone without saying so. Verified against a running
+# sim: connecting, a full circuit recorded, a minute in the Escape menu, a
+# clean quit and a reconnect. A sim killed outright was not tested live; the
+# tests cover it. It needs the sim's own SimConnect DLL; without one, and with
+# the package installed, it falls back to "python-simconnect" and says so.
+# AFTERFLIGHT_SIM_CONNECTION in the environment overrides this.
+SIM_CONNECTION = os.environ.get("AFTERFLIGHT_SIM_CONNECTION") or "native"
 NATIVE_PING_SEC = 5.0
 NATIVE_LOST_SEC = 15.0
 NATIVE_PING_FAILURES = 2
@@ -1090,7 +1093,7 @@ def connect_native():
     except Exception as e:
         return None, "sampler import failed %r" % (e,)
     gsc = GameSimConnect()
-    if not gsc.open():
+    if not gsc.open(quiet=True):
         gsc.close()
         return None, "the sim is not answering"
     smp = sampler_mod.StateSampler(gsc.fns, gsc._h, log=log)
@@ -1101,8 +1104,35 @@ def connect_native():
     return NativeSim(gsc, smp), None
 
 
+_FALLBACK_SAID = [False]
+
+
+def use_native():
+    """Native, unless it cannot work here and the package can.
+
+    Native needs the sim's SimConnect DLL. Without it - not resolved yet, a
+    sim update moved it - an install that still has the Python-SimConnect
+    package keeps recording through that rather than failing every attempt.
+    """
+    if SIM_CONNECTION != "native":
+        return False
+    if game_dll_status().get("ok"):
+        return True
+    try:
+        import importlib.util
+        have_package = importlib.util.find_spec("SimConnect") is not None
+    except Exception:
+        have_package = False
+    if have_package and not _FALLBACK_SAID[0]:
+        _FALLBACK_SAID[0] = True
+        log("native connection needs the sim's SimConnect DLL, which is not "
+            "available; using the Python-SimConnect package instead. Run "
+            "install.ps1 -ResolveDll with the sim installed.")
+    return not have_package
+
+
 def connect_sim():
-    if SIM_CONNECTION == "native":
+    if use_native():
         return connect_native()
     holder = {"sm": None, "err": None}
 
@@ -3835,7 +3865,10 @@ class GameSimConnect:
             self._next_req += 1
             return rid
 
-    def open(self, timeout=CONNECT_TIMEOUT):
+    def open(self, timeout=CONNECT_TIMEOUT, quiet=False):
+        """quiet: the caller reports a failure itself - the main connection
+        retries every few seconds while the sim is closed, and one line per
+        attempt is enough."""
         try:
             hr = self.fns["SimConnect_Open"](
                 byref(self.handle),
@@ -3849,7 +3882,8 @@ class GameSimConnect:
             log("game SimConnect_Open OSError %s dll=%s" % (repr(e), self.dll_path))
             return False
         if not _is_hr(hr, 0):
-            log("game SimConnect_Open failed hr=%s dll=%s" % (hr, self.dll_path))
+            if not quiet:
+                log("game SimConnect_Open failed hr=%s dll=%s" % (hr, self.dll_path))
             return False
         self._opened = True
         self._thread = threading.Thread(target=self._dispatch_loop, daemon=True, name="game-simconnect")

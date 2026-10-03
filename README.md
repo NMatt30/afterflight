@@ -92,9 +92,11 @@ to delete rather than what it intended to.
 
 ## What it needs
 
-Windows 10 or 11, MSFS 2024, and Python 3.10 or newer. Two pip packages:
-`SimConnect` (required) and `Pillow` (optional - without it you lose the baked
-map images and nothing else).
+Windows 10 or 11, MSFS 2024, and Python 3.10 or newer. One optional pip
+package: `Pillow` - without it you lose the baked map images and nothing else.
+The watcher talks to the sim through the sim's own SimConnect DLL, which the
+installer finds and copies; the `SimConnect` pip package is no longer needed,
+and is used only as a fallback if that DLL cannot be found.
 
 There is no build step and no package manager. The interface is plain HTML and
 JavaScript on purpose, and the tray is `ctypes` with no dependencies at all.

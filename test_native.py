@@ -189,11 +189,35 @@ def test_a_lost_sim_ends_the_session_and_keeps_the_flight():
         watcher.write_current, watcher.stop_replay, watcher.NATIVE_PING_SEC = keep
 
 
-def test_the_default_is_still_python_simconnect():
-    """Until the native path has been verified against a running sim."""
+def test_native_is_the_default():
+    """Verified against a running sim: a circuit, the Escape menu, a quit and
+    a reconnect."""
     if os.environ.get("AFTERFLIGHT_SIM_CONNECTION"):
         return
-    assert watcher.SIM_CONNECTION == "python-simconnect"
+    assert watcher.SIM_CONNECTION == "native"
+
+
+def test_without_the_dll_the_package_is_the_fallback():
+    """Native needs the sim's own DLL. Without it, an install that still has
+    Python-SimConnect keeps recording through that; one without it tries
+    native and says why it cannot connect."""
+    import importlib.util
+    keep = (watcher.SIM_CONNECTION, watcher.game_dll_status, importlib.util.find_spec,
+            watcher._FALLBACK_SAID[0])
+    try:
+        watcher.SIM_CONNECTION = "native"
+        watcher.game_dll_status = lambda: {"ok": True}
+        assert watcher.use_native(), "native with the DLL present"
+        watcher.game_dll_status = lambda: {"ok": False}
+        importlib.util.find_spec = lambda name, *a: object() if name == "SimConnect" else keep[2](name, *a)
+        assert not watcher.use_native(), "no DLL, package present: should fall back"
+        importlib.util.find_spec = lambda name, *a: None if name == "SimConnect" else keep[2](name, *a)
+        assert watcher.use_native(), "no DLL, no package: nothing to fall back to"
+        watcher.SIM_CONNECTION = "python-simconnect"
+        assert not watcher.use_native(), "the switch no longer chooses"
+    finally:
+        (watcher.SIM_CONNECTION, watcher.game_dll_status, importlib.util.find_spec,
+         watcher._FALLBACK_SAID[0]) = keep
 
 
 def main():

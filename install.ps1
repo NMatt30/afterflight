@@ -76,13 +76,14 @@ else { Warn "pythonw.exe not found; the tray will show a console window" }
 Say ""
 Say "Dependencies"
 $deps = @{
-  "SimConnect" = "required - sampling, clips (pip install SimConnect==0.4.26)";
+  "SimConnect" = "optional - only the older connection (SIM_CONNECTION=python-simconnect), or a fallback when the sim's DLL cannot be found";
   "PIL"        = "optional - baked map PNGs (pip install Pillow)";
 }
 foreach ($mod in $deps.Keys) {
   & $py -c "import $mod" 2>$null
   if ($LASTEXITCODE -eq 0) { Ok "$mod" }
   elseif ($mod -eq "PIL") { Warn "$mod missing - $($deps[$mod]); maps will draw in the page only" }
+  elseif ($mod -eq "SimConnect") { Ok "$mod not installed - not needed; the watcher talks to the sim through its own DLL" }
   else { Bad "$mod missing - $($deps[$mod])" }
 }
 
@@ -105,7 +106,7 @@ foreach ($d in @("sessions", "sessions\clips", "sessions\maps", "native")) {
 
 # ---------------------------------------------------------------- dll
 Say ""
-Say "Chase / ghost SimConnect DLL"
+Say "The sim's SimConnect DLL (recording, replay and the chase camera)"
 if ($ResolveDll) {
   Push-Location $Base
   try {
@@ -137,7 +138,7 @@ else:
     Ok "native\SimConnect_internal.dll present ($sz KB)"
     Say "         re-run with -ResolveDll after a sim update"
   } else {
-    Warn "native\SimConnect_internal.dll missing - ghost and chase will be unavailable"
+    Bad "native\SimConnect_internal.dll missing - recording, replay and the chase camera need it"
     Say  "         run: .\install.ps1 -ResolveDll   (with the sim installed)"
   }
 }
