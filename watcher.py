@@ -379,6 +379,7 @@ SIMCONNECT_RECV_ID_ASSIGNED_OBJECT_ID = 12
 SIMCONNECT_RECV_ID_CAMERA_STATUS = 41
 SIMCONNECT_RECV_ID_CAMERA = 40
 SIMCONNECT_RECV_ID_SIMOBJECT_DATA = 8
+SIMCONNECT_RECV_ID_SYSTEM_STATE = 15
 # Facility data. Measured against a running sim before anything relied on
 # them, as everything SimConnect says here has to be: the airport list arrives
 # as 18 in parts of up to 1,139 entries of 36 bytes (a 9-byte ident, a 3-byte
@@ -1000,7 +1001,109 @@ def set_below_normal_priority():
     except Exception as e:
         log("priority set failed %s" % repr(e))
 
+# How the watcher talks to the sim.
+#
+# "python-simconnect" is the long-standing path: the Python-SimConnect package
+# opens the main connection and reports a clean quit, and whenever the push
+# sampler has nothing fresh it is read one variable at a time - which is also
+# how a crashed sim was noticed, by that read failing.
+#
+# "native" needs no third-party package, which is what running without a
+# Python install needs. The push sampler's own connection is the main one; a
+# state the sim stops pushing - a pause, a loading screen - is held, as the
+# one-at-a-time read would have returned it; and a heartbeat, RequestSystemState
+# every NATIVE_PING_SEC, answered even while paused, notices a sim that has
+# gone without saying so. Not the default until it has been verified against
+# a running sim: a clean quit, a pause, and a sim killed outright.
+# AFTERFLIGHT_SIM_CONNECTION=native in the environment tries it.
+SIM_CONNECTION = os.environ.get("AFTERFLIGHT_SIM_CONNECTION") or "python-simconnect"
+NATIVE_PING_SEC = 5.0
+NATIVE_LOST_SEC = 15.0
+NATIVE_PING_FAILURES = 2
+
+
+class NativeSim(object):
+    """The main sim connection without Python-SimConnect.
+
+    Shaped like the Python-SimConnect object where the loop touches it - a
+    `quit` flag and `exit()` - plus `lost()`, the heartbeat.
+    """
+
+    def __init__(self, gsc, smp):
+        self.gsc, self.smp = gsc, smp
+        self.started = time.time()
+        self.last_ping = 0.0
+        self.ping_failures = 0
+
+    @property
+    def quit(self):
+        return 1 if self.gsc._quit else 0
+
+    def lost(self, now=None):
+        """Why the sim is gone, or None. Cheap: a clock check per tick and a
+        request every NATIVE_PING_SEC."""
+        now = now or time.time()
+        if now - self.last_ping >= NATIVE_PING_SEC:
+            self.last_ping = now
+            if self.gsc.ping():
+                self.ping_failures = 0
+            else:
+                self.ping_failures += 1
+                if self.ping_failures >= NATIVE_PING_FAILURES:
+                    return "the sim could not be asked %d times running" % self.ping_failures
+        heard = self.gsc._last_pong or self.started
+        if now - heard > NATIVE_LOST_SEC:
+            return "no answer from the sim for %.0f s" % (now - heard)
+        return None
+
+    def exit(self):
+        self.gsc.close()
+
+
+def native_sample(fast, last, now=None):
+    """(sample for this tick, last fresh sample).
+
+    A fresh push is used as it is. Without one - paused, loading - the last is
+    held, timestamped now as the one-at-a-time read would have been, carrying
+    no extremes of its own. Before the first push there is nothing to hold.
+    """
+    if fast is not None:
+        return fast, fast
+    if last is None:
+        return None, None
+    held = dict(last)
+    held["t"] = now or time.time()
+    held["ts"] = now_iso()
+    held["held"] = True
+    held.pop("peaks", None)
+    return held, last
+
+
+def connect_native():
+    """The push sampler's connection, as the main one. (NativeSim, None) or
+    (None, why)."""
+    info = game_dll_status()
+    if not info.get("ok"):
+        return None, "the sim's SimConnect DLL is not available"
+    try:
+        import sampler as sampler_mod
+    except Exception as e:
+        return None, "sampler import failed %r" % (e,)
+    gsc = GameSimConnect()
+    if not gsc.open():
+        gsc.close()
+        return None, "the sim is not answering"
+    smp = sampler_mod.StateSampler(gsc.fns, gsc._h, log=log)
+    gsc.state_sampler = smp
+    if not smp.subscribe():
+        gsc.close()
+        return None, "could not subscribe to the aircraft's state"
+    return NativeSim(gsc, smp), None
+
+
 def connect_sim():
+    if SIM_CONNECTION == "native":
+        return connect_native()
     holder = {"sm": None, "err": None}
 
     def do_connect():
@@ -3581,6 +3684,7 @@ def load_game_simconnect_dll():
     "SimConnect_RequestFacilitiesList",
     "SimConnect_AddToFacilityDefinition",
     "SimConnect_RequestFacilityData",
+    "SimConnect_RequestSystemState",
     ):
         try:
             fns[name] = getattr(dll, name)
@@ -3601,6 +3705,9 @@ def load_game_simconnect_dll():
     c_float = ctypes.c_float
     fns["SimConnect_Open"].restype = HRESULT
     fns["SimConnect_Open"].argtypes = [POINTER(HANDLE), LPCSTR, HWND, DWORD, HANDLE, DWORD]
+    if "SimConnect_RequestSystemState" in fns:
+        fns["SimConnect_RequestSystemState"].restype = HRESULT
+        fns["SimConnect_RequestSystemState"].argtypes = [HANDLE, DWORD, c_char_p]
     fns["SimConnect_Close"].restype = HRESULT
     fns["SimConnect_Close"].argtypes = [HANDLE]
     fns["SimConnect_GetNextDispatch"].restype = HRESULT
@@ -3716,6 +3823,8 @@ class GameSimConnect:
         # dispatch thread only copies bytes in; the caller parses them.
         self._fac = {}
         self._fac_defined = False
+        # When the sim last answered a heartbeat (ping). None until it has.
+        self._last_pong = None
 
     def _h(self):
         return self.handle
@@ -3773,6 +3882,8 @@ class GameSimConnect:
                         self._ok = True
                     elif dwid == SIMCONNECT_RECV_ID_QUIT:
                         self._quit = True
+                    elif dwid == SIMCONNECT_RECV_ID_SYSTEM_STATE:
+                        self._last_pong = time.time()
                     elif dwid == SIMCONNECT_RECV_ID_ASSIGNED_OBJECT_ID:
                         assigned = cast(pp, POINTER(_SC_RECV_ASSIGNED)).contents
                         with self._lock:
@@ -3817,6 +3928,19 @@ class GameSimConnect:
                 except Exception as e:
                     log("dispatch parse failed %s" % repr(e))
             time.sleep(0.002)
+
+    def ping(self):
+        """Ask the sim something it answers even when paused. False if the
+        question could not be sent - itself a sign the sim has gone."""
+        fn = self.fns.get("SimConnect_RequestSystemState")
+        if fn is None or not self._opened or self._closed:
+            return False
+        try:
+            hr = fn(self._h(), DWORD(self.new_request_id()), b"Sim")
+        except Exception as e:
+            log("RequestSystemState failed %s" % repr(e))
+            return False
+        return _is_hr(hr, 0)
 
     def _fac_wait(self, rid, ready, timeout):
         t0 = time.time()
@@ -5720,13 +5844,16 @@ def start_runway_lookup():
 
 
 def run_connected(sm, flight=None, tracker=None, resume_snap=None):
-    from SimConnect import AircraftRequests
-    aq = AircraftRequests(sm, _time=200)
-    for key in ("PLANE_PITCH_DEGREES", "PLANE_BANK_DEGREES", "IS_SLEW_ACTIVE"):
-        try:
-            aq.get(key)
-        except Exception as e:
-            log("optional var %s not subscribed %s" % (key, repr(e)))
+    native = sm if isinstance(sm, NativeSim) else None
+    aq = None
+    if native is None:
+        from SimConnect import AircraftRequests
+        aq = AircraftRequests(sm, _time=200)
+        for key in ("PLANE_PITCH_DEGREES", "PLANE_BANK_DEGREES", "IS_SLEW_ACTIVE"):
+            try:
+                aq.get(key)
+            except Exception as e:
+                log("optional var %s not subscribed %s" % (key, repr(e)))
     if tracker is None:
         tracker = ClipTracker()
         LIVE_TRACKER[0] = tracker
@@ -5740,7 +5867,13 @@ def run_connected(sm, flight=None, tracker=None, resume_snap=None):
         log("reconnect with surviving flight_id %s started_at=%s" % (flight.flight_id, flight.started_at))
     stale = 0
     last_detect = 0.0
-    sampler_conn, state_sampler = open_state_sampler()
+    if native is not None:
+        # The main connection is the sampler's; there is no second one.
+        sampler_conn, state_sampler = native.gsc, native.smp
+    else:
+        sampler_conn, state_sampler = open_state_sampler()
+    last_fresh = None
+    held_ticks = 0
     last_compare = 0.0
     loop_count = 0
     loop_mark = time.time()
@@ -5759,8 +5892,9 @@ def run_connected(sm, flight=None, tracker=None, resume_snap=None):
         RUNTIME["replay"]["chase"]["camera_acquired"] = False
     info = game_dll_status()
     log(
-        "simconnect session ready pid=%s python-simconnect detect; game_dll=%s camera_exports=%s"
-        % (os.getpid(), info.get("path"), info.get("ok"))
+        "simconnect session ready pid=%s %s; game_dll=%s camera_exports=%s"
+        % (os.getpid(), "native connection" if native is not None
+           else "python-simconnect detect", info.get("path"), info.get("ok"))
     )
     try:
         while True:
@@ -5774,9 +5908,36 @@ def run_connected(sm, flight=None, tracker=None, resume_snap=None):
                 tracker.reset()
                 write_current("idle", None, None, None, extra={"connected": False, "error": "sim quit"})
                 return "quit", None, tracker
+            if native is not None:
+                # A sim that has gone without saying so - crashed, killed.
+                # Handled as the one-at-a-time read failing was: the flight is
+                # kept, and the next connection may resume it.
+                why = native.lost(loop_t)
+                if why:
+                    log("sim connection lost: %s" % why)
+                    write_current(
+                        "idle",
+                        flight.flight_id if flight else None,
+                        flight.started_at if flight else None,
+                        None,
+                        extra={"connected": False, "error": "sim not answering"},
+                        sortie_id=getattr(flight, "sortie_id", None) if flight else None,
+                    )
+                    return "error", flight, tracker
             try:
-                s = sample(aq) if SAMPLER_MODE != "fast" else None
-                if state_sampler is not None:
+                if native is not None:
+                    fast = sample_from_state(state_sampler.latest())
+                    merge_peaks(peak_acc, (fast or {}).get("peaks"))
+                    s, last_fresh = native_sample(fast, last_fresh, loop_t)
+                    if fast is not None:
+                        fast_used += 1
+                    elif s is not None:
+                        held_ticks += 1
+                    if s is not None:
+                        s["peaks"] = peak_acc
+                else:
+                    s = sample(aq) if SAMPLER_MODE != "fast" else None
+                if native is None and state_sampler is not None:
                     fast = sample_from_state(state_sampler.latest())
                     merge_peaks(peak_acc, (fast or {}).get("peaks"))
                     if SAMPLER_MODE == "fast":
@@ -5816,6 +5977,13 @@ def run_connected(sm, flight=None, tracker=None, resume_snap=None):
                 except Exception:
                     pass
                 return "error", flight, tracker
+            if s is None:
+                # Connected, and the sim has pushed nothing yet - the first
+                # moments of a native connection. Nothing below has anything
+                # to work on; the rest of the loop assumed a sample and ended
+                # the session on the first tick, before a single push.
+                time.sleep(SAMPLE_SEC)
+                continue
             try:
                 tracker.feed(s)
             except PermissionError as e:
@@ -5935,7 +6103,10 @@ def run_connected(sm, flight=None, tracker=None, resume_snap=None):
         log("run error %s (flight kept)" % repr(e))
         return "error", flight, tracker
     finally:
-        if SAMPLER_MODE == "fast" and (fast_used or fast_missing):
+        if native is not None and (fast_used or held_ticks):
+            log("sampler: %d ticks from pushes, %d held the last state" %
+                (fast_used, held_ticks))
+        elif SAMPLER_MODE == "fast" and (fast_used or fast_missing):
             log("sampler: %d ticks from pushes, %d fell back to legacy" %
                 (fast_used, fast_missing))
         if sampler_conn is not None:

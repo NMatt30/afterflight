@@ -218,6 +218,7 @@ default, placed near the other tunables at the top of its module.
 | `test_map.py` | What the route map draws as one line, and where it breaks - and so where it puts markers. |
 | `test_efb.py` | When a deploy may rewrite the EFB package's committed `layout.json` - only when its files changed. |
 | `test_runways.py` | The touchdown point end to end: geometry, the zone score, facility-message parsing in the measured layout, the builder, and the cache signature. |
+| `test_native.py` | The sim connection without Python-SimConnect: quit, heartbeat, a held pause, and the recording loop run with the package unimportable. |
 | `backup.ps1` | Copies what git deliberately does not, with a SHA-256 manifest and consistency status. |
 | `verify-backup.ps1` | Verifies a backup manifest and every archived file hash. |
 | `logbook.html` / `logbook.js` | The UI. Renders `logbook.json`; writes nothing directly. |
@@ -387,6 +388,7 @@ py -3 test_arming.py        # a menu is not a flight; a parked aircraft is not o
 py -3 test_map.py           # a sim skip is not a landing and a takeoff
 py -3 test_efb.py           # a deploy does not dirty the committed EFB layout
 py -3 test_runways.py       # where on the runway, and what the sim really sends
+py -3 test_native.py        # the sim connection with no Python-SimConnect
 py -3 test_integrity.py     # locks, partial deletes, backup round trip
 py -3 sampler.py            # offline self-test: state block layout and peaks
 py -3 flightprefs.py        # offline self-test: the per-flight switches
