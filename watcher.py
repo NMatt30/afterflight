@@ -5638,9 +5638,13 @@ def lookup_runways(points, backfill=False):
     import runways as runways_mod
     index = runways_mod.load_index(RUNWAYS_DIR)
 
+    # Covered is a cached runway under the touchdown, not a cached airport
+    # nearby: an airport near a landing is not necessarily the one it was at.
+    # A landing off airport stays uncovered, and costs one airport list per
+    # session, parked, on this thread - nothing new is fetched for it.
     def uncovered(pts):
         return [p for p in pts
-                if not runways_mod.airports_near(index, p[0], p[1], RUNWAY_LOOKUP_RADIUS_NM)]
+                if not runways_mod.runway_at(index, p[0], p[1], RUNWAY_LOOKUP_RADIUS_NM)]
 
     want = uncovered(points)
     if backfill:

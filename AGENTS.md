@@ -263,6 +263,9 @@ Data lives in `sessions/` and is **not** in git: flight tracks, clips, maps,
   touchdown located on a runway centreline to within 10 ft. `test_runways.py` encodes the layout
   so drifting from it fails offline. The lookup runs only when parked, on its
   own short-lived connection, never the one the recording rides on.
+  **A landing's runway is known when a cached runway contains the touchdown**,
+  not when a cached airport is near it: a heliport cached 2.5 nm from a
+  landing once hid the airport it was really at from every later lookup.
 - **The watcher holds modules in memory.** Editing `logbook_build.py` or
   `grading.py` does nothing until you restart the watcher — and a stale watcher
   will happily overwrite a new-format `logbook.json` with the old shape.

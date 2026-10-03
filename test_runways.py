@@ -622,6 +622,73 @@ def test_saving_a_band_in_the_watcher_rebuilds_the_logbook():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_a_landing_is_covered_by_a_runway_not_by_an_airport_nearby():
+    """A heliport cached 2.5 nm from a landing made the landing count as
+    covered, so the airport it was really at was never looked up."""
+    d = tempfile.mkdtemp()
+    try:
+        heli = runways.from_facility("XHEL", "K2", (LAT0 + 0.04, LON0, 0.0, 0), [])
+        with open(runways.cache_path(d, "XHEL"), "w", encoding="utf-8") as f:
+            json.dump(heli, f)
+        index = runways.load_index(d)
+        assert runways.airports_near(index, LAT0, LON0, 3.0), "the fixture has no airport nearby"
+        assert not runways.runway_at(index, LAT0, LON0), (
+            "a landing counted as covered by a heliport 2.4 nm away")
+        doc = runways.from_facility("KTST", "K2", (LAT0, LON0, 0.0, 1),
+                                    [(LAT0, LON0, 0.0, 90.0, 2865.0, 45.0, 9, 0, 27, 0, 0.0, 0.0)])
+        with open(runways.cache_path(d, "KTST"), "w", encoding="utf-8") as f:
+            json.dump(doc, f)
+        index = runways.load_index(d)
+        assert runways.runway_at(index, LAT0, LON0), "a touchdown on a cached runway"
+        # Either direction, and beside the runway is not on it.
+        assert runways.runway_at(index, *_east_of(LAT0, LON0, 3000.0))
+        assert not runways.runway_at(index, LAT0 + 0.01, LON0), "600 m north of the runway"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_the_lookup_fetches_the_airport_a_heliport_used_to_hide():
+    """Through lookup_runways, with the sim replaced: a cached heliport near a
+    landing no longer stops the airport it landed at being fetched."""
+    d = tempfile.mkdtemp()
+    keep = (watcher.RUNWAYS_DIR, watcher.GameSimConnect)
+    asked = []
+
+    class FakeSim(object):
+        def open(self):
+            return True
+
+        def close(self):
+            pass
+
+        def facility_airports(self):
+            return [("XHEL", "K2", LAT0 + 0.04, LON0, 0.0),
+                    ("KTST", "K2", LAT0, LON0, 0.0)]
+
+        def facility_runways(self, ident, region):
+            asked.append(ident)
+            rws = [] if ident == "XHEL" else [
+                (LAT0, LON0, 0.0, 90.0, 2865.0, 45.0, 9, 0, 27, 0, 0.0, 0.0)]
+            return runways.from_facility(ident, region, (LAT0, LON0, 0.0, len(rws)), rws)
+
+    try:
+        watcher.RUNWAYS_DIR = d
+        watcher.GameSimConnect = FakeSim
+        heli = runways.from_facility("XHEL", "K2", (LAT0 + 0.04, LON0, 0.0, 0), [])
+        with open(runways.cache_path(d, "XHEL"), "w", encoding="utf-8") as f:
+            json.dump(heli, f)
+        saved = watcher.lookup_runways([(LAT0, LON0)])
+        assert asked == ["KTST"] and saved == 1, (
+            "asked the sim for %r and saved %d: the landing's own airport was "
+            "not fetched, or a cached one was fetched again" % (asked, saved))
+        del asked[:]
+        assert watcher.lookup_runways([(LAT0, LON0)]) == 0 and asked == [], (
+            "a landing on a cached runway was looked up again")
+    finally:
+        watcher.RUNWAYS_DIR, watcher.GameSimConnect = keep
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_the_watcher_asks_the_sim_about_airplane_runways_only():
     assert watcher.measures_runway("Airplane", 90.0, "Test Jet")
     assert watcher.measures_runway("Airplane", 45.0, "Test Single")

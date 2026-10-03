@@ -270,6 +270,26 @@ def airports_near(index, lat, lon, radius_nm):
     return [p for _d, p in sorted(found)]
 
 
+def runway_at(index, lat, lon, radius_nm=3.0):
+    """True if a cached runway contains this point, landed on either way.
+
+    What "this landing's runway is known" means. An airport being near is not
+    it: a heliport 2.5 nm from a landing, cached on the way past, made the
+    landing count as covered, and the airport it was really at was never
+    asked about. The same tolerances as a touchdown match (locate), checked
+    along the primary direction - containment is the same either way.
+    """
+    for path in airports_near(index, lat, lon, radius_nm):
+        doc = load_airport(path)
+        for rw in (doc or {}).get("runways") or []:
+            try:
+                if locate(rw, lat, lon, float(rw["heading"])) is not None:
+                    return True
+            except (KeyError, TypeError, ValueError):
+                continue
+    return False
+
+
 def touchdown_at(index, lat, lon, track_deg, radius_nm=3.0):
     """The runway a touchdown was on, from the cache, or None.
 
