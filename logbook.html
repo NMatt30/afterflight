@@ -397,6 +397,45 @@
                font-size: 12px; }
   .gx-limits li { margin: 0 0 5px; }
 
+  /* Overview and Grading, per leg. Underlined rather than boxed: the filter
+     chips and the grading panel's profile tabs are already boxes, and a third
+     set would read as more filters. */
+  .leg-tabs { display: flex; gap: 2px; margin: 10px 0 0;
+              border-bottom: 1px solid var(--line); }
+  .leg-tab, .leg-tab:hover:not(:disabled) {
+    background: transparent; border: none; border-bottom: 2px solid transparent;
+    border-radius: 0; color: var(--muted); padding: 5px 12px; font-size: 12.5px;
+    margin-bottom: -1px; cursor: pointer; }
+  .leg-tab:hover:not(:disabled) { color: var(--text); }
+  .leg-tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+  .phase .grade.opens { cursor: pointer; }
+  .phase .grade.opens:hover { outline: 1px solid var(--accent); outline-offset: 1px; }
+
+  .gt-view { margin-top: 4px; }
+  .gt-phase { padding: 12px 0 6px; border-top: 1px solid var(--line); }
+  .gt-phase:first-child { border-top: none; }
+  .gt-head { display: flex; align-items: center; gap: 10px; margin: 0 0 6px; }
+  .gt-head h4 { margin: 0; font-size: 13px; min-width: 70px; }
+  .gt-head .muted { font-size: 12px; }
+  /* Fixed widths, so the columns line up from one phase's table to the next
+     rather than each table sizing itself to its own contents. */
+  .gt { width: 100%; border-collapse: collapse; font-size: 12.5px; table-layout: fixed; }
+  .gt th:nth-child(1) { width: 20%; }
+  .gt th:nth-child(2) { width: 22%; }
+  .gt th:nth-child(3) { width: 7%; }
+  .gt th:nth-child(4) { width: 14%; }
+  .gt td { overflow-wrap: anywhere; }
+  .gt th { text-align: left; font-weight: 500; font-size: 11px; color: var(--muted);
+           padding: 3px 14px 3px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  .gt td { padding: 3px 14px 3px 0; vertical-align: top; }
+  .gt th.num, .gt td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .gt td:nth-child(2) { font-variant-numeric: tabular-nums; }
+  .gt td.band { color: var(--muted); }
+  .gt tr.sub td:first-child { padding-left: 14px; color: var(--muted); }
+  .gt-note { color: var(--muted); font-size: 12px; margin: 0 0 6px; }
+  .gt-held { font-size: 12px; margin: 6px 0 0; padding-left: 10px;
+             border-left: 2px solid var(--warn); }
+
   .leg-body { display: grid; grid-template-columns: minmax(220px, 1.2fr) auto auto;
               gap: 20px; align-items: start; margin-top: 12px; }
   @media (max-width: 900px) { .leg-body { grid-template-columns: 1fr; } }

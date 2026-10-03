@@ -39,6 +39,7 @@
     staleDetail: {},   // the same, from before the last reload; shown until replaced
     place: null,       // {id, top}: the flight a reload puts back on screen
     placeUntil: 0,     // ...until then, or until the reader scrolls
+    legTab: {},        // "sortie_id:seq" -> "grading"; absent is Overview
     buildSeq: null,    // completed-build counter as of our last load()
     lastStateAt: 0,    // when /state last answered, for the banner watchdog
     sawBuild: false    // a rebuild was seen running while this page was open
@@ -411,8 +412,12 @@
     return (lines.join("\n")) + caveat;
   }
 
-  // One phase of a leg: a small label with its own pill.
-  function phasePill(label, ph) {
+  // One phase of a leg: a small label with its own pill. The tooltip is a
+  // summary - how the phase went and what held it back. It used to carry every
+  // measure with its band and weight, a dozen lines the browser cut off at a
+  // fixed width; that detail is the Grading tab now, and clicking the pill
+  // opens it at this phase.
+  function phasePill(label, ph, onOpen) {
     var box = el("span", "phase");
     box.appendChild(el("span", "phase-label", label));
     if (!ph || ph.score === null || ph.score === undefined) {
@@ -421,44 +426,250 @@
       box.appendChild(none);
       return box;
     }
-    // The watcher supplies the wording and the measured value with it, so
-    // nothing here has to know what "approach_vs_stdev_fpm" meant.
-    var lines = [label.charAt(0).toUpperCase() + label.slice(1)
-                 + "  " + ph.letter + " " + Math.round(ph.score) + "/100"
+    var title = label.charAt(0).toUpperCase() + label.slice(1);
+    var pill = gradePill(ph.letter, phaseSummary(title, ph, !!onOpen), ph.score);
+    if (onOpen) {
+      pill.classList.add("opens");
+      pill.addEventListener("click", onOpen);
+    }
+    box.appendChild(pill);
+    return box;
+  }
+
+  // How a phase went, in a few lines: its grade, the two measures that cost
+  // the most, and any limit that held it down.
+  function phaseSummary(title, ph, opens) {
+    var lines = [title + "  " + ph.letter + " " + Math.round(ph.score) + "/100"
                  + (ph.seconds ? "  ·  " + fmtDuration(ph.seconds) : "")];
     if (ph.note) lines.push(ph.note);
-    // Each line says what was measured, what it scored, how much it counts,
-    // and what good and bad look like. Without that last part a reader is
-    // told "6°, 33/100" and has to guess what would have been a good number,
-    // which is most of what they wanted to know.
+    var weak = (ph.parts || []).filter(function (p) {
+      return p.weight_pct > 0 && p.score != null && p.score < 99.5;
+    }).sort(function (a, b) { return a.score - b.score; }).slice(0, 2);
+    lines.push(weak.length
+      ? "Weakest: " + weak.map(function (p) {
+          return p.label + " " + Math.round(p.score);
+        }).join(", ")
+      : "Every measure at full marks");
     (ph.parts || []).forEach(function (p) {
-      var tail = [];
-      if (p.cap) tail.push("a cap, not a weight");
-      // Measured and shown, but not allowed to move the grade. Without
-      // saying so it would read as a cap that simply did not bite. Short,
-      // because the browser cuts a tooltip line off at a fixed width.
-      else if (p.counted === false) tail.push("not counted");
-      else if (p.weight_pct != null) tail.push(p.weight_pct + "% of this phase");
-      if (p.band) tail.push(p.band);
-      lines.push("  " + p.label
-                 + (p.measured ? "   " + p.measured : "")
-                 + "   " + Math.round(p.score) + "/100"
-                 + (tail.length ? "   · " + tail.join(" · ") : ""));
-      // Alignment is two measurements behind one number, and naming only the
-      // total left "0.31 g slide" with nothing to say what it did. Break it
-      // out so each half shows its own band and its share of the score.
-      (p.sub || []).forEach(function (q) {
-        lines.push("      " + q.label + "   " + q.measured
-                   + "   " + Math.round(q.score) + "/100"
-                   + "   · " + q.weight_pct + "% of alignment · " + q.band);
-      });
-      if (p.held) {
-        lines.push("      held this phase down to " + Math.round(p.held_to)
-                   + ", from " + Math.round(p.held_from));
+      if (p.held) lines.push("Held to " + Math.round(p.held_to) + " by "
+                             + p.label.toLowerCase());
+    });
+    if (opens) lines.push("Click for the full grading");
+    return lines.join("\n");
+  }
+
+  // ------------------------------------------------------------ grading tab
+  //
+  // Beside each leg's Overview: the landing first - what set its letter and
+  // what could hold it down - then one table per phase, every measure with
+  // what was measured, its score, how much it counts and what good looks
+  // like. All of it comes from the leg as built; nothing here knows a
+  // threshold.
+
+  var PHASES = [["liftoff", "Lift-off"], ["climb", "Climb"],
+                ["cruise", "Cruise"], ["descent", "Descent"]];
+
+  function legKey(sortie, leg) { return sortie.sortie_id + ":" + leg.seq; }
+
+  function scoreText(v) {
+    return (v === null || v === undefined) ? "–" : String(Math.round(v));
+  }
+
+  // How a measure counts. A limit can only hold a grade down; one that is
+  // measured but switched off says so, or it would read as a limit that
+  // simply did not bite.
+  function countsText(p) {
+    if (p.counted === false) return "not counted";
+    if (p.cap || p.weight_pct === 0) return p.held ? "limit, held it" : "limit";
+    return p.weight_pct != null ? p.weight_pct + "%" : "";
+  }
+
+  function gtTable() {
+    var t = el("table", "gt");
+    var head = el("tr");
+    [["Measure"], ["Measured"], ["Score", "num"], ["Counts"], ["Good looks like"]]
+      .forEach(function (c) { head.appendChild(el("th", c[1] || null, c[0])); });
+    var thead = el("thead");
+    thead.appendChild(head);
+    t.appendChild(thead);
+    var body = el("tbody");
+    t.appendChild(body);
+    return {
+      table: t,
+      row: function (cells, cls) {
+        var r = el("tr", cls || null);
+        cells.forEach(function (c, i) {
+          r.appendChild(el("td", i === 2 ? "num" : (i === 4 ? "band" : null),
+                           c === null || c === undefined ? "" : String(c)));
+        });
+        body.appendChild(r);
+        return r;
+      },
+      part: function (p, cls) {
+        this.row([p.label, p.measured || "", scoreText(p.score), countsText(p),
+                  p.band || (p.cap ? "can only hold the grade down" : "")], cls);
+        var self = this;
+        (p.sub || []).forEach(function (q) {
+          self.row([q.label, q.measured || "", scoreText(q.score),
+                    q.weight_pct != null ? q.weight_pct + "% of " + p.label.toLowerCase() : "",
+                    q.band || ""], "sub");
+        });
+      }
+    };
+  }
+
+  function gtHead(sec, title, letter, score, extra) {
+    var head = el("div", "gt-head");
+    head.appendChild(el("h4", null, title));
+    if (letter) head.appendChild(gradePill(letter, title + " " + letter, score));
+    if (extra) head.appendChild(el("span", "muted", extra));
+    sec.appendChild(head);
+  }
+
+  function landingSection(leg, pg) {
+    if (!leg.landing_grade && leg.landing_rate_fpm == null) return null;
+    var byKey = {};
+    ((((pg || {}).phases || {}).descent || {}).parts || []).forEach(function (p) {
+      byKey[p.key] = p;
+    });
+    var sec = el("section", "gt-phase");
+    sec.dataset.phase = "landing";
+    gtHead(sec, "Landing", leg.landing_grade, null, leg.landing_grade_name || "");
+    sec.appendChild(el("div", "gt-note",
+      "The touchdown rate sets the letter. A limit can only hold it down."));
+    var t = gtTable();
+    var td = byKey.touchdown;
+    t.row(["Touchdown", fmtRate(leg.landing_rate_fpm), scoreText(td && td.score),
+           "sets the letter", (td && td.band) || ""]);
+    var tp = leg.touchdown_point;
+    if (tp && tp.threshold_height_ft != null) {
+      t.row(["Over the threshold", Math.round(tp.threshold_height_ft) + " ft", "–",
+             "information", "published glidepaths cross at about 50 ft"]);
+    }
+    ["touchdown_point", "float", "alignment"].forEach(function (k) {
+      if (byKey[k]) t.part(byKey[k]);
+    });
+    sec.appendChild(t.table);
+    // What held the letter down, in the order it was applied.
+    [["Alignment", leg.landing_alignment], ["The float", leg.landing_float],
+     ["The touchdown point", leg.touchdown_point]].forEach(function (pair) {
+      var m = pair[1];
+      if (m && m.held_from) {
+        sec.appendChild(el("div", "gt-held", pair[0] + " held the letter down from "
+                           + m.held_from + "."));
       }
     });
-    box.appendChild(gradePill(ph.letter, lines.join("\n"), ph.score));
+    var airplane = pg && pg.profile && pg.profile !== "rotary";
+    if (airplane && !tp) {
+      sec.appendChild(el("div", "gt-note",
+        "No runway matched this landing - off airport, or not looked up yet - "
+        + "so there is no float or touchdown point."));
+    }
+    return sec;
+  }
+
+  function phaseSection(key, title, ph) {
+    var sec = el("section", "gt-phase");
+    sec.dataset.phase = key;
+    if (ph.score === null || ph.score === undefined) {
+      gtHead(sec, title, null, null, ph.note || "not enough of this phase to grade");
+      return sec;
+    }
+    gtHead(sec, title, ph.letter, ph.score, ph.seconds ? fmtDuration(ph.seconds) : "");
+    if (ph.note) sec.appendChild(el("div", "gt-note", ph.note));
+    var t = gtTable();
+    (ph.parts || []).forEach(function (p) { t.part(p); });
+    sec.appendChild(t.table);
+    (ph.parts || []).forEach(function (p) {
+      if (p.held) {
+        sec.appendChild(el("div", "gt-held", p.label + " held this phase down to "
+                           + Math.round(p.held_to) + ", from " + Math.round(p.held_from) + "."));
+      }
+    });
+    return sec;
+  }
+
+  function overallSection(leg, pg) {
+    if (!pg || !pg.phases) return null;
+    var sec = el("section", "gt-phase");
+    sec.dataset.phase = "overall";
+    gtHead(sec, "Overall", leg.grade || pg.letter, pg.overall, null);
+    var capped = pg.overall, raw = pg.overall_uncapped;
+    var worst = pg.phases[pg.worst_phase];
+    if (typeof capped === "number" && typeof raw === "number" && raw - capped > 0.05) {
+      sec.appendChild(el("div", "gt-note", "Held down to " + Math.round(capped)
+        + " from " + Math.round(raw) + ": a leg is never more than one band - ten "
+        + "points - above its weakest phase, and " + pg.worst_phase + " scored "
+        + Math.round(worst ? worst.score : 0) + "."));
+    } else {
+      sec.appendChild(el("div", "gt-note", "The phases weighted together. A leg is "
+        + "never more than one band - ten points - above its weakest phase"
+        + (pg.worst_phase ? ", " + pg.worst_phase + " here" : "") + "."));
+    }
+    return sec;
+  }
+
+  function gradingView(leg) {
+    var box = el("div", "gt-view");
+    var pg = leg.phase_grade || null;
+    var landing = landingSection(leg, pg);
+    if (landing) box.appendChild(landing);
+    if (pg && pg.phases) {
+      PHASES.forEach(function (ph) {
+        if (pg.phases[ph[0]]) box.appendChild(phaseSection(ph[0], ph[1], pg.phases[ph[0]]));
+      });
+    }
+    var overall = overallSection(leg, pg);
+    if (overall) box.appendChild(overall);
     return box;
+  }
+
+  // Overview and Grading for one leg. The grading panel is built the first
+  // time it is shown: an expanded month draws every leg at once. The chosen
+  // tab is kept per leg, so a rebuild's reload leaves the reader where they
+  // were.
+  function legTabs(wrap, key, overview, build) {
+    var bar = el("div", "leg-tabs");
+    bar.setAttribute("role", "tablist");
+    var grading = el("div", "leg-panel");
+    grading.hidden = true;
+    var btns = {};
+    [["overview", "Overview"], ["grading", "Grading"]].forEach(function (t) {
+      var b = el("button", "leg-tab", t[1]);
+      b.type = "button";
+      b.setAttribute("role", "tab");
+      b.addEventListener("click", function () { show(t[0]); });
+      btns[t[0]] = b;
+      bar.appendChild(b);
+    });
+    function show(name, phase) {
+      if (name === "grading" && !grading.dataset.built) {
+        grading.appendChild(build());
+        grading.dataset.built = "1";
+      }
+      overview.hidden = name !== "overview";
+      grading.hidden = name !== "grading";
+      btns.overview.setAttribute("aria-selected", String(name === "overview"));
+      btns.grading.setAttribute("aria-selected", String(name === "grading"));
+      if (name === "grading") state.legTab[key] = name;
+      else delete state.legTab[key];
+      if (phase) {
+        var target = grading.querySelector('[data-phase="' + phase + '"]');
+        if (target) revealBelowStickyBars(target);
+      }
+    }
+    wrap.appendChild(bar);
+    wrap.appendChild(overview);
+    wrap.appendChild(grading);
+    show(state.legTab[key] || "overview");
+    return { show: show };
+  }
+
+  // Bring a node into view without parking it under the sticky header.
+  function revealBelowStickyBars(node) {
+    var line = stickyBottom() + 8;
+    var r = node.getBoundingClientRect();
+    if (r.top < line || r.top > window.innerHeight - 60) window.scrollBy(0, r.top - line);
   }
 
   // KML and GPX come from the watcher, built on demand from the raw track.
@@ -618,12 +829,16 @@
     }
     head.appendChild(bouncePill(leg.landing));
     var pg = rated ? leg.phase_grade : null;
+    var tabs = null;
+    function openAt(phase) {
+      return function () { if (tabs) tabs.show("grading", phase); };
+    }
     if (pg && pg.phases) {
       var ps = el("span", "phases");
-      ps.appendChild(phasePill("lift-off", pg.phases.liftoff));
-      ps.appendChild(phasePill("climb", pg.phases.climb));
-      ps.appendChild(phasePill("cruise", pg.phases.cruise));
-      ps.appendChild(phasePill("descent", pg.phases.descent));
+      ps.appendChild(phasePill("lift-off", pg.phases.liftoff, openAt("liftoff")));
+      ps.appendChild(phasePill("climb", pg.phases.climb, openAt("climb")));
+      ps.appendChild(phasePill("cruise", pg.phases.cruise, openAt("cruise")));
+      ps.appendChild(phasePill("descent", pg.phases.descent, openAt("descent")));
       head.appendChild(ps);
     }
     var route = el("span", "route");
@@ -663,6 +878,7 @@
     head.appendChild(delLeg);
     wrap.appendChild(head);
 
+    var overview = el("div", "leg-panel");
     var body = el("div", "leg-body");
     var mapCell = el("div", "leg-map");
     mapCell.appendChild(trackFigure(leg.track, leg.map));
@@ -740,19 +956,11 @@
       var bits = [];
       if (al.bank_deg != null) bits.push(al.bank_deg.toFixed(1) + "° bank");
       if (al.scrub_g != null) bits.push(al.scrub_g.toFixed(2) + " g slide");
-      var why = "How straight it arrived: " + Math.round(al.score) + " out of 100.\n"
-        + "Bank is the furthest it rolled from the moment the wheels touched "
-        + "through the rollout — full marks at 4°, nothing at 14°.\n"
-        + "Slide is how hard it was still moving sideways once it was down — "
-        + "full marks at 0.15 g, nothing at 0.55 g.\n"
-        + (al.held_from
-           ? "That held this landing down from " + al.held_from + " to "
-             + (leg.landing_grade || "?")
-             + ". A landing that touches gently and then slides is not a good "
-             + "landing, however soft it felt.\n"
-           : "Nothing was held down — it arrived straight.\n")
-        + "Arriving straight never earns points; arriving crooked costs them.\n"
-        + "These thresholds have not been checked against measured flights yet.";
+      // The bands and the arithmetic are in the Grading tab.
+      var why = "How straight it arrived: " + Math.round(al.score) + " out of 100. "
+        + (al.held_from ? "It held this landing down from " + al.held_from + ". "
+                        : "It held nothing down. ")
+        + "Bands in the Grading tab.";
       row("Alignment", bits.join(", ")
           + (al.held_from ? "  — held " + al.held_from + " to "
              + (leg.landing_grade || "?") : ""), why);
@@ -786,13 +994,20 @@
     actions.appendChild(el("div", "replay-status", ""));
     actions.appendChild(exportLinks(sortie.sortie_id, leg));
     body.appendChild(actions);
-    wrap.appendChild(body);
+    overview.appendChild(body);
 
     if (leg.passenger && leg.passenger.text) {
       var pax = el("div", "passenger");
       pax.appendChild(el("div", "pax-label", "Passenger"));
       pax.appendChild(el("p", null, leg.passenger.text));
-      wrap.appendChild(pax);
+      overview.appendChild(pax);
+    }
+    // A leg that is not rated has nothing for a Grading tab to say.
+    if (rated && ((pg && pg.phases) || leg.landing_grade)) {
+      tabs = legTabs(wrap, legKey(sortie, leg), overview,
+                     function () { return gradingView(leg); });
+    } else {
+      wrap.appendChild(overview);
     }
     return wrap;
   }

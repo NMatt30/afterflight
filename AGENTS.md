@@ -153,11 +153,13 @@ for light airplanes because they really are smoother than helicopters -
 0.02-0.06 g against 0.02-0.22. Narrowing a band to manufacture a spread is
 tuning grades to look busier. Leave it and say why.
 
-**Every reported metric says what good looks like.** A leg's phase tooltip
+**Every reported metric says what good looks like.** A leg's Grading tab
 prints the band beside the measurement - "6 degrees, 33/100, full marks 3.5,
 zero 7" - because a score without a band tells a reader the number was bad
 without telling them what would have been good. `test_grading.py` fails if any
-reported part ships without one.
+reported part ships without one. The phase pills' tooltips are a summary
+only: they once carried every band, a dozen lines the browser cut off at a
+fixed width. Detail goes in the tab, not back into the tooltip.
 
 **Prefer a flag to a hardcoded choice**, with the existing behavior as the
 default, placed near the other tunables at the top of its module.
