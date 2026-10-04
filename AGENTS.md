@@ -317,6 +317,16 @@ Data lives in `sessions/` and is **not** in git: flight tracks, clips, maps,
   `[hidden] { display: none !important; }` guard for this. Verify what
   *renders*, not what the DOM property says — three separate bugs here were
   elements that reported `hidden === true` while still on screen.
+- **A dialog stays open until its work is done.** The four panels are
+  `<dialog>`s opened with `showModal()`, so the page behind is inert to
+  keyboard as well as mouse. A confirm that starts work runs it from the
+  dialog (`confirmRemoval`'s `action`) and closes on the result; closing on
+  the click left a delete running for two minutes behind a page that showed
+  nothing and still took clicks. Let the browser handle Escape - closing the
+  dialog from its `cancel` event passed the key press on to the Removed list
+  beneath. **Test it with real clicks:** Chrome groups dialogs opened without
+  a user gesture, and one Escape then closes all of them, so a scripted
+  `.click()` reports a bug that a person never sees.
 - **A clip is appended, never rewritten.** `clipfile.py` owns the filename
   rule and the reader; `OpenClip` appends through `persistence.append_lines`.
   A failed append rolls the file back and the same batch is retried, so a
@@ -338,6 +348,10 @@ Data lives in `sessions/` and is **not** in git: flight tracks, clips, maps,
   the grade the old profile produced - still won. If you add a new input to a
   flight record, put it in `sortie_signature` too, or the thing built from it
   is stale for ever. `test_cache.py` covers it.
+  **A delete is not a reprocess either.** It used to empty the cache and ask
+  for one, to be safe - every flight rebuilt and every map redrawn, about
+  two minutes per delete. What a delete changes is all in the
+  signatures, and `test_cache.py` checks the result against a reprocess.
 - **`force` and `reprocess` are different questions.** In
   `rebuild_logbook_now`, `force` is scheduling - run even though a flight is
   in progress - and `reprocess` is correctness: ignore the sortie cache. They

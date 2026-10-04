@@ -56,8 +56,8 @@
      already has underneath - a rebuild replaces the index, it does not
      invalidate what is on screen - so this is a strip, not an interstitial.
      The exception is a first run with nothing to show, handled in the JS. */
-  /* Must come with the display rule, exactly as .modal[hidden] and
-     .ack[hidden] do below. An author rule setting display beats the UA
+  /* Must come with the display rule, exactly as .ack[hidden] does
+     below. An author rule setting display beats the UA
      stylesheet's [hidden] { display: none }, so without this the element
      renders however el.hidden is set - the attribute is applied and has
      no visible effect whatsoever. */
@@ -521,9 +521,20 @@
   .btn-quiet:hover:not(:disabled) { color: var(--err); border-color: var(--line); }
   .leg-head .btn-quiet { margin-left: auto; }
 
-  .modal { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center;
-           background: rgba(6,8,11,.72); padding: 24px; }
-  .modal[hidden] { display: none; }
+  /* The dialogs are <dialog>s opened with showModal(). The browser puts one
+     in the top layer and makes the rest of the page inert - keyboard as well
+     as mouse - and Escape closes only the top one. They were fixed overlay
+     divs, which stopped clicks but not Tab, and stacked two layers that each
+     answered Escape their own way. The dialog is only a frame here; the
+     .sheet inside it is the panel. No display rule on the closed state: an
+     author display beats the UA's, and a closed dialog would render. */
+  dialog.modal { padding: 0; border: 0; background: transparent; color: var(--text);
+                 max-width: none; max-height: none; overflow: visible; }
+  dialog.modal:not([open]) { display: none; }
+  dialog.modal::backdrop { background: rgba(6,8,11,.72); }
+  .busy-note { min-height: 18px; margin: 0 0 12px; font-size: 13px; color: var(--muted); }
+  .busy-note.err { color: var(--err); }
+  .busy-note:empty { min-height: 0; margin: 0; }
   .sheet { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
            padding: 22px 24px; max-width: 480px; width: 100%;
            box-shadow: 0 18px 50px rgba(0,0,0,.5); }
@@ -690,30 +701,31 @@
 </main>
 
 
-<div id="removed-panel" class="modal" hidden>
-  <div class="sheet wide" role="dialog" aria-modal="true" aria-labelledby="removed-title">
+<dialog id="removed-panel" class="modal" aria-labelledby="removed-title">
+  <div class="sheet wide">
     <h2 id="removed-title">Removed</h2>
     <p class="muted">Hidden from the logbook and from every total. The
       recordings are still on disk until they are deleted here.</p>
     <div id="hidden-list"></div>
+    <p id="removed-status" class="busy-note" role="status"></p>
     <div class="sheet-actions">
       <button type="button" id="removed-close">Close</button>
     </div>
   </div>
-</div>
+</dialog>
 
-<div id="grading-panel" class="modal" hidden>
-  <div class="sheet wide" role="dialog" aria-modal="true" aria-labelledby="grading-title">
+<dialog id="grading-panel" class="modal" aria-labelledby="grading-title">
+  <div class="sheet wide">
     <h2 id="grading-title">How grading works</h2>
     <div id="grading-body"></div>
     <div class="sheet-actions">
       <button type="button" id="grading-close">Close</button>
     </div>
   </div>
-</div>
+</dialog>
 
-<div id="settings-panel" class="modal" hidden>
-  <div class="sheet wide" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+<dialog id="settings-panel" class="modal" aria-labelledby="settings-title">
+  <div class="sheet wide">
     <h2 id="settings-title">Settings</h2>
     <p id="settings-derived"></p>
     <div id="settings-body"></div>
@@ -724,10 +736,10 @@
       <button type="button" id="settings-save">Save</button>
     </div>
   </div>
-</div>
+</dialog>
 
-<div id="confirm" class="modal" hidden>
-  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+<dialog id="confirm" class="modal" aria-labelledby="confirm-title">
+  <div class="sheet">
     <h2 id="confirm-title">Remove</h2>
     <p id="confirm-body"></p>
     <ul id="confirm-points"></ul>
@@ -735,12 +747,13 @@
       <input type="checkbox" id="confirm-ack-box">
       <span>I understand this cannot be undone.</span>
     </label>
+    <p id="confirm-status" class="busy-note" role="status"></p>
     <div class="sheet-actions">
       <button type="button" id="confirm-cancel">Cancel</button>
       <button type="button" id="confirm-ok" class="danger">Remove</button>
     </div>
   </div>
-</div>
+</dialog>
 
 <footer>
   <span id="version" title="Application version, refined from git when the repo is present">—</span> ·

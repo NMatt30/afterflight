@@ -182,11 +182,30 @@
 
   // ------------------------------------------------------------ removal
 
+  function openDialog(sel) {
+    var d = $(sel);
+    if (!d.open) d.showModal();
+    return d;
+  }
+
+  function closeDialog(sel) {
+    var d = $(sel);
+    if (d.open) d.close();
+  }
+
   // Removal hides; it never deletes a recording. The dialog says so, because
   // "Remove" on its own reads as destructive and the difference matters.
+  //
+  // opts.action, when given, is the work itself. The dialog stays open while
+  // it runs - buttons off, opts.busyLabel on the button - and closes only once
+  // it has finished, or shows its error and stays. It used to close on the
+  // click, and the work then ran behind a page that showed nothing and still
+  // took clicks: measured, a delete took two minutes, and a second click on
+  // Delete permanently opened a second dialog on top of the first.
   function confirmRemoval(opts) {
+    var modal = $("#confirm");
+    if (modal.open) return Promise.resolve(false);
     return new Promise(function (resolve) {
-      var modal = $("#confirm");
       $("#confirm-title").textContent = opts.title;
       $("#confirm-body").textContent = opts.body;
       var ul = $("#confirm-points");
@@ -203,56 +222,121 @@
       var ack = $("#confirm-ack"), ackBox = $("#confirm-ack-box");
       ack.hidden = !opts.requireAck;
       ackBox.checked = false;
-      var okBtn = $("#confirm-ok");
+      var okBtn = $("#confirm-ok"), cancelBtn = $("#confirm-cancel");
+      var status = $("#confirm-status");
+      var label = opts.confirmLabel || "Remove";
+      var busy = false;
+      status.textContent = "";
+      status.classList.remove("err");
       okBtn.classList.toggle("danger", opts.danger === true);
       okBtn.disabled = !!opts.requireAck;
-      function onAck() { okBtn.disabled = !ackBox.checked; }
+      okBtn.textContent = label;
+      cancelBtn.textContent = "Cancel";
+      function onAck() { okBtn.disabled = busy || !ackBox.checked; }
       ackBox.addEventListener("change", onAck);
 
-      $("#confirm-ok").textContent = opts.confirmLabel || "Remove";
-      modal.hidden = false;
+      modal.showModal();
       (opts.requireAck ? ackBox : okBtn).focus();
 
       function done(result) {
-        modal.hidden = true;
         ackBox.removeEventListener("change", onAck);
-        okBtn.disabled = false;
-        $("#confirm-ok").removeEventListener("click", ok);
-        $("#confirm-cancel").removeEventListener("click", cancel);
-        modal.removeEventListener("click", backdrop);
-        document.removeEventListener("keydown", onKey);
+        okBtn.removeEventListener("click", ok);
+        cancelBtn.removeEventListener("click", cancel);
+        modal.removeEventListener("cancel", onEscape);
+        modal.removeEventListener("close", onClose);
+        okBtn.disabled = cancelBtn.disabled = ackBox.disabled = false;
+        okBtn.textContent = label;
+        cancelBtn.textContent = "Cancel";
+        if (modal.open) modal.close();
         resolve(result);
       }
-      function ok() { done(true); }
-      function cancel() { done(false); }
-      function backdrop(ev) { if (ev.target === modal) done(false); }
-      function onKey(ev) { if (ev.key === "Escape") done(false); }
+      async function ok() {
+        if (busy) return;
+        if (!opts.action) { done(true); return; }
+        busy = true;
+        okBtn.disabled = cancelBtn.disabled = ackBox.disabled = true;
+        okBtn.textContent = opts.busyLabel || "Working\u2026";
+        status.textContent = opts.busyNote || "";
+        var res;
+        try {
+          res = await opts.action();
+        } catch (e) {
+          res = { ok: false, error: "the watcher did not answer: " + e.message };
+        }
+        busy = false;
+        if (res && res.ok) { done(true); return; }
+        // Stay open and say why, where the user is looking.
+        status.textContent = (res && res.error) || "that did not work";
+        status.classList.add("err");
+        okBtn.textContent = label;
+        okBtn.disabled = !!opts.requireAck && !ackBox.checked;
+        ackBox.disabled = false;
+        cancelBtn.disabled = false;
+        cancelBtn.textContent = "Close";
+      }
+      function cancel() { if (!busy) done(false); }
+      // Escape is the browser's to act on: it closes the top dialog and
+      // nothing under it. Closing it from here as well passed the same key
+      // press on to the Removed list beneath, and both went. Mid-work it is
+      // refused - and since a browser need not honour a second refusal, a
+      // dialog closed while busy is put straight back.
+      function onEscape(ev) { if (busy) ev.preventDefault(); }
+      function onClose() {
+        if (busy) { modal.showModal(); return; }
+        done(false);
+      }
 
-      $("#confirm-ok").addEventListener("click", ok);
-      $("#confirm-cancel").addEventListener("click", cancel);
-      modal.addEventListener("click", backdrop);
-      document.addEventListener("keydown", onKey);
+      okBtn.addEventListener("click", ok);
+      cancelBtn.addEventListener("click", cancel);
+      modal.addEventListener("cancel", onEscape);
+      modal.addEventListener("close", onClose);
     });
   }
 
+  // These answer {ok, error} for the dialog that runs them, and reload the
+  // page before answering, so a dialog closes on the result rather than
+  // before it.
   async function hide(scope, sortieId, key) {
     var r = await postJson("/logbook/hide", { scope: scope, sortie_id: sortieId, key: key });
-    if (!r || !r.ok) {
-      setLive((r && r.error) || "could not remove", "err");
-      return;
-    }
+    if (!r || !r.ok) return { ok: false, error: (r && r.error) || "could not remove" };
     delete state.detail[sortieId];
     await load();
+    return { ok: true };
   }
 
   async function restore(scope, sortieId, key) {
     var r = await postJson("/logbook/restore", { scope: scope, sortie_id: sortieId, key: key });
-    if (!r || !r.ok) {
-      setLive((r && r.error) || "could not restore", "err");
-      return;
-    }
+    if (!r || !r.ok) return { ok: false, error: (r && r.error) || "could not restore" };
     delete state.detail[sortieId];
     await load();
+    return { ok: true };
+  }
+
+  // The Removed list does one thing at a time. While it works, every button
+  // in it is off and the one pressed says what it is doing; a reload
+  // replaces the list, and a failure puts it back and says why.
+  async function withRemovedList(btn, busyLabel, work) {
+    var buttons = Array.prototype.slice.call(document.querySelectorAll("#hidden-list button"));
+    if (buttons.some(function (b) { return b.dataset.busy; })) return;
+    var was = buttons.map(function (b) { return b.disabled; });
+    var text = btn.textContent;
+    var status = $("#removed-status");
+    status.textContent = "";
+    status.classList.remove("err");
+    buttons.forEach(function (b) { b.disabled = true; b.dataset.busy = "1"; });
+    btn.textContent = busyLabel;
+    var res;
+    try {
+      res = await work();
+    } catch (e) {
+      res = { ok: false, error: "the watcher did not answer: " + e.message };
+    }
+    buttons.forEach(function (b, i) { b.disabled = was[i]; delete b.dataset.busy; });
+    btn.textContent = text;
+    if (res && !res.ok && res.error) {
+      status.textContent = res.error;
+      status.classList.add("err");
+    }
   }
 
   async function purge(h) {
@@ -261,13 +345,12 @@
       scope: h.scope, sortie_id: h.sortie_id, key: h.leg_key, dry_run: true
     });
     if (!pre || !pre.ok) {
-      setLive((pre && pre.detail) || (pre && pre.error) || "could not read the plan", "err");
-      return;
+      return { ok: false, error: (pre && pre.detail) || (pre && pre.error) || "could not read the plan" };
     }
     var plan = pre.plan || {};
     var kb = Math.round((plan.bytes || 0) / 1024);
     var what = h.scope === "sortie" ? "this whole flight" : "this leg";
-    var ok = await confirmRemoval({
+    await confirmRemoval({
       title: h.scope === "sortie" ? "Delete this flight for good?" : "Delete this leg for good?",
       body: "This erases the recording behind " + what + ". It cannot be restored, "
             + "and the logbook cannot rebuild it.",
@@ -277,25 +360,25 @@
       files: plan.files || [],
       requireAck: true,
       danger: true,
-      confirmLabel: "Delete permanently"
+      confirmLabel: "Delete permanently",
+      busyLabel: "Deleting\u2026",
+      busyNote: "Deleting the files and rebuilding the logbook.",
+      action: async function () {
+        var r = await postJson("/logbook/purge", {
+          scope: h.scope, sortie_id: h.sortie_id, key: h.leg_key, dry_run: false
+        });
+        // Reload either way. A partial delete still moved events and tracks,
+        // and the flight is deliberately still hidden so it can be retried;
+        // the page has to show that rather than the world as it was before.
+        delete state.detail[h.sortie_id];
+        await load();
+        if (!r || !r.ok) return { ok: false, error: (r && r.error) || "could not delete" };
+        setLive("deleted " + ((r.deleted || []).length) + " file(s), "
+                + Math.round((r.bytes || 0) / 1024) + " KB freed", "warn");
+        return { ok: true };
+      }
     });
-    if (!ok) return;
-    var r = await postJson("/logbook/purge", {
-      scope: h.scope, sortie_id: h.sortie_id, key: h.leg_key, dry_run: false
-    });
-    if (!r || !r.ok) {
-      setLive((r && r.error) || "could not delete", "err");
-      // A partial delete still moved events, tracks and caches, and the
-      // flight is deliberately still hidden so it can be retried. Reload so
-      // the page shows that rather than the world as it was before.
-      delete state.detail[h.sortie_id];
-      await load();
-      return;
-    }
-    setLive("deleted " + ((r.deleted || []).length) + " file(s), "
-            + Math.round((r.bytes || 0) / 1024) + " KB freed", "warn");
-    delete state.detail[h.sortie_id];
-    await load();
+    return { ok: true };
   }
 
   // Removed lives behind a button rather than above the logbook. It is a
@@ -310,7 +393,7 @@
     btn.hidden = !items.length;
     btn.textContent = "Removed";
     if (items.length) btn.appendChild(el("span", "n", items.length));
-    if (!items.length) $("#removed-panel").hidden = true;
+    if (!items.length) closeDialog("#removed-panel");
     host.innerHTML = "";
     items.forEach(function (h) {
       var row = el("div", "hidden-row");
@@ -322,12 +405,18 @@
       b.type = "button";
       b.disabled = !!h.purge_pending;
       if (h.purge_pending) b.title = "Deletion has started; finish it with Delete permanently.";
-      b.addEventListener("click", function () { restore(h.scope, h.sortie_id, h.leg_key); });
+      b.addEventListener("click", function () {
+        withRemovedList(b, "Restoring\u2026", function () {
+          return restore(h.scope, h.sortie_id, h.leg_key);
+        });
+      });
       row.appendChild(b);
       var del = el("button", "danger", "Delete permanently");
       del.type = "button";
       del.title = "Erase the recording behind this. There is no undo.";
-      del.addEventListener("click", function () { purge(h); });
+      del.addEventListener("click", function () {
+        withRemovedList(del, "Checking\u2026", function () { return purge(h); });
+      });
       row.appendChild(del);
       host.appendChild(row);
     });
@@ -945,7 +1034,7 @@
     var delLeg = el("button", "btn-quiet", "Remove leg");
     delLeg.type = "button";
     delLeg.addEventListener("click", async function () {
-      var ok = await confirmRemoval({
+      await confirmRemoval({
         title: "Remove leg " + leg.seq + " from the logbook?",
         body: (sortie.aircraft || "This aircraft") + " · " +
               fmtDuration(leg.airborne_s) + " · " + fmtNm(leg.distance_nm) +
@@ -957,9 +1046,11 @@
           "Its section leaves the flight's map, showing a gap rather than a false straight line.",
           "Nothing is deleted: the recording and its clips stay on disk."
         ],
-        confirmLabel: "Remove from logbook"
+        confirmLabel: "Remove from logbook",
+        busyLabel: "Removing\u2026",
+        busyNote: "Rebuilding the logbook without it.",
+        action: function () { return hide("leg", sortie.sortie_id, leg.key); }
       });
-      if (ok) hide("leg", sortie.sortie_id, leg.key);
     });
     head.appendChild(delLeg);
     wrap.appendChild(head);
@@ -1231,7 +1322,7 @@
     delFlight.type = "button";
     delFlight.style.marginLeft = "auto";
     delFlight.addEventListener("click", async function () {
-      var ok = await confirmRemoval({
+      await confirmRemoval({
         title: "Remove this flight from the logbook?",
         body: (doc.aircraft || "This aircraft") + " · " +
               (doc.legs ? doc.legs.length : 0) + " legs · " +
@@ -1243,9 +1334,11 @@
           "It leaves the totals, its day, and the airframe summary.",
           "Nothing is deleted: the recording and its clips stay on disk."
         ],
-        confirmLabel: "Remove from logbook"
+        confirmLabel: "Remove from logbook",
+        busyLabel: "Removing\u2026",
+        busyNote: "Rebuilding the logbook without it.",
+        action: function () { return hide("sortie", doc.sortie_id); }
       });
-      if (ok) hide("sortie", doc.sortie_id);
     });
     foot.appendChild(delFlight);
     // First in the panel: these act on the whole flight, so they belong above
@@ -2222,7 +2315,7 @@
       var d = await r.json();
       if (!d.ok) throw new Error(d.error || "no grading description");
       renderGrading(d);
-      $("#grading-panel").hidden = false;
+      openDialog("#grading-panel");
     } catch (e) {
       setLive("could not load the grading description: " + e.message, "err");
     }
@@ -2234,7 +2327,7 @@
       var j = await r.json();
       if (!j.ok) { setLive((j.error || "settings unavailable"), "err"); return; }
       renderSettings(j);
-      $("#settings-panel").hidden = false;
+      openDialog("#settings-panel");
     } catch (e) {
       setLive("watcher not running on 127.0.0.1:8742", "err");
     }
@@ -2247,7 +2340,7 @@
       if (!j.ok) { $("#settings-error").textContent = j.error || "could not save"; return; }
       renderSettings(j);
       await refreshFromState();
-      $("#settings-panel").hidden = true;
+      closeDialog("#settings-panel");
       setLive(j.rebuild_scheduled
         ? "settings saved — rebuilding the logbook"
         : "settings saved", "ok");
@@ -2351,18 +2444,19 @@
     wireLiveSwitches();
     $("#rebuild").addEventListener("click", rebuild);
     $("#open-removed").addEventListener("click", function () {
-      $("#removed-panel").hidden = false;
+      $("#removed-status").textContent = "";
+      openDialog("#removed-panel");
     });
     $("#removed-close").addEventListener("click", function () {
-      $("#removed-panel").hidden = true;
+      closeDialog("#removed-panel");
     });
     $("#open-grading").addEventListener("click", openGrading);
     $("#grading-close").addEventListener("click", function () {
-      $("#grading-panel").hidden = true;
+      closeDialog("#grading-panel");
     });
     $("#open-settings").addEventListener("click", openSettings);
     $("#settings-cancel").addEventListener("click", function () {
-      $("#settings-panel").hidden = true;
+      closeDialog("#settings-panel");
     });
     $("#settings-save").addEventListener("click", saveSettings);
     $("#settings-reset").addEventListener("click", resetSettings);
