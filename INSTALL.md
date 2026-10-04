@@ -14,15 +14,32 @@ that copies files elsewhere, no service, and no registry beyond one optional
 Each release on GitHub has an `AfterFlight-<version>.zip`. It carries its own
 Python, so there is nothing else to install:
 
-1. Unpack it somewhere you can write - `C:\Users\<you>\AfterFlight`, not
-   `Program Files`. Everything, your flights included, lives in that folder.
-2. Run **Start AfterFlight.cmd**. The tray appears; its menu can make it start
-   with Windows.
-3. Start the sim. The watcher finds the sim's own SimConnect DLL by itself.
+1. Unpack it somewhere you can write - your user folder, not `Program Files`,
+   and not the sim's Community folder. It unpacks as one `AfterFlight`
+   folder, and everything, your flights included, lives in that folder.
+2. Run **Start AfterFlight.cmd** in it. The tray appears; its menu can make it
+   start with Windows.
+3. Start the sim. The watcher finds the sim's own SimConnect DLL by itself and
+   keeps a copy in `native\`.
 
-**Updating:** unpack the new zip over the same folder. A release never
-contains anyone's data, so your flights, clips and settings stay as they are.
-Running `backup.ps1` first costs nothing.
+**Updating:** from the tray menu choose **Stop watcher**, then **Exit**. Unpack
+the new zip somewhere else, and copy everything inside its `AfterFlight`
+folder into your existing one, replacing files. A release never contains
+anyone's data, so your flights, clips and settings stay as they are. Running
+`backup.ps1` first costs nothing.
+
+**Updating from 0.6**, which ran on your own Python, works the same way; start
+it afterwards with **Start AfterFlight.cmd**. If you use **Start with
+Windows**, untick it and tick it again from the tray menu, so Windows starts
+the release's Python rather than yours. (A git clone updates with `git pull`
+instead.)
+
+Where the rest of this page says `py -3`, a release uses its own:
+`.\runtime\python.exe`. For the optional EFB tablet app, for example:
+
+```powershell
+.\runtime\python.exe deploy_efb.py
+```
 
 The rest of this page is for running from a source checkout.
 
@@ -34,7 +51,7 @@ The rest of this page is for running from a source checkout.
 |---|---|---|
 | **Windows 10 or 11** | required | the tray is `ctypes` against Win32 |
 | **Microsoft Flight Simulator 2024** | required | installed and run at least once |
-| **Python 3.10 or newer** | required | 3.12 is what this is developed on |
+| **Python 3.10 or newer** | required | 3.12 is what this is developed on; the release uses 3.14 |
 
 There is no build step and no package manager. The UI is plain HTML and
 JavaScript on purpose, and the tray has no pip dependencies at all.
@@ -72,19 +89,19 @@ and its settings next to itself, and that folder needs elevation to write to.
 
 ---
 
-## 2. Install the two dependencies
+## 2. Install the one optional dependency
 
 ```powershell
-py -3 -m pip install SimConnect==0.4.26
 py -3 -m pip install Pillow
 ```
-
-**`SimConnect` is required.** The version is pinned because that is what has
-been tested; newer ones may work and have not been tried here.
 
 **`Pillow` is optional.** Without it everything still records and grades — you
 just lose the baked track-map PNGs, and the logbook draws maps in the page
 instead.
+
+**The `SimConnect` pip package is not needed.** The watcher talks to the sim
+through the sim's own DLL (step 4). If the package is installed it is used
+only as a fallback, when that DLL cannot be found.
 
 ---
 
@@ -95,7 +112,7 @@ instead.
 ```
 
 This **only looks and reports** by default. It does not change anything until
-you pass it a switch. You should see `[ok]` for Python, both dependencies, and
+you pass it a switch. You should see `[ok]` for Python, Pillow, and
 every application file. It creates `sessions\`, `sessions\clips\`,
 `sessions\maps\` and `native\` if they are missing.
 
@@ -107,11 +124,13 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 ---
 
-## 4. Stage the SimConnect DLL
+## 4. The SimConnect DLL
 
-The ghost aircraft and the chase camera need a DLL that ships with the sim.
-**It is not in this repository** — it is Microsoft's binary, and redistributing
-it is not ours to do. The installer copies it out of your own sim install:
+Recording, replay and the chase camera all talk to the sim through a DLL that
+ships with it. **It is not in this repository** — it is Microsoft's binary,
+and redistributing it is not ours to do. The watcher finds it in your sim
+install, or reads it out of the running sim, and copies it to `native\` by
+itself. The installer can do the same on demand, which is useful to check it:
 
 ```powershell
 .\install.ps1 -ResolveDll
@@ -126,10 +145,12 @@ which works whatever the install layout is — that is the answer whenever the
 package lookup comes up empty. The sim does not need to be in a flight; sitting
 at the main menu is enough.
 
-Recording and grading work without the DLL; replay and the chase camera do not.
+Without the DLL nothing is recorded, unless the old `SimConnect` pip package
+is installed to fall back to; replay and the chase camera need the DLL either
+way.
 
-> **Re-run this after a sim update.** The path moves, and the symptom is the
-> ghost silently failing to spawn.
+> **Re-run this after a sim update.** The path moves, and the watcher prefers
+> the copy already in `native\`.
 
 ---
 
@@ -266,7 +287,7 @@ of a default backup — that rebuild recreates them.
 | Logbook page will not open | is the watcher up? `http://127.0.0.1:8742/state` |
 | Page opens but is empty | no flights recorded yet — see step 6 |
 | No maps | `Pillow` not installed, or the tiles were never fetched |
-| Replay does nothing | `native\SimConnect_internal.dll` missing — step 4, with the sim running |
+| Nothing records, or replay does nothing | `native\SimConnect_internal.dll` missing — step 4, with the sim running |
 | Grades look wrong after an update | `py -3 logbook_build.py --force` |
 | Everything looks stale | the watcher runs the code it started with; restart it |
 

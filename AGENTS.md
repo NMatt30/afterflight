@@ -161,6 +161,12 @@ soft touchdown otherwise averaged a landing far down the runway up to a C.
 `grading.touchdown_letter`, the same curve the touchdown is scored on - so
 a letter and its score never disagree. It was one rate ladder for every
 aircraft, which called a jet's 200 fpm, inside the airline target, Firm.
+**So the light curve must cross each letter boundary at the ladder's rate.**
+Its full-marks plateau to 60 fpm has no A/B anchor, and reading the letter
+off it moved A to 105 fpm without anyone choosing it; the curve now steps
+to 89 just past 60. A test that the letter matches the score cannot see
+that - both come from the curve - so `test_grading` checks the letter
+against `passenger.GRADE_TABLE` at every rate. Change a curve, run it.
 **And the ride is everything flown except the landing**, the approach
 included: the passenger paragraph once called a ride smooth beside an F
 approach. Check the prose against the pills when grading changes - an
@@ -433,6 +439,11 @@ after the change has been flown in the sim - not squash or rebase, which
 rewrite every commit and leave the two branches sharing no history after
 each release. Afterwards `develop` fast-forwards to the merge commit. Open
 pull requests against `develop`.
+
+**A release tag builds the zip.** `.github/workflows/release.yml` runs on a
+`v*` tag: it builds `AfterFlight-<tag>.zip` with `build_release.py`, runs every
+test on the Python inside it, and keeps the zip as a workflow artifact. It
+publishes nothing - the zip goes on the GitHub release by hand, once checked.
 
 **Before opening a pull request**
 

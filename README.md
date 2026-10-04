@@ -114,8 +114,10 @@ its own Python, so there is no Python to install and no pip:
    can make it start with Windows.
 3. Start the sim and fly.
 
-To update, unzip the next release over the same folder. A release never
-contains anyone's data, so your flights and settings stay as they are.
+To update, stop and exit the tray, then copy the new release's `AfterFlight`
+folder contents over your existing one. A release never contains anyone's
+data, so your flights and settings stay as they are. [INSTALL.md](INSTALL.md)
+has the details, including moving over from 0.6.
 
 AfterFlight talks to the sim through the sim's own SimConnect DLL. It is not
 in this repository - it is Microsoft's binary - and the watcher finds it in
@@ -203,6 +205,7 @@ mutations, nine caught.
 | `mapbake.py` | Bakes the track-map PNGs. |
 | `tiles.py` | OSM basemap tiles, cached on disk. Never fetched during a flight. |
 | `grading.py` | Splits a leg into phases and scores each one. Owns every threshold. |
+| `runways.py` | Which runway a touchdown was on and how far past its threshold, and the per-airport runway cache the sim fills. |
 | `flightprefs.py` | The per-flight rating and passenger-note switches. |
 | `trackexport.py` | KML and GPX of a track, built on demand. |
 | `passenger.py` | Template passenger assessment and the A–F landing grade. |
@@ -211,13 +214,14 @@ mutations, nine caught.
 | `persistence.py` | Document, maintenance and recording locks; atomic and append-only writes. |
 | `sampler.py` | The pushed state block — one data definition fetched on sim frames. |
 | `settings.py` | Reads and validates the user settings file. |
-| `snapshot.py` | Point-in-time copies of the session tree. |
+| `snapshot.py` | A one-off read of the sim's state into `current.json`, through the Python-SimConnect package. A developer probe; not in the release zip. |
 | `tray.py` | Tray icon, watcher supervision, menu. Pure ctypes, no pip deps. |
 | `trayicon.py` | Draws the per-state tray icons via GDI. No pip deps. |
 | `logbook.html` + `logbook.js` | The UI shell. Renders `logbook.json`; writes nothing. |
 | `replay.js` | Replay and chase-camera controls. |
 | `deploy_efb.py` | Deploys the in-sim EFB panel, and verifies it byte for byte. |
-| `install.ps1` | Checks, autostart toggle, Start Menu shortcut, DLL re-resolve. |
+| `install.ps1` | Checks, autostart toggle, Start Menu shortcut, DLL re-resolve. Uses the release's own Python when it has one. |
+| `build_release.py` | Builds the release zip: the app with python.org's embeddable Python and Pillow, pinned and checksummed, and never anything of a user's. |
 | `backup.ps1` / `verify-backup.ps1` | Copy what git deliberately does not, with a SHA-256 manifest, and check one. |
 
 Tests, none of which need the sim:
@@ -227,9 +231,17 @@ Tests, none of which need the sim:
 | `test_safety.py` | The hard rules, enforced. Run this one. |
 | `test_grading.py` | Which profile grades what, and whether the UI can explain it. |
 | `test_cache.py` | What a rebuild reuses, and what a delete claims to have done. |
+| `test_arming.py` | When an aircraft becomes a flight, and when a landing is one. |
+| `test_runways.py` | Where on the runway, and what the sim really sends. |
+| `test_map.py` | What the route map draws as one line, and where it breaks. |
 | `test_replay.py` | Pose lookup during replay, against the scan it replaced. |
+| `test_native.py` | The sim connection with no Python-SimConnect package. |
+| `test_release.py` | What the release zip carries, and what it must never carry. |
+| `test_efb.py` | A deploy leaves the committed EFB layout alone. |
 | `test_integrity.py` | Locks, partial deletes, clip damage, backup round trip. |
 | `test_supervision.py` | The tray restarts a dead or wedged watcher. |
+
+CI finds `test_*.py` itself rather than keeping a list.
 
 And the documentation:
 
@@ -251,7 +263,7 @@ in grayscale and for a colorblind user.
 | gray slashed ring | `down` | The watcher is not answering on the port. |
 | gray ring | `starting` | Tray is up, first poll not back yet. |
 | amber ring | `idle` | Watcher up, sim not connected. |
-| teal ring with a center dot | `connected` | Connected, nothing being recorded. |
+| teal ring with a center dot | `connected` | Connected, nothing being recorded - or an aircraft loaded and held until it moves. |
 | red filled disc | `recording` | A leg is being recorded. |
 | green triangle | `replay` | A clip is playing. |
 
@@ -353,7 +365,9 @@ making them adjustable would turn them into footguns.
 
 Open a flight and use **Remove leg** on any leg, or **Remove flight** in the
 footer. Both ask first, and the dialog states what will change rather than just
-asking twice.
+asking twice. A dialog stays open until the work is done - its buttons off,
+saying what it is doing - and closes on the result, or shows the error and
+stays; the page behind it takes no clicks or keys meanwhile.
 
 The two steps are deliberately told apart. Removing from the logbook is
 reversible, so its dialog has a plain button and says where the item goes.
@@ -379,12 +393,12 @@ Everything derived follows the removal, which is the part that actually matters:
 | **Logbook totals** | Flights, legs, landings, distance, airborne and the day-group headers all exclude it. |
 | **Airframe summary** | Counts and the chip totals follow. |
 | **The flight map** | Re-baked from the kept legs only, drawn as **separate segments** with their own start and end markers - so a removed middle leg leaves a visible gap instead of a straight line the aircraft never flew. The in-page canvas fallback does the same. Map URLs carry the build time (`?v=`), because the path never changes and a browser that had already decoded the old picture would keep showing it. |
+| **Leg numbering** | Remaining legs renumber, but the identity used for exclusions is the takeoff instant, not the sequence number, so hiding leg 2 does not silently re-target leg 3. |
 
 Removing a leg usually moves the map's extent, and during a flight tiles cannot
-be fetched (section 10). Rather than render half a basemap against black, a map
-with less than 75% tile coverage falls back to the plain graticule; the next
-rebuild after the flight fills it in properly.
-| **Leg numbering** | Remaining legs renumber, but the identity used for exclusions is the takeoff instant, not the sequence number, so hiding leg 2 does not silently re-target leg 3. |
+be fetched. Rather than render half a basemap against black, a map with less
+than 75% tile coverage falls back to the plain graticule; the next rebuild
+after the flight fills it in properly.
 
 A flight with a removed leg is tagged **edited** in the browse list.
 
@@ -416,7 +430,9 @@ disabled until the acknowledgement is ticked.
 | **A flight** | Every `.jsonl` and `.meta.json` behind it, its clips, its detail file, its maps, and its lines in `events.jsonl`. |
 | **A leg** | Its clips, its lines in `events.jsonl`, and the recorded track between its takeoff and landing is cut out of the flight's `.jsonl`. The rest of the flight is untouched. |
 
-Both clear the sortie cache so the next rebuild starts from what is left.
+Either way the next rebuild redoes what the delete touched and reuses the rest
+of the logbook - a couple of seconds, not a rebuild of every flight.
+`test_cache.py` checks that the result is the same as a full reprocess.
 
 `POST /logbook/purge` takes `{scope, sortie_id, key, dry_run}`; `dry_run: true`
 returns the plan and changes nothing.
@@ -440,11 +456,11 @@ git checkout develop
 `APP_VERSION` in `watcher.py` is the release number. At startup the watcher
 refines it with `git describe --tags --match "v*" --always --dirty`, so a
 working copy reports exactly which commit is running —
-`0.6.1 (v0.6.1-3-g1a2b3c4)` is three commits past the 0.6.1 release, which is
+`0.7.0 (v0.7.0-3-g1a2b3c4)` is three commits past the 0.7.0 release, which is
 what a `develop` build looks like. Only release tags are considered, so a
 marker tag set for some other purpose can never name a build. It is read once,
-not per request, and falls back to the bare constant when git or the repo is
-absent.
+not per request. The release zip has no `.git`, so it reads the `VERSION` file
+the build wrote; with neither, it is the bare constant.
 
 It appears in `/state`, in the startup log line, and in the logbook footer.
 
@@ -456,8 +472,9 @@ detail files are built from them. None of it is tracked, so nothing you fly
 can be committed by accident.
 
 `native/` is not tracked either. That is the SimConnect DLL, which ships with
-the sim and is Microsoft's to distribute - `install.ps1 -ResolveDll` copies it
-out of your own installation.
+the sim and is Microsoft's to distribute. The watcher finds it in your own
+installation, or reads it from the running sim, and copies it there;
+`install.ps1 -ResolveDll` does the same on demand.
 
 ## Not proven yet
 
@@ -486,12 +503,23 @@ almost all of them are good landings, so the bottom of the ladder is rarely
 exercised in practice. Both profiles are built from published criteria rather
 than from measured flights, and each phase cites the standard behind it.
 
-`G FORCE` and body accelerations are recorded. Most ride scores still use
-derived speed changes; rollout alignment uses the recorded lateral range.
-Changing those inputs requires explicit recalibration and a grade comparison.
-The measured axis convention is X lateral, Y vertical, Z longitudinal.
+`G FORCE` and body accelerations are recorded. The rotation at lift-off reads
+the peak `G FORCE`, and rollout alignment the recorded lateral range; the
+other ride scores still use derived speed changes. Changing those inputs
+requires explicit recalibration and a grade comparison. The measured axis
+convention is X lateral, Y vertical, Z longitudinal.
 
-After a sim update the Store DLL path moves ( risk 2):
+The in-sim tablet grades every aircraft on the light-airplane scale, so for a
+jet it can show a different letter from the logbook - a 200 fpm jet landing
+is C on the tablet and A in the logbook. Fixing that is a change to check in
+the sim.
+
+The release zip has been run in the sim from a fresh folder, and with Python
+hidden from the PATH, but not yet on a machine that has never had Python.
+
+After a sim update the Store DLL path moves. The watcher prefers the copy in
+`native/` while it has the exports it needs; whether an old copy still talks to
+an updated sim has not been tested, so after an update take a fresh one:
 
 ```powershell
 .\install.ps1 -ResolveDll

@@ -42,19 +42,20 @@ HTTP_HOST = "127.0.0.1"
 # just the last version someone remembered to edit.
 APP_VERSION = "0.7.0"
 HTTP_PORT = 8742
-# How the detect loop gets its data.
+# How the detect loop gets its data on the older python-simconnect connection
+# (SIM_CONNECTION below). The native connection, the default, has no legacy
+# path: the push sampler is the connection, and a tick with no fresh push
+# holds the last reading (native_sample).
 #   legacy - one blocking python-SimConnect get() per variable. ~2.8 Hz.
 #   shadow - legacy still drives recording, the push sampler runs alongside and
 #            its values are compared and logged. Costs the same as legacy and
-#            cannot affect what is recorded. This is the default until a live
-#            flight confirms the two agree.
+#            cannot affect what is recorded.
 #   fast   - the push sampler drives recording, with an automatic fall back to
 #            legacy for any tick where no fresh push has arrived.
 # Validated against a live sim on 31 Aug 2026: every field matched the legacy
 # path to four decimals (heading 359.59 confirming degrees, not radians), the
 # title decoded, and the push rate measured 42.4 Hz against a legacy ceiling of
-# 1.67 Hz. "fast" still falls back to a legacy read for any tick where no fresh
-# push has arrived.
+# 1.67 Hz.
 SAMPLER_MODE = "fast"
 SAMPLER_COMPARE_SEC = 20.0
 
