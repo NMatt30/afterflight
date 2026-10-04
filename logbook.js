@@ -2432,7 +2432,7 @@
     btn.disabled = true;
     btn.textContent = "Rebuilding…";
     try {
-      var j = await (await fetch(LOGGER + "/logbook/rebuild", { method: "POST" })).json();
+      var j = await postJson("/logbook/rebuild", {});
       if (j && j.deferred) setLive("rebuild held until the flight ends", "warn");
       await load();
     } catch (e) { /* load() reports it */ }

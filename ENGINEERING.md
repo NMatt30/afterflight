@@ -753,6 +753,34 @@ Static serving is allowlisted: only those routes and `sessions/` with an
 approved extension. `watcher.py`, `watcher.log`, `*.jsonl`, the DLL, dotfiles
 and `..` traversal are all refused.
 
+**Loopback is not a caller check.** Binding to 127.0.0.1 says where a request
+comes from, and any web page open in a browser can address 127.0.0.1. Every
+response used to grant every origin every method, and nothing checked a
+command's Origin, Host or content type, so a page could hide, delete, change
+settings or start a replay. Now, before a request is dispatched
+(`caller_refusal`):
+
+- **Host** must be `127.0.0.1` or `localhost` at this port, for reads as well
+  as commands - the DNS-rebinding guard.
+- **A command** - every POST, the bodyless Stop and Rebuild included - must
+  carry no Origin or the page's own, and must be JSON. A browser cannot send
+  a cross-site JSON POST without a preflight, and a preflight is granted
+  nothing. `Origin: null` is refused: it is what any sandboxed document sends.
+- **Only `GET /state` is shared** with other origins, because the EFB tablet
+  polls it from inside the sim under an origin not known here. It carries the
+  current flight - position, ids, recent events, replay state - so it is not
+  private from other pages. That is an interim choice; restricting it starts
+  with observing the EFB's real origin across reloads, not with trusting one
+  value.
+
+This keeps browser pages out. It does not identify the tray: the tray posts
+JSON with no Origin, and so could any other local program. Telling local
+programs apart would need authentication, which this is not. The page's own
+scripts are same-origin and relative for this reason - `replay.js` used an
+absolute 127.0.0.1, which made every replay control a cross-origin request
+when the page was opened as `localhost`. Refusals are logged once a minute per
+reason. `test_http.py` drives the real handler.
+
 ---
 
 ## Flight performance

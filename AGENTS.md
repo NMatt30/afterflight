@@ -23,13 +23,15 @@ one to make a feature easier.
 | **Never `SetDataOnSimObject`, freeze, or slew the user aircraft.** Replay drives an AI ghost only. Refuse object id `0`. | The user is flying. Writing to their aircraft mid-flight is the one bug in this project that could hurt someone. | `watcher.py` — every method taking an `object_id` checks it against `USER_OBJECT_ID` first: most raise `RuntimeError("refusing SetData on user aircraft")`, two return early. `test_safety.py` enforces it |
 | **Never call `CameraSetRelative6DOF`.** | It is user-aircraft relative. The chase camera is placed in world coordinates instead. | `watcher.py`, and the startup log line says `CameraSetRelative6DOF not used` |
 | **SimConnect and HTTP stay on loopback.** Never bind to `0.0.0.0` or a LAN address. | This talks to a running game on the user's own machine. It is not a network service. | `HTTP_HOST = "127.0.0.1"` |
+| **Browser pages cannot command the watcher.** Every request needs this server's Host; every POST needs no Origin or the page's own, and JSON. Only `GET /state` is shared with other origins, for the EFB. | Loopback says where a request comes from, not who sent it: any web page can address 127.0.0.1. | `caller_refusal` in `watcher.py`, before dispatch; `test_http.py` |
 | **The detect loop stays cheap** — about 1 Hz of real work, process priority Below Normal. No heavy work while the sim is flying if it costs frames. | Dropped frames in VR are the thing this must never cause. | `POLL_SEC`, and the priority set at startup |
 | **Never burst-fetch map tiles mid-flight.** Bake after the sortie, or pass `allow_network=False`. | Same reason. | `logbook_build.build(allow_network=...)`; the watcher defers map bakes while a flight is active |
 
 If a change appears to need one of these relaxed, that is the signal to stop
 and ask, not to relax it.
 
-**These are tests, not just prose.** `test_safety.py` enforces every row above.
+**These are tests, not just prose.** `test_safety.py` enforces every row above
+except the browser one, which `test_http.py` enforces through the real handler.
 It is behavioral where it matters: it does not check that a function says the
 word "refusing", it drives each one with object id 0 through a stand-in
 SimConnect table and fails if *any* call is made. Two of the eight guards
@@ -227,6 +229,7 @@ default, placed near the other tunables at the top of its module.
 | `test_release.py` | What the release zip carries and must never carry: no user data, no missing module, a Python that finds the app, a version without git. |
 | `test_runways.py` | The touchdown point end to end: geometry, the zone score, facility-message parsing in the measured layout, the builder, and the cache signature. |
 | `test_native.py` | The sim connection without Python-SimConnect: quit, heartbeat, a held pause, and the recording loop run with the package unimportable. |
+| `test_http.py` | Who may command the watcher: the real handler on a spare port, every action recorded rather than run, a refused request reaching none. |
 | `backup.ps1` | Copies what git deliberately does not, with a SHA-256 manifest and consistency status. |
 | `verify-backup.ps1` | Verifies a backup manifest and every archived file hash. |
 | `logbook.html` / `logbook.js` | The UI. Renders `logbook.json`; writes nothing directly. |
@@ -412,6 +415,7 @@ py -3 test_efb.py           # a deploy does not dirty the committed EFB layout
 py -3 test_runways.py       # where on the runway, and what the sim really sends
 py -3 test_release.py       # the release zip: no user data in it, nothing missing
 py -3 test_native.py        # the sim connection with no Python-SimConnect
+py -3 test_http.py          # a web page cannot command the watcher
 py -3 test_integrity.py     # locks, partial deletes, backup round trip
 py -3 sampler.py            # offline self-test: state block layout and peaks
 py -3 flightprefs.py        # offline self-test: the per-flight switches

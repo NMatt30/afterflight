@@ -233,7 +233,10 @@ py -3 settings.py             # every setting, its value and its default
 - **Writes only inside its own folder.** Recordings, clips, maps, the logbook
   and `settings.json` all live beside the code.
 - **Listens on `127.0.0.1:8742` and nowhere else.** It is not a network
-  service and cannot be reached from another machine.
+  service and cannot be reached from another machine. Web pages open in your
+  browser cannot command it either: only the logbook page itself and the
+  tray can. One status endpoint, which the in-sim tablet reads, stays
+  readable by any page.
 - **Never writes to your aircraft.** Replay drives a separate AI ghost. Object
   id 0 — you — is refused by every write path, and `test_safety.py` proves it
   by driving each one and failing if any call is made.

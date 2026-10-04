@@ -138,7 +138,10 @@ if you want the baked map images; nothing else is lost without it.
   and your settings all live beside the code. Nothing is written to your
   documents, your sim install, or anywhere else.
 - **Listens on `127.0.0.1:8742` and nowhere else.** It is not a network
-  service and cannot be reached from another machine.
+  service and cannot be reached from another machine. Web pages open in your
+  browser cannot command it either: only the logbook page itself and the
+  tray can. One status endpoint, which the in-sim tablet reads, stays
+  readable by any page.
 - **Uploads nothing.** The only outbound traffic is map tiles from
   OpenStreetMap when it draws a map, after a flight, never during one.
 - **One registry value**, and only if you ask for it: the autostart entry
@@ -236,6 +239,7 @@ Tests, none of which need the sim:
 | `test_map.py` | What the route map draws as one line, and where it breaks. |
 | `test_replay.py` | Pose lookup during replay, against the scan it replaced. |
 | `test_native.py` | The sim connection with no Python-SimConnect package. |
+| `test_http.py` | A web page cannot command the watcher; the page and the tray still can. |
 | `test_release.py` | What the release zip carries, and what it must never carry. |
 | `test_efb.py` | A deploy leaves the committed EFB layout alone. |
 | `test_integrity.py` | Locks, partial deletes, clip damage, backup round trip. |

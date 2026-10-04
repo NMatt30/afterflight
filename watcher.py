@@ -2125,17 +2125,96 @@ def json_response(handler, code, obj):
     handler.end_headers()
     handler.wfile.write(body)
 
+# Who may ask the watcher for what (SME review R1). Binding to loopback says
+# where a request comes from, not who sent it: a web page open in any browser
+# tab can address 127.0.0.1, and every response used to grant any origin
+# everything, so a page could hide, delete, change settings or start a replay.
+# The rules, checked before a request is dispatched:
+#   - Host must name this server, 127.0.0.1 or localhost at HTTP_PORT. That is
+#     the DNS-rebinding guard, and it covers reads as well as commands.
+#   - A command (any POST) must carry no Origin - a non-browser client such as
+#     the tray - or the page's own origin, and must be JSON. A browser cannot
+#     send a cross-site JSON POST without a preflight, and no preflight is
+#     granted any more.
+# This keeps browser pages out. It does not identify the tray: anything local
+# that sends no Origin is let in the same way, and telling local programs
+# apart would need authentication, which this is not.
+# One read stays open to every origin: GET /state, which the EFB tablet polls
+# from inside the sim under an origin not known here. It carries the current
+# flight - position, ids, recent events, replay state - so it is not private
+# from other web pages. That is an interim choice, kept deliberately.
+OPEN_READ_PATHS = ("/state",)
+_refusals_logged = {}
+
+
+def _allowed_hosts():
+    return ("127.0.0.1:%d" % HTTP_PORT, "localhost:%d" % HTTP_PORT)
+
+
+def caller_refusal(headers, command):
+    """Why a request must be refused, or None. command: it is a POST."""
+    host = (headers.get("Host") or "").strip().lower()
+    if host not in _allowed_hosts():
+        return "unexpected Host %r" % host[:80]
+    if not command:
+        return None
+    origin = headers.get("Origin")
+    if origin is not None and origin.strip().lower() != "http://" + host:
+        return "a command from another origin %r" % origin.strip()[:80]
+    ctype = (headers.get("Content-Type") or "").split(";")[0].strip().lower()
+    if ctype != "application/json":
+        return "a command that is not JSON (%r)" % ctype[:40]
+    return None
+
+
+def _log_refusal(why):
+    """Say so once a minute per reason, not once per request: a page that
+    keeps trying would otherwise fill the log."""
+    now = time.time()
+    if now - _refusals_logged.get(why, 0.0) >= 60.0:
+        _refusals_logged[why] = now
+        log("http refused: %s" % why)
+
+
 class StateHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         return
 
     def _cors(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "*")
+        """Headers every response carries. Named for what it used to do,
+        which was grant every origin everything."""
         self.send_header("Cache-Control", "no-store")
+        if (self.command == "GET"
+                and unquote(self.path.split("?", 1)[0]) in OPEN_READ_PATHS):
+            self.send_header("Access-Control-Allow-Origin", "*")
+
+    def _refused(self, command):
+        """Refuse the request if the caller is not allowed; True if refused."""
+        why = caller_refusal(self.headers, command)
+        if why is None:
+            return False
+        _log_refusal(why)
+        # Read the body before answering. Closing a socket with unread data
+        # in it makes Windows send a reset, and the caller sees the
+        # connection aborted instead of the 403 - measured, intermittently.
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except Exception:
+            n = 0
+        if 0 < n <= 1000000:
+            try:
+                self.rfile.read(n)
+            except Exception:
+                pass
+        self.close_connection = True
+        json_response(self, 403, {"ok": False, "error": "refused", "detail": why})
+        return True
 
     def do_OPTIONS(self):
+        # A preflight is answered and granted nothing: no Allow-Origin, no
+        # Allow-Methods, so a browser will not send the command it asked about.
+        if self._refused(False):
+            return
         self.send_response(204)
         self._cors()
         self.end_headers()
@@ -2157,6 +2236,8 @@ class StateHandler(BaseHTTPRequestHandler):
         return obj if isinstance(obj, dict) else None
 
     def do_GET(self):
+        if self._refused(False):
+            return
         path = unquote(self.path.split("?", 1)[0])
         # /state keeps its full shape: the EFB tablet polls it.
         if path == "/state":
@@ -2247,6 +2328,10 @@ class StateHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
+        # Before anything: every command, including the bodyless ones - Stop,
+        # Rebuild - that never reach _read_json_body.
+        if self._refused(True):
+            return
         path = unquote(self.path.split("?", 1)[0])
         if path == "/replay":
             body = self._read_json_body()
