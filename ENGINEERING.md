@@ -1792,6 +1792,36 @@ For the same reason `.gitattributes` pins `efb-pkg/** -text`. With
 checkout, change the byte sizes, and produce exactly that silent failure on a
 fresh clone.
 
+## Who owns a replay
+
+**A start and a stop are each one operation.** The runtime lock guarded each
+state update, not the whole of a start - stop the old one, load, open, spawn,
+acquire the camera, publish - so two requests at once both got past the stop
+before either published. Both spawned a ghost, the second overwrote the only
+record of the first, and Stop then left a ghost, a connection and a worker
+running. Start and stop now hold `_replay_lifecycle` throughout. A start stops
+the previous replay through `_stop_replay_locked`, never `stop_replay`, so the
+lock is never taken twice; the worker never takes it, so a stop can wait for
+the worker while holding it. A Stop that arrives during a start waits for it
+and then stops what it made.
+
+**A worker that outlived its stop must not touch the next replay.** Stop
+waits 2 s for the worker and then tears down anyway, and a worker stuck in a
+camera call woke later. Its only ownership check compared clip ids, which a
+second replay of the same clip shares, so it cleared the new replay's object
+id and camera flag and released the camera again. Every start and every stop
+now moves a generation on (`RUNTIME["replay"]["gen"]`), and a worker writes
+shared state or hands the camera back only while its own generation is
+current; its own ghost and connection it always cleans up. Stop's own step
+matters in the narrowest window - an old worker waking while the next start
+has taken the camera but not yet published.
+
+`test_replay.py` drives the real start, stop and worker on a stand-in
+connection that can be made to wait in `open()` or `camera_set()`: two starts
+at once, a stop during a start, a worker woken after the next start and in the
+middle of it, and a start that fails partway. Not checked in the sim yet:
+replay and Stop, the camera handed back, and the ghost removed.
+
 ## A replay used to be able to record a flight
 
 Replaying a landing overwrote the clip being replayed. The pilot was parked on

@@ -222,7 +222,7 @@ default, placed near the other tunables at the top of its module.
 | `clipfile.py` | Where a clip lives on disk and how to read one. The only place that knows the layout. |
 | `runways.py` | Which runway a touchdown was on and how far past its threshold - geometry, and the per-airport runway cache under `sessions/runways/`. |
 | `test_integrity.py` | Disposable fixtures for cache, persistence, deletion and backup recovery. |
-| `test_replay.py` | Pose lookup during replay, against the scan it replaced. |
+| `test_replay.py` | Pose lookup during replay, against the scan it replaced; and who owns a replay when starts and stops overlap. |
 | `test_arming.py` | When a reported aircraft becomes a flight, and what a rebuild publishes. |
 | `test_map.py` | What the route map draws as one line, and where it breaks - and so where it puts markers. |
 | `test_efb.py` | When a deploy may rewrite the EFB package's committed `layout.json` - only when its files changed. |
@@ -393,6 +393,13 @@ Data lives in `sessions/` and is **not** in git: flight tracks, clips, maps,
   its own thread, so a watcher whose detect loop has wedged still replies to
   `/state` while recording nothing. Liveness is `heartbeat_age_s`, which the
   detect loop stamps every pass, and the tray restarts on that.
+- **A replay is started and stopped under `_replay_lifecycle`, and a worker
+  checks its generation.** `start_replay` and `stop_replay` each hold the lock
+  for the whole operation; inside a start, stop the old replay with
+  `_stop_replay_locked`, or the lock deadlocks against itself. A worker
+  writes `RUNTIME["replay"]` or releases the camera only while
+  `_replay_is(gen)` - a clip id is not ownership, since two replays of one
+  clip share it. `test_replay.py` covers both.
 - **Tests must not write to `watcher.log`.** Importing `watcher` makes
   `watcher.log()` append to the real operational log, so a test that drives a
   refusal path writes "refusing CameraSet on user aircraft" into it. That is

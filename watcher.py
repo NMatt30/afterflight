@@ -5252,7 +5252,7 @@ def _clip_ground_alt(points):
     return min(alts) if alts else None
 
 
-def _replay_loop(gsc, object_id, points, stop_ev, clip_id, ts=None):
+def _replay_loop(gsc, object_id, points, stop_ev, clip_id, ts=None, gen=None):
     # One index for the whole run, built from the list this loop was handed.
     # points is immutable for the life of a replay - see clip_timestamps.
     if ts is None:
@@ -5296,7 +5296,10 @@ def _replay_loop(gsc, object_id, points, stop_ev, clip_id, ts=None):
                 log("replay abort: user object id")
                 break
             with RUNTIME_LOCK:
+                current = _replay_is(gen)
                 paused = bool(RUNTIME["replay"].get("paused"))
+            if not current:
+                break
             if paused:
                 # Hold the clip where it is so the knobs can be worked in peace.
                 #
@@ -5375,9 +5378,10 @@ def _replay_loop(gsc, object_id, points, stop_ev, clip_id, ts=None):
             last_pt = pt
             span = max(t_end - t_base, 1e-6)
             with RUNTIME_LOCK:
-                RUNTIME["replay"]["last_pose"] = pt
-                RUNTIME["replay"]["elapsed_s"] = max(0.0, min(t - t_base, span))
-                RUNTIME["replay"]["duration_s"] = span
+                if _replay_is(gen):
+                    RUNTIME["replay"]["last_pose"] = pt
+                    RUNTIME["replay"]["elapsed_s"] = max(0.0, min(t - t_base, span))
+                    RUNTIME["replay"]["duration_s"] = span
             # Ghost writes stay at REPLAY_HZ even when the camera runs
             # faster. The pose is still interpolated for this instant, so
             # the camera aims at where the ghost actually is.
@@ -5446,13 +5450,15 @@ def _replay_loop(gsc, object_id, points, stop_ev, clip_id, ts=None):
                         log("CameraSet failed during replay; retrying")
                     if cam_fails >= CHASE_FAIL_TOLERANCE:
                         with RUNTIME_LOCK:
-                            still = bool(RUNTIME["replay"]["chase"]["camera_acquired"])
+                            still = (_replay_is(gen)
+                                     and bool(RUNTIME["replay"]["chase"]["camera_acquired"]))
                         if still:
                             log("CameraSet failed %d times running; chase "
                                 "stopped, ghost continues" % cam_fails)
                             gsc.camera_release()
                             with RUNTIME_LOCK:
-                                RUNTIME["replay"]["chase"]["camera_acquired"] = False
+                                if _replay_is(gen):
+                                    RUNTIME["replay"]["chase"]["camera_acquired"] = False
                         chase_live = False
             tick += step
             nxt = wall0 + tick
@@ -5481,12 +5487,18 @@ def _replay_loop(gsc, object_id, points, stop_ev, clip_id, ts=None):
                     break
                 time.sleep(min(left, REPLAY_SLEEP_SLICE))
     finally:
-        if stop_ev.is_set():
-            # Stop was pressed: hand the camera back and clean up the ghost.
-            try:
-                gsc.camera_release()
-            except Exception:
-                pass
+        with RUNTIME_LOCK:
+            current = _replay_is(gen)
+        if stop_ev.is_set() or not current:
+            # Stop was pressed: clean up this replay's own ghost and
+            # connection. The camera is handed back only while this replay
+            # still owns it - a worker that outlived its stop must not
+            # release a camera a newer replay has since acquired.
+            if current:
+                try:
+                    gsc.camera_release()
+                except Exception:
+                    pass
             try:
                 gsc.remove_object(object_id)
             except Exception:
@@ -5496,20 +5508,20 @@ def _replay_loop(gsc, object_id, points, stop_ev, clip_id, ts=None):
             except Exception:
                 pass
             with RUNTIME_LOCK:
-                if RUNTIME["replay"].get("clip_id") == clip_id:
+                if _replay_is(gen):
                     RUNTIME["replay"]["active"] = False
                     RUNTIME["replay"]["object_id"] = None
+                    RUNTIME["replay"]["chase"]["camera_acquired"] = False
+                    RUNTIME["replay"]["holding"] = False
                 if RUNTIME["replay"].get("gsc") is gsc:
                     RUNTIME["replay"]["gsc"] = None
-                RUNTIME["replay"]["chase"]["camera_acquired"] = False
-                RUNTIME["replay"]["holding"] = False
             log("replay stopped clip=%s" % clip_id)
         else:
             # The clip simply ran out. Leave the camera where it is and the
             # ghost where it finished, until Stop. stop_replay() does the
             # teardown, and starting another replay calls it first.
             with RUNTIME_LOCK:
-                if RUNTIME["replay"].get("clip_id") == clip_id:
+                if _replay_is(gen):
                     RUNTIME["replay"]["active"] = False
                     RUNTIME["replay"]["holding"] = True
                     RUNTIME["replay"]["paused"] = False
@@ -5523,7 +5535,7 @@ def _replay_loop(gsc, object_id, points, stop_ev, clip_id, ts=None):
             while chase_live and hold_pose is not None and not stop_ev.is_set():
                 with RUNTIME_LOCK:
                     hold_mode = RUNTIME["replay"]["chase"].get("mode") or CHASE_MODE_DEFAULT
-                    if not RUNTIME["replay"].get("holding"):
+                    if not _replay_is(gen) or not RUNTIME["replay"].get("holding"):
                         break
                 try:
                     if not gsc.camera_set(object_id, pose=hold_pose,
@@ -5536,8 +5548,34 @@ def _replay_loop(gsc, object_id, points, stop_ev, clip_id, ts=None):
                     break
 
 
+# A replay's start and its stop are each one operation (SME review R3). The
+# runtime lock guards each state update, not the whole of a start - stop,
+# load, open, spawn, acquire, publish - so two requests at once both got past
+# the stop before either published, both spawned, and the second overwrote
+# the only record of the first: Stop then left a ghost, a connection and a
+# worker running. Start and stop are serialized by this lock. start_replay
+# calls _stop_replay_locked, never stop_replay, so nothing takes it twice; the
+# worker never takes it, so stop can join the worker while holding it.
+_replay_lifecycle = threading.Lock()
+
+
+def _replay_is(gen):
+    """Whether replay generation gen is still the current one. Caller holds
+    RUNTIME_LOCK. Every start and every stop moves the generation on, so a
+    worker that outlived its stop - stop's join gives up after 2 s - writes
+    nothing shared and moves no camera once a newer replay owns them. It
+    used to compare clip ids, which a second replay of the same clip shares."""
+    return gen is None or RUNTIME["replay"].get("gen") == gen
+
+
 def stop_replay():
+    with _replay_lifecycle:
+        return _stop_replay_locked()
+
+
+def _stop_replay_locked():
     with RUNTIME_LOCK:
+        RUNTIME["replay"]["gen"] = RUNTIME["replay"].get("gen", 0) + 1
         stop_ev = RUNTIME["replay"].get("stop")
         th = RUNTIME["replay"].get("thread")
         gsc = RUNTIME["replay"].get("gsc")
@@ -5562,6 +5600,11 @@ def stop_replay():
 
 
 def start_replay(body):
+    with _replay_lifecycle:
+        return _start_replay_locked(body)
+
+
+def _start_replay_locked(body):
     clip_id = (body or {}).get("clip_id")
     path = (body or {}).get("path")
     with RUNTIME_LOCK:
@@ -5596,7 +5639,7 @@ def start_replay(body):
     if not points:
         return {"ok": False, "error": "clip not found"}
     cid = doc.get("id") or clip_id or "clip"
-    stop_replay()
+    _stop_replay_locked()
     info = game_dll_status()
     if not info.get("ok"):
         log("chase unavailable: game dll not bound path=%s" % info.get("path"))
@@ -5695,13 +5738,17 @@ def start_replay(body):
         if not chase_ok:
             log("chase unavailable clip=%s object_id=%s (ghost still playing)" % (cid, oid))
     stop_ev = threading.Event()
+    with RUNTIME_LOCK:
+        gen = RUNTIME["replay"].get("gen", 0) + 1
     th = threading.Thread(
         target=_replay_loop,
         args=(gsc, int(oid), points, stop_ev, cid),
+        kwargs={"gen": gen},
         daemon=True,
         name="ghost-replay",
     )
     with RUNTIME_LOCK:
+        RUNTIME["replay"]["gen"] = gen
         RUNTIME["replay"]["active"] = True
         RUNTIME["replay"]["holding"] = False
         RUNTIME["replay"]["paused"] = bool(REPLAY_START_PAUSED)

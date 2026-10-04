@@ -237,7 +237,7 @@ Tests, none of which need the sim:
 | `test_arming.py` | When an aircraft becomes a flight, and when a landing is one. |
 | `test_runways.py` | Where on the runway, and what the sim really sends. |
 | `test_map.py` | What the route map draws as one line, and where it breaks. |
-| `test_replay.py` | Pose lookup during replay, against the scan it replaced. |
+| `test_replay.py` | Pose lookup during replay, and that overlapping starts and stops leave one replay Stop can stop. |
 | `test_native.py` | The sim connection with no Python-SimConnect package. |
 | `test_http.py` | A web page cannot command the watcher; the page and the tray still can. |
 | `test_release.py` | What the release zip carries, and what it must never carry. |
