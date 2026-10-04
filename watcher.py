@@ -1891,12 +1891,13 @@ def purge_hidden(scope, sortie_id, key=None, dry_run=True):
                 "aircraft": entry.get("aircraft"), "date": entry.get("date"),
                 "distance_nm": entry.get("distance_nm"), "grade": entry.get("grade")}}
         res = logbook_build.purge(entry, log=log)
-        # Rebuild either way. A partial delete still moved events, tracks and
-        # the caches, so the logbook on disk is stale whether or not every
-        # file went - and the flight stays hidden, which is what the retained
-        # exclusion says. Returning early here left the page describing a
-        # world that no longer existed.
-        rebuild = rebuild_logbook_now(force=True, reprocess=True)
+        # Rebuild either way. A partial delete still moved events and tracks,
+        # so the logbook on disk is stale whether or not every file went - and
+        # the flight stays hidden, which is what the retained exclusion says.
+        # Returning early here left the page describing a world that no longer
+        # existed. Not a reprocess: what a delete changes is in the sortie
+        # signatures, so only what it touched is rebuilt (test_cache).
+        rebuild = rebuild_logbook_now(force=True)
         out = dict(res)
         out["rebuild"] = rebuild
         return out

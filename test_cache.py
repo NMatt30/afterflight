@@ -120,6 +120,28 @@ def test_a_corrected_meta_invalidates_the_sortie():
         t.close()
 
 
+def test_a_changed_track_invalidates_the_sortie():
+    """A delete that cuts a leg out of a track and then fails on a file keeps
+    the leg hidden, so the exclusions do not move - the track is the only
+    thing that says the sortie changed. A delete no longer empties the cache
+    to be safe, so this signature is what keeps it right."""
+    t = Tree()
+    try:
+        track = t.track()
+        t.meta(40.0)
+        sig_a, _ = t.signature()
+        with open(track, encoding="utf-8") as f:
+            rows = f.readlines()
+        with open(track, "w", encoding="utf-8") as f:
+            f.writelines(rows[:-2])
+        sig_b, _ = t.signature()
+        assert sig_a != sig_b, (
+            "the track lost points and the sortie signature did not move, so "
+            "the cached sortie still shows them")
+    finally:
+        t.close()
+
+
 def test_an_unchanged_flight_is_still_a_cache_hit():
     """The fix must not turn every rebuild into a full reprocess."""
     t = Tree()
@@ -285,6 +307,169 @@ def test_purge_reports_bytes_it_actually_freed():
         assert res["bytes"] >= planned
     finally:
         t.close()
+
+
+class Book(object):
+    """A whole logbook of synthetic flights, every builder path redirected."""
+    NAMES = ("BASE", "SESSIONS", "CLIPS_DIR", "EVENTS_JSONL", "LOGBOOK_JSON",
+             "CACHE_JSON", "EXCLUDED_JSON", "DETAIL_DIR")
+
+    def __init__(self):
+        self.root = tempfile.mkdtemp()
+        self._keep = {n: getattr(logbook_build, n) for n in self.NAMES}
+        logbook_build.BASE = self.root
+        logbook_build.SESSIONS = os.path.join(self.root, "sessions")
+        logbook_build.CLIPS_DIR = os.path.join(logbook_build.SESSIONS, "clips")
+        logbook_build.EVENTS_JSONL = os.path.join(self.root, "events.jsonl")
+        logbook_build.LOGBOOK_JSON = os.path.join(self.root, "logbook.json")
+        logbook_build.CACHE_JSON = os.path.join(self.root, "logbook.cache.json")
+        logbook_build.EXCLUDED_JSON = os.path.join(self.root, "excluded.json")
+        logbook_build.DETAIL_DIR = os.path.join(logbook_build.SESSIONS, "detail")
+        os.makedirs(logbook_build.CLIPS_DIR)
+        self.lines = []
+
+    def close(self):
+        for n, v in self._keep.items():
+            setattr(logbook_build, n, v)
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def flight(self, fid, legs, day):
+        """legs flights out and back, 30 s on the ground between each."""
+        import datetime as dt
+        t = dt.datetime(1999, 1, day, 12, 0, tzinfo=dt.timezone.utc)
+        rows, lat = [], 40.0
+        for n in range(legs):
+            for k in range(30):
+                rows.append((t, lat, 0.0, True, 0.0))
+                t += dt.timedelta(seconds=1)
+            for k in range(300):
+                lat += 0.0005
+                rows.append((t, lat, 2000.0 + 10.0 * min(k, 300 - k), False, 110.0))
+                t += dt.timedelta(seconds=1)
+        for k in range(30):
+            rows.append((t, lat, 0.0, True, 0.0))
+            t += dt.timedelta(seconds=1)
+        with open(os.path.join(logbook_build.SESSIONS, fid + ".jsonl"), "w",
+                  encoding="utf-8") as f:
+            for ts, la, alt, on_ground, gs in rows:
+                f.write(json.dumps({
+                    "ts": ts.isoformat(), "lat": la, "lon": -105.0, "alt": alt,
+                    "vs": 0.0, "gs": gs, "heading": 0.0, "airspeed": gs,
+                    "on_ground": on_ground}) + "\n")
+        with open(os.path.join(logbook_build.SESSIONS, fid + ".meta.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump({"flight_id": fid, "sortie_id": fid,
+                       "aircraft": "Synthetic Type", "category": "Airplane",
+                       "vs0": 40.0, "ended_at": rows[-1][0].isoformat()}, f)
+
+    def build(self, force=False):
+        logbook_build.build(bake_maps=False, allow_network=False, force=force,
+                            log=self.lines.append)
+        said = [l for l in self.lines if "rebuilt" in l][-1]
+        return int(_re.search(r"\((\d+) reused", said).group(1))
+
+    def detail(self, fid):
+        with open(os.path.join(logbook_build.DETAIL_DIR, fid + ".json"),
+                  encoding="utf-8") as f:
+            return json.load(f)
+
+    def hide(self, scope, fid, key=None):
+        doc = logbook_build.read_json(logbook_build.EXCLUDED_JSON) or {
+            "schema": 1, "sorties": {}, "legs": {}}
+        if scope == "sortie":
+            doc["sorties"][fid] = {"at": "1999"}
+        else:
+            doc["legs"].setdefault(fid, {})[key] = {"at": "1999"}
+        with open(logbook_build.EXCLUDED_JSON, "w", encoding="utf-8") as f:
+            json.dump(doc, f)
+        self.build()
+        index = logbook_build.read_json(logbook_build.LOGBOOK_JSON)
+        entry = next((h for h in index.get("hidden") or []
+                      if h.get("scope") == scope and h.get("sortie_id") == fid
+                      and (scope == "sortie" or h.get("leg_key") == key)), None)
+        assert entry is not None, (
+            "hiding did not reach the logbook: the cached sortie survived a "
+            "change to what is hidden")
+        return entry
+
+    def snapshot(self):
+        """What the user sees: the index and every detail file, less clocks."""
+        index = dict(logbook_build.read_json(logbook_build.LOGBOOK_JSON))
+        for volatile in ("updated_at", "generated_by"):
+            index.pop(volatile, None)
+        details = {}
+        for name in sorted(os.listdir(logbook_build.DETAIL_DIR)):
+            with open(os.path.join(logbook_build.DETAIL_DIR, name),
+                      encoding="utf-8") as f:
+                details[name] = json.load(f)
+        return json.loads(json.dumps({"index": index, "details": details},
+                                     sort_keys=True))
+
+
+A = "flt-19990105T120000Z"    # two legs
+B = "flt-19990106T120000Z"    # one leg
+
+
+def _purged_then_rebuilt(scope, fid, leg_index=None):
+    """Delete for good, rebuild as the watcher now does, then reprocess.
+
+    Returns (sorties reused by the normal rebuild, its snapshot, the
+    reprocess's snapshot, the book) - the book still open for inspection.
+    """
+    book = Book()
+    book.flight(A, 2, 5)
+    book.flight(B, 1, 6)
+    assert book.build() == 0
+    assert len(book.detail(A)["legs"]) == 2, "fixture: A should have two legs"
+    key = book.detail(fid)["legs"][leg_index]["key"] if scope == "leg" else None
+    entry = book.hide(scope, fid, key)
+    res = logbook_build.purge(entry, log=None)
+    assert res.get("ok"), "the purge itself failed: %r" % (res,)
+    reused = book.build()
+    quick = book.snapshot()
+    book.build(force=True)
+    return reused, quick, book.snapshot(), book
+
+
+def test_deleting_a_leg_rebuilds_that_flight_and_nothing_else():
+    """A delete used to empty the cache and ask for a reprocess, so deleting
+    one leg rebuilt every flight and redrew every map - about two minutes per
+    delete on a real logbook, with the page waiting on it. What a delete
+    changes is in the signatures; the rest is reused, and the result is the
+    same logbook a full reprocess makes."""
+    reused, quick, full, book = _purged_then_rebuilt("leg", A, leg_index=1)
+    try:
+        assert reused >= 1, (
+            "deleting a leg of one flight rebuilt the untouched one too")
+        assert len(book.detail(A)["legs"]) == 1, "the deleted leg is still there"
+        assert quick == full, (
+            "after a delete the normal rebuild and a full reprocess disagree; "
+            "something the delete changed is not in a signature")
+    finally:
+        book.close()
+
+
+def test_deleting_a_flight_rebuilds_nothing_else():
+    reused, quick, full, book = _purged_then_rebuilt("sortie", B)
+    try:
+        assert reused >= 1, (
+            "deleting one flight rebuilt the untouched one too")
+        assert not os.path.isfile(os.path.join(logbook_build.DETAIL_DIR, B + ".json")), (
+            "the deleted flight's detail is still published")
+        assert quick == full, (
+            "after a delete the normal rebuild and a full reprocess disagree")
+    finally:
+        book.close()
+
+
+def test_the_watcher_does_not_reprocess_after_a_delete():
+    """The builder reuses what it can; the watcher has to let it."""
+    import inspect
+    import watcher
+    src = inspect.getsource(watcher.purge_hidden)
+    assert "reprocess=True" not in src, (
+        "purge_hidden asks for a reprocess, which ignores the cache and "
+        "redraws every map after every delete")
 
 
 # --------------------------------------------------------------------------

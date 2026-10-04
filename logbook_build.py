@@ -2351,15 +2351,13 @@ def _purge(entry, log=None):
         say("%d file(s) survived; leaving this hidden so the delete can be "
             "retried" % len(failed))
 
-    # the caches still describe the world as it was a moment ago
-    try:
-        cache, cache_text = read_cache()
-        if cache_text is not None:
-            cache["sorties"] = {}
-            cache["flights"] = {}
-            write_cache(cache, cache_text)
-    except Exception:
-        pass
+    # The cache is left alone. Everything above changes something a signature
+    # already reads - this sortie's track, its own events, its exclusions, or
+    # files that no longer exist - so the next build rebuilds what was touched
+    # and reuses the rest. Emptying the cache here made every delete rebuild
+    # every flight and redraw every map: about two minutes a delete on a real
+    # logbook, while the page waited. test_cache covers it against a full
+    # reprocess.
 
     say("deleted %d of %d file(s), %.1f KB"
         % (len(deleted), len(plan["files"]), freed / 1024.0))
