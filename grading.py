@@ -86,8 +86,8 @@ LETTER_TABLE = (
 LETTER_WORST = "F"
 
 # Touchdown rate on the same 0-100 scale so the landing combines with the rest.
-# It is NOT the letter: the letter comes from the rate ladder in passenger.py,
-# and the two are deliberately allowed to differ at the top - see below.
+# The touchdown LETTER is read off this curve too (touchdown_letter), so the
+# curve has to cross each letter boundary at the ladder's rate - see the end.
 #
 # Both ends of this curve come from published numbers rather than from feel.
 #
@@ -117,16 +117,23 @@ LETTER_WORST = "F"
 # uncomfortable band it wants to look at. 600 fpm is therefore the edge of the
 # design envelope, and past the edge there is nothing left to grade: zero.
 #
-# Giving the plateau the whole A band costs the curve its A/B anchor - the
-# ramp from 100 now runs to the B/C boundary instead. B/C, C/D and D/F are
-# unchanged. The LETTER is unaffected either way: it comes from the rate
-# ladder in passenger.py and never from this curve.
+# THE A/B STEP. Giving the plateau the whole A band took the curve's A/B
+# anchor away, and while the letter came from the ladder in passenger.py that
+# cost nothing. Once the letter was read off the curve it cost the A limit:
+# a ramp from 100 at 60 fpm to 80 at 150 passes 90 at 105, so A ran to 105
+# fpm while the ladder, the EFB and the passenger prose all said 60. So the
+# curve steps: full marks to 60, then the top of the B band, falling to 80 at
+# 150. 89 rather than a hair under 90, because the page rounds a score to a
+# whole number and 89.9 would read 90 beside a B. B/C, C/D and D/F were
+# always on their boundaries.
 TOUCHDOWN_PLATEAU_FPM = 60.0
 TOUCHDOWN_ZERO_FPM = 600.0
+TOUCHDOWN_B_TOP = 89.0
 
 TOUCHDOWN_CURVE = (
     (0.0, 100.0),
     (TOUCHDOWN_PLATEAU_FPM, 100.0),   # butter / A limit
+    (TOUCHDOWN_PLATEAU_FPM, TOUCHDOWN_B_TOP),   # just past it, a B
     (150.0, 80.0),     # B / C
     (300.0, 70.0),     # C / D
     (500.0, 60.0),     # D / F
@@ -1441,7 +1448,8 @@ PHASE_ORDER = ("liftoff", "climb", "cruise", "descent")
 # touchdown's own share of it (landing_phase_weights), so a leg with every
 # measure present averages exactly as before. What moves is the cap: a leg is
 # never more than one band above its weakest phase, and approach and landing
-# are now judged separately. Off until the owner has seen which legs move.
+# are now judged separately. On since the owner reviewed which legs moved:
+# grades moved down and never up.
 LANDING_PHASE = True
 
 # How the landing phase scores. The A-F landing letter is how the touchdown
@@ -2739,18 +2747,21 @@ def describe():
             "scores, then held to no more than one band - ten points - above "
             "the weakest phase score. So a leg whose descent scored 60 has an "
             "overall grade of at most 70 however good the rest was: a lovely "
-            "cruise does not cancel an alarming approach. The phase grades "
-            "themselves are never capped - only the overall. Most legs are "
-            "not affected, and a leg's Grading tab says when that leg was "
+            "cruise does not cancel an alarming approach. The other phase "
+            "grades are never capped by this - only the overall. The landing "
+            "has limits of its own, listed in its card. Most legs are not "
+            "affected, and a leg's Grading tab says when that leg was "
             "capped."),
         "limits": [
-            "The grades are worked out from the flight track, which is "
+            "Most grades are worked out from the flight track, which is "
             "recorded once a second, so anything briefer than that is "
             "smoothed away - vibration and the texture of turbulence are not "
             "captured. These grades describe the shape of the flying rather "
             "than how each second of it felt. The hardest g and acceleration "
-            "within each second are recorded as well, but the grading does "
-            "not read those yet.",
+            "within each second are recorded as well, and two measures read "
+            "them: the rotation at lift-off, and the sideways slide after "
+            "touchdown. The float is timed from the landing recording, which "
+            "runs ten times a second.",
             "Bank angle and height above the terrain are read from the sim "
             "where it reports them. Where it does not, bank is worked out "
             "from how quickly the heading changes and how fast the aircraft "

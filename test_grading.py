@@ -681,6 +681,31 @@ def test_the_touchdown_letter_follows_the_aircraft_types_own_criteria():
     assert grading.touchdown_letter(None, grading.LIGHT_GA) is None
 
 
+def test_off_the_curve_the_letter_is_still_the_ladder():
+    """Reading the letter off the curve moved the A limit to 105 fpm: the
+    curve ramped from 100 at 60 fpm to 80 at 150, and passes 90 at 105. The
+    ladder, the EFB and the passenger prose all say 60. Checking that the
+    letter matched the score could not see it - both came from the curve -
+    so this checks the letter against the ladder, at every rate, on every
+    profile scored on the light curve."""
+    import passenger
+    for prof in (grading.ROTARY, grading.LIGHT_GA, grading.UNCLASSIFIED):
+        wrong = []
+        for tenth in range(0, 7001, 5):
+            fpm = tenth / 10.0
+            want = passenger.grade_for_rate(fpm)[0]
+            got = grading.touchdown_letter(fpm, prof)
+            if got != want:
+                wrong.append((fpm, got, want))
+        assert not wrong, (
+            "%s: the curve's letter leaves the ladder at %d rate(s), first at "
+            "%s fpm (%s, ladder says %s)" % ((prof["name"], len(wrong)) + wrong[0]))
+    assert grading.score_for_touchdown_fpm(60.0) == 100.0, "60 fpm is still butter"
+    assert grading.letter_for_score(grading.score_for_touchdown_fpm(60.5)) == "B"
+    assert round(grading.score_for_touchdown_fpm(60.5)) < 90, (
+        "just past the A limit, the score must not read 90 on the page")
+
+
 # --------------------------------------------------------------------------
 # Transport aircraft are flown to a different target
 # --------------------------------------------------------------------------
