@@ -110,6 +110,88 @@ def test_everything_the_app_imports_is_shipped():
     assert not missing, "left out of the release: " + "; ".join(sorted(missing))
 
 
+def _samples(patterns):
+    """A concrete path for each inventory pattern: '*' becomes a name."""
+    return [p.replace("*", "sample") for p in patterns]
+
+
+def test_every_user_file_is_ignored_and_refused():
+    """The inventory is the one list. Everything in it must be ignored by git,
+    so an add-all cannot track it, and refused by the release guard, so a
+    release cannot carry it even if something was tracked by force. The
+    user's places.json was in neither, and a rotated log passed the guard."""
+    _tracked()                    # the same git availability the others need
+    samples = []
+    for group in build_release.DATA.values():
+        samples.extend(_samples(group))
+    # NUL-separated bytes: in text mode Windows turns each newline into CRLF
+    # on the way in, git is asked about "places.json\r", and nothing matches.
+    out = subprocess.run(["git", "check-ignore", "--no-index", "--stdin", "-z"],
+                         cwd=BASE, input="\0".join(samples).encode("utf-8"),
+                         capture_output=True)
+    ignored = set(n for n in out.stdout.decode("utf-8").split("\0") if n)
+    not_ignored = [s for s in samples if s not in ignored]
+    assert not not_ignored, (
+        "user data git would track: %s - add it to .gitignore" % ", ".join(not_ignored))
+    shipped = []
+    for s in samples:
+        try:
+            build_release.check_no_user_data([s])
+        except SystemExit:
+            continue
+        shipped.append(s)
+    assert not shipped, "the release guard would pack: %s" % ", ".join(shipped)
+
+
+def _backup_patterns():
+    """The default and -Full lists backup.ps1 copies, as inventory paths."""
+    import re
+    with open(os.path.join(BASE, "backup.ps1"), encoding="utf-8-sig") as f:
+        src = f.read()
+    m_default = re.search(r"\$patterns = @\((.*?)\)", src, re.S)
+    m_full = re.search(r"\$patterns \+= @\((.*?)\)", src, re.S)
+    assert m_default and m_full, "backup.ps1 no longer has the two pattern lists"
+
+    def norm(block):
+        items = re.findall(r"'([^']+)'", block)
+        out = set()
+        for item in items:
+            item = item.replace(chr(92), "/")
+            # a bare directory copies everything under it
+            if "." not in item.rsplit("/", 1)[-1]:
+                item += "/*"
+            out.add(item)
+        return out
+    return norm(m_default.group(1)), norm(m_full.group(1))
+
+
+def test_the_backup_carries_what_the_inventory_says():
+    """backup.ps1 cannot import the inventory, so it is checked against it.
+    The runway cache and places.json were in no backup at all, and a restore
+    then regraded every landing that had been held down by its runway."""
+    default, full = _backup_patterns()
+    want_default = set(build_release.DATA["backed_up"])
+    want_full = set(build_release.DATA["full_only"])
+    assert default == want_default, (
+        "the default backup and the inventory disagree - missing from the "
+        "backup: %s; not in the inventory: %s"
+        % (sorted(want_default - default), sorted(default - want_default)))
+    assert full == want_full, (
+        "-Full and the inventory disagree - missing: %s; extra: %s"
+        % (sorted(want_full - full), sorted(full - want_full)))
+    never = set(build_release.DATA["never"])
+    assert not (default | full) & never, "a backup copies runtime state"
+
+
+def test_the_apps_own_json_still_ships():
+    """Refusing user data must not refuse the app's own data files."""
+    files = set(build_release.app_files(_tracked()))
+    for need in ("passenger_lines.json", "efb-pkg/layout.json",
+                 "efb-pkg/manifest.json"):
+        assert need in files, "%s was left out of the release" % need
+    build_release.check_no_user_data(sorted(files))
+
+
 def test_the_bundled_python_can_find_the_app():
     """The embeddable Python ignores the script's folder and PYTHONPATH; only
     its ._pth counts, so the app folder - one up - must be in it."""

@@ -770,6 +770,117 @@ def test_the_watcher_asks_the_sim_about_airplane_runways_only():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def _graded(tree):
+    """What a restore must give back: the leg as the user sees it."""
+    leg = _leg(tree)
+    pg = leg.get("phase_grade") or {}
+    return {
+        "landing_grade": leg.get("landing_grade"),
+        "leg_letter": pg.get("letter"),
+        "overall": pg.get("overall"),
+        "phases": {k: (v or {}).get("score") for k, v in (pg.get("phases") or {}).items()},
+        "touchdown_point": leg.get("touchdown_point"),
+        "landing_float": leg.get("landing_float"),
+        "route": leg.get("route"),
+        "passenger": (leg.get("passenger") or {}).get("text"),
+    }
+
+
+def _backup_and_restore(tree, full):
+    """Run the real backup.ps1, quiet and verified, then copy what its
+    manifest lists - and only that - into a fresh tree. Returns the new root."""
+    import subprocess
+    dest = tempfile.mkdtemp()
+    command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+               os.path.join(BASE, "backup.ps1"), "-From", tree.root, "-To", dest,
+               "-RequireQuiet", "-Verify"] + (["-Full"] if full else [])
+    out = subprocess.run(command, capture_output=True, text=True)
+    assert out.returncode == 0, "backup failed: %s%s" % (out.stdout, out.stderr)
+    archive = [os.path.join(dest, n) for n in os.listdir(dest)
+               if n.startswith("afterflight-backup-")][0]
+    with open(os.path.join(archive, "manifest.json"), encoding="utf-8-sig") as f:
+        manifest = json.load(f)
+    assert manifest["consistency"] == "quiescent", manifest["consistency"]
+    restored = tempfile.mkdtemp()
+    for row in manifest["files"]:
+        target = os.path.join(restored, row["path"])
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        shutil.copyfile(os.path.join(archive, row["path"]), target)
+    shutil.rmtree(dest, ignore_errors=True)
+    return restored
+
+
+def test_a_restored_backup_grades_the_landing_the_same():
+    """SME review R2. The runway cache is evidence a landing is graded
+    against, and places.json is the user's own writing; neither was in any
+    backup. A landing held down by its touchdown spot came back from a
+    verified, quiet restore as if it had touched down on the aim point - F
+    to A - and its place names were gone. Both switches on, the same
+    settings either side; the default backup and -Full."""
+    keep = (grading.GRADE_FLOAT, grading.GRADE_TOUCHDOWN_POINT,
+            logbook_build.PLACES_JSON)
+    t = Tree()
+    try:
+        grading.GRADE_FLOAT = grading.GRADE_TOUCHDOWN_POINT = True
+        td = _flight(t, 3800.0)               # long: past the touchdown zone
+        t.runway()
+        logbook_build.PLACES_JSON = os.path.join(t.root, "places.json")
+        with open(logbook_build.PLACES_JSON, "w", encoding="utf-8") as f:
+            json.dump([{"name": "Synthetic Field", "lat": td[0], "lon": td[1],
+                        "radius_nm": 3}], f)
+        before = _graded(t)
+        assert before["touchdown_point"], "fixture: no touchdown spot measured"
+        assert before["route"]["to_named"], "fixture: the place was not named"
+        assert before["landing_grade"] in ("D", "F"), (
+            "fixture: the long landing should be held down by its spot, got %s"
+            % before["landing_grade"])
+
+        source = t.root
+        for full in (False, True):
+            restored = _backup_and_restore(t, full)
+            try:
+                t.root = restored                       # rebuild over the copy
+                for name, value in (
+                        ("BASE", restored),
+                        ("SESSIONS", os.path.join(restored, "sessions")),
+                        ("CLIPS_DIR", os.path.join(restored, "sessions", "clips")),
+                        ("EVENTS_JSONL", os.path.join(restored, "events.jsonl")),
+                        ("LOGBOOK_JSON", os.path.join(restored, "logbook.json")),
+                        ("CACHE_JSON", os.path.join(restored, "logbook.cache.json")),
+                        ("EXCLUDED_JSON", os.path.join(restored, "excluded.json")),
+                        ("DETAIL_DIR", os.path.join(restored, "sessions", "detail")),
+                        ("PLACES_JSON", os.path.join(restored, "places.json"))):
+                    setattr(logbook_build, name, value)
+                t.dir = logbook_build.SESSIONS
+                logbook_build._runway_memo["key"] = None
+                after = _graded(t)
+            finally:
+                t.root = source
+                for name, value in (
+                        ("BASE", source),
+                        ("SESSIONS", os.path.join(source, "sessions")),
+                        ("CLIPS_DIR", os.path.join(source, "sessions", "clips")),
+                        ("EVENTS_JSONL", os.path.join(source, "events.jsonl")),
+                        ("LOGBOOK_JSON", os.path.join(source, "logbook.json")),
+                        ("CACHE_JSON", os.path.join(source, "logbook.cache.json")),
+                        ("EXCLUDED_JSON", os.path.join(source, "excluded.json")),
+                        ("DETAIL_DIR", os.path.join(source, "sessions", "detail")),
+                        ("PLACES_JSON", os.path.join(source, "places.json"))):
+                    setattr(logbook_build, name, value)
+                t.dir = logbook_build.SESSIONS
+                logbook_build._runway_memo["key"] = None
+                shutil.rmtree(restored, ignore_errors=True)
+            moved = sorted(k for k in before if before[k] != after[k])
+            assert not moved, (
+                "%s backup: after restore %s changed - %s"
+                % ("-Full" if full else "default", ", ".join(moved),
+                   "; ".join("%s %r -> %r" % (k, before[k], after[k]) for k in moved)))
+    finally:
+        (grading.GRADE_FLOAT, grading.GRADE_TOUCHDOWN_POINT,
+         logbook_build.PLACES_JSON) = keep
+        t.close()
+
+
 def main():
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]

@@ -215,7 +215,7 @@ default, placed near the other tunables at the top of its module.
 | `trackexport.py` | KML and GPX of a track, built on demand. |
 | `settings.py` | User-editable Tier 1 settings, applied over module constants. |
 | `install.ps1` | Checks the machine, stages the sim's DLL, autostart and shortcut. Checks only unless given a switch. Prefers a release's bundled `runtime\python.exe`. |
-| `build_release.py` | The release zip: tracked app files, python.org's embeddable Python and Pillow (pinned, SHA-256 checked), `VERSION` and a launcher. Never anything of a user's - an update is a zip unpacked over an install. `.github/workflows/release.yml` builds it on a `v*` tag. |
+| `build_release.py` | The release zip: tracked app files, python.org's embeddable Python and Pillow (pinned, SHA-256 checked), `VERSION` and a launcher. Never anything of a user's - an update is a zip unpacked over an install. `.github/workflows/release.yml` builds it on a `v*` tag. **`DATA` is the inventory of user and runtime files**: `.gitignore`, the release guard and `backup.ps1` are checked against it. Add a new data file there first. |
 | `persistence.py` | Shared document, maintenance and recording locks plus atomic JSON/JSONL helpers. |
 | `clipfile.py` | Where a clip lives on disk and how to read one. The only place that knows the layout. |
 | `runways.py` | Which runway a touchdown was on and how far past its threshold - geometry, and the per-airport runway cache under `sessions/runways/`. |

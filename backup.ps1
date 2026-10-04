@@ -35,8 +35,13 @@ try {
     if ($RequireQuiet) { throw 'Watcher or maintenance is active. Stop the watcher and retry.' }
     Write-Warning 'Live copy: consistency across files is not guaranteed. HTTP availability does not prove recording stopped.'
   }
+  # build_release.DATA is the inventory these mirror; test_release checks
+  # they agree. The runway cache is evidence, not a cache: landings are
+  # graded against it, and it cannot be rebuilt offline or refetched as it
+  # was. places.json is the user's own writing.
   $patterns = @('sessions\*.jsonl', 'sessions\*.meta.json', 'sessions\clips',
-                'events.jsonl', 'excluded.json', 'flight_prefs.json', 'settings.json',
+                'sessions\runways', 'events.jsonl', 'excluded.json',
+                'flight_prefs.json', 'settings.json', 'places.json',
                 'current.json', 'last_event.json', 'notify_state.json')
   if ($Full) {
     $patterns += @('sessions\maps', 'sessions\tilecache', 'sessions\detail',
@@ -109,7 +114,9 @@ Verify before restoring:
 
 Restore into a separate, stopped AfterFlight tree first. Copy only the files
 listed in manifest.json, preserving relative paths. Follow INSTALL.md to install
-dependencies and stage the DLL, then rebuild:
+it, then rebuild. From the release download, in its AfterFlight folder:
+  .\runtime\python.exe logbook_build.py --no-maps --offline --force
+From a source checkout with Python installed:
   py -3 logbook_build.py --no-maps --offline --force
 Do not copy over an actively recording installation.
 

@@ -53,6 +53,10 @@ __pycache__/
 # Your saved settings - overrides only, and machine-specific.
 settings.json
 
+# Your own place names (places.json): personal locations, and nothing a
+# release may carry or an update may overwrite. build_release.DATA lists it.
+places.json
+
 # Your own calibration notes, if you keep any. The source states the
 # standard a threshold comes from; anything about which of YOUR flights
 # went into it is yours and stays out of git.

@@ -261,8 +261,8 @@ recordings and settings out. See below.
 ## Moving to another machine, or reinstalling
 
 ```powershell
-.\backup.ps1            # recordings and settings, about 85 MB per few weeks
-.\backup.ps1 -Full      # also the baked maps and tile cache
+.\backup.ps1            # recordings, settings, runway data and place names
+.\backup.ps1 -Full      # also the baked maps, tile cache and built logbook
 ```
 
 It writes a timestamped folder next to the tree with a `RESTORE.txt` inside

@@ -1891,6 +1891,26 @@ reprocessing is remembered. No frame-performance claim follows from offline test
 
 ### Backups and restore verification
 
+**What a backup carries is one inventory,** `build_release.DATA`: what cannot
+be recreated goes in every backup, what is rebuilt from it only in a `-Full`
+one, and the process's own state in none. The same list is what `.gitignore`
+must ignore and what a release must refuse, and `test_release.py` checks all
+three against it, because they had drifted: the runway cache and the user's
+`places.json` were in no backup, so a verified, quiet restore regraded every
+landing its runway had held down - a long one came back from F to A - and
+lost its place names. `test_runways.py` now backs a graded landing up,
+restores it into an empty tree and rebuilds offline, both switches on, and
+requires the same letters, scores, measurements, names and passenger text.
+
+**The runway cache is evidence, and it is shared.** One file per airport,
+kept and backed up, and never replaced automatically. Historical calculations
+use the runway evidence currently available; the application does not keep a
+separate runway version for each landing, so replacing or restoring a
+different airport file would change every landing at that airport together,
+and a landing first looked up today is measured against today's scenery.
+Before any refresh feature: decide whether it rewrites history or only
+applies to new landings, keep the old evidence, and report what moved.
+
 `backup.ps1 -Verify` records SHA-256 hashes, checks archived bytes, and checks
 whether source files changed during copying. `-Full` also includes derived data.
 `-RequireQuiet` fails unless watcher and maintenance locks can both be held for
