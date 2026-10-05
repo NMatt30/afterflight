@@ -100,8 +100,9 @@ landing phase is the landing's grade, and the touchdown is described:
 Hard, Very hard; for a transport Soft, On target, Firm, Hard, Very hard,
 named for the published 100-250 fpm target band - and its rate. A leg too
 short to grade in phases falls back to `touchdown_letter`, the letter of the
-touchdown's score. The EFB tablet still shows its own letter until it is
-changed and checked in the sim.
+touchdown's score. The EFB tablet shows the same word: the watcher sends it
+with each landing event (`touchdown_word`), since the tablet cannot work out
+the aircraft type without a second copy of the thresholds.
 
 **Alignment can only hold the landing down.** Peak bank through the rollout,
 and sideways acceleration after contact, cap the landing phase, which is how

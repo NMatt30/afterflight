@@ -3334,6 +3334,9 @@
       this._lastFid = null;
       this._lastLat = null;
       this._lastLon = null;
+      // When this tablet saw a touchdown, so the watcher's word for it is
+      // shown and an older landing's is not.
+      this._tdMs = null;
     }
     onOpen() {
       this.tick();
@@ -3380,16 +3383,12 @@
         return NaN;
       }
     }
-    gradeFpm(fpm) {
-      // Must match the logbook's ladder, or the same landing gets two grades.
-      // It differed at D (500 here, 450 there) and had no E at all.
-      const a = Math.abs(fpm);
-      if (a <= 60) return "A Butter";
-      if (a <= 150) return "B Smooth";
-      if (a <= 300) return "C Firm";
-      if (a <= 500) return "D Hard";
-      return "F Arrival";
-    }
+    // No grade is worked out here any more. The logbook grades a landing
+    // once, as its phase, and describes the touchdown in a word on the
+    // aircraft type's own scale - which the watcher sends with the landing
+    // event (touchdown_word). A ladder of its own here was the light
+    // airplane's, applied to every aircraft: a jet's 200 fpm, inside the
+    // airline target, read "C Firm".
     fmt(n, digits) {
       return Number.isFinite(n) ? n.toFixed(digits) : "--";
     }
@@ -3478,6 +3477,17 @@
           et = "reconnect";
         }
         this.wEvent.set(et + "  ·  " + this.ageLabel(e.at));
+        if (e.type === "landing" && e.touchdown_word) {
+          // The landing this tablet saw, or - opened after landing - the
+          // last one on record. Not an older one over a newer touchdown.
+          const at = Date.parse(e.at);
+          if (this._tdMs == null || Number.isFinite(at) && at >= this._tdMs - 15e3) {
+            this.grade.set(String(e.touchdown_word));
+            if (this._tdMs == null && Number.isFinite(e.landing_rate_fpm)) {
+              this.td.set(this.fmt(Math.abs(e.landing_rate_fpm), 1));
+            }
+          }
+        }
         this.wAge.set(this.ageLabel(c.last_update || d.served_at));
       }).catch(() => {
         clearTimeout(timer);
@@ -3545,7 +3555,10 @@
         const td = (typeof tdn === "number" && isFinite(tdn) && tdn !== 0)
           ? Math.abs(tdn) * 60 : this._lastAirVs;
         this.td.set(this.fmt(td, 1));
-        this.grade.set(this.gradeFpm(td));
+        // The word follows from the watcher in a moment; until then, nothing
+        // rather than a guess on the wrong scale.
+        this._tdMs = now;
+        this.grade.set("--");
         this.note.set("Last landing " + this.fmt(td, 1) + " fpm  |  peak 10s " + this.fmt(this._peakVs, 0) + " fpm");
         this._wasAirborne = false;
         this._peakVs = 0;

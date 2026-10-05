@@ -3295,6 +3295,18 @@ class ClipTracker:
             ]
             firmest = [r for r in rates if r is not None]
             extra["firmest_fpm"] = max(firmest) if firmest else None
+            # How the touchdown felt, on this aircraft type's own scale, for
+            # the EFB tablet: it reads /state and cannot work the type out
+            # itself without a second copy of the thresholds. Never allowed to
+            # cost the event - a word missing is only a word missing.
+            try:
+                import grading as grading_mod
+                extra["touchdown_word"] = grading_mod.touchdown_word(
+                    rate_fpm, grading_mod.profile_for(
+                        self.flight.aircraft, category=self.flight.category,
+                        vs0_kt=self.flight.vs0))
+            except Exception as e:
+                log("touchdown word failed %r" % (e,))
         write_event(kind, self.flight.flight_id,
                     extra.get("aircraft") or self.flight.aircraft, extra=extra,
                     sortie_id=getattr(self.flight, "sortie_id", None))

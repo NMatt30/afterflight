@@ -195,10 +195,13 @@ There is no E. Most grading scales people have seen do not have one, and a
 five-band scale spent two of its bands on landings nobody walks away from
 describing differently.
 
-**The EFB tablet still shows its own letter** - `gradeFpm()`, the light
-ladder for every aircraft, since it cannot call back into the watcher. It is
-to show the watcher's word for the aircraft type instead, which needs
-checking in the sim. The score-to-letter ladder for phase grades
+**The EFB tablet shows the watcher's word.** It used to grade the touchdown
+itself, `gradeFpm()`, on the light ladder for every aircraft - a jet's 200
+fpm, inside the airline target, read "C Firm". It cannot work the aircraft
+type out without a second copy of the thresholds, so the watcher puts the
+word in the landing event (`touchdown_word`), and the tablet shows the rate
+at once and the word when the event arrives - nothing in between rather than
+a guess. Checked offline; not yet in the sim. The score-to-letter ladder for phase grades
 (`grading.LETTER_TABLE`) is served over `/grading`, so the logbook UI has no
 copy of that one.
 
@@ -370,13 +373,11 @@ a good one.
 
 **What moved, when alignment arrived.** One landing letter, and no other.
 
-**The tablet does not know about this.** The in-sim EFB grades from
-`PLANE TOUCHDOWN NORMAL VELOCITY` alone, so it will still show B for a landing
-the logbook holds at C - and it uses the light ladder for every aircraft (see
-Landing grade). It is to show the watcher's word instead. That is a real divergence and it is here rather than
-hidden: the tablet is a live instrument reading one simvar at the moment of
-contact, and the logbook is the record, which can look at the five seconds
-afterwards. Making them agree means teaching the EFB to sample the rollout.
+**The tablet grades nothing.** It reads `PLANE TOUCHDOWN NORMAL VELOCITY` at
+the moment of contact and shows the rate, then the watcher's word for the
+touchdown (see Landing grade). The landing grade - alignment included - is
+the logbook's, which can look at the seconds after contact; the tablet once
+showed a letter of its own that disagreed with it.
 
 
 **Every phase cites the standard behind its numbers, in the panel.** Once per

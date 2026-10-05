@@ -515,10 +515,9 @@ other ride scores still use derived speed changes. Changing those inputs
 requires explicit recalibration and a grade comparison. The measured axis
 convention is X lateral, Y vertical, Z longitudinal.
 
-The in-sim tablet still shows a letter of its own for each touchdown, on the
-light-airplane scale for every aircraft, where the logbook now grades the
-landing once and describes the touchdown in words. Changing the tablet is a
-change to check in the sim.
+The in-sim tablet shows the touchdown's rate at once and the logbook's word
+for it a moment later, sent by the watcher with the landing. That has been
+checked offline, not yet in the sim.
 
 The release zip has been run in the sim from a fresh folder, and with Python
 hidden from the PATH, but not yet on a machine that has never had Python.

@@ -879,24 +879,52 @@ def test_a_flight_resumed_from_disk_keeps_counting_its_legs():
         c.close()
 
 
-def _committed_clip(kind, leg):
-    """Drive the real _commit for one event, with the tracker counting leg."""
+def _committed_clip(kind, leg, category=None, vs0=None, rate=120.0, events=None):
+    """Drive the real _commit for one event, with the tracker counting leg.
+    events, if a list, receives what write_event was given."""
     import types
     tr = watcher.ClipTracker()
     tr.leg = leg
     tr.flight = types.SimpleNamespace(
         flight_id=FID_CLIPS, sortie_id=FID_CLIPS, aircraft="Test Type",
-        lift_at="1999-01-01T00:00:00Z", category=None, vs0=None,
+        lift_at="1999-01-01T00:00:00Z", category=category, vs0=vs0,
         landing_rate_fpm=None, landed=False)
     s = sample(100.0, on_ground=(kind == "landing"))
     s["ts"] = "1999-01-01T00:01:40Z"
     keep = watcher.write_event
-    watcher.write_event = lambda *a, **k: None
+    watcher.write_event = lambda etype, *a, **k: (
+        events.append((etype, k.get("extra") or {})) if events is not None else None)
     try:
-        tr._commit(kind, s, 120.0 if kind == "landing" else None)
+        tr._commit(kind, s, rate if kind == "landing" else None)
     finally:
         watcher.write_event = keep
     return tr, tr.open[-1]
+
+
+def test_a_landing_tells_the_tablet_how_it_felt_on_its_own_scale():
+    """The EFB tablet showed its own letter, on the light ladder for every
+    aircraft - a jet's 200 fpm read "C Firm". It now shows the watcher's word
+    for the aircraft type, sent with the landing event; and working the word
+    out may never cost the event itself."""
+    import grading
+    c = Clips()
+    try:
+        got = []
+        _committed_clip("landing", 0, category="Airplane", vs0=95.0, rate=200.0, events=got)
+        _committed_clip("landing", 1, category="Airplane", vs0=40.0, rate=200.0, events=got)
+        words = [e.get("touchdown_word") for kind, e in got if kind == "landing"]
+        assert words == ["On target", "Firm"], words
+        keep = grading.touchdown_word
+        grading.touchdown_word = lambda *a, **k: 1 / 0
+        try:
+            got = []
+            _committed_clip("landing", 2, category="Airplane", vs0=40.0, events=got)
+        finally:
+            grading.touchdown_word = keep
+        assert got and got[0][0] == "landing" and "touchdown_word" not in got[0][1], (
+            "a failed word cost the landing event: %r" % (got,))
+    finally:
+        c.close()
 
 
 def test_a_new_recording_never_lands_in_an_existing_file():
