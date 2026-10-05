@@ -182,9 +182,26 @@
   button:hover:not(:disabled) { border-color: var(--accent); }
   button:disabled { opacity: .4; cursor: default; }
 
+  /* All time on the left; the flights in view on the right, above the
+     filters that choose them. Not part of the sticky bar, so it costs
+     viewport only at the top of the page. */
   .summary {
-    display: flex; flex-wrap: wrap; gap: 28px;
-    padding: 18px 24px; border-bottom: 1px solid var(--line);
+    display: flex; flex-wrap: wrap; gap: 14px 48px; align-items: flex-end;
+    padding: 14px 24px 18px; border-bottom: 1px solid var(--line);
+  }
+  .sumgroup { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .sumrow { display: flex; flex-wrap: wrap; gap: 28px; }
+  .sumlabel { font-size: 11px; color: var(--muted); text-transform: uppercase;
+              letter-spacing: .8px; white-space: nowrap; overflow: hidden;
+              text-overflow: ellipsis; }
+  .sumview { margin-left: auto; align-items: flex-end; max-width: 100%; }
+  .sumview .sumlabel { color: var(--accent); max-width: 100%; }
+  .sumview .total { align-items: flex-end; }
+  /* Narrow: the in-view block wraps under all time, so it lines up with it
+     rather than hanging off the right edge. */
+  @media (max-width: 700px) {
+    .sumview { margin-left: 0; align-items: flex-start; }
+    .sumview .total { align-items: flex-start; }
   }
   .summary .total { display: flex; flex-direction: column; }
   .summary .total .v { font-size: 21px; font-variant-numeric: tabular-nums; }
@@ -630,11 +647,27 @@
 </div>
 
 <div class="summary">
-  <div class="total"><span class="v" id="t-sorties">&mdash;</span><span class="k">Flights</span></div>
-  <div class="total"><span class="v" id="t-days">&mdash;</span><span class="k">Days</span></div>
-  <div class="total"><span class="v" id="t-landings">&mdash;</span><span class="k">Landings</span></div>
-  <div class="total"><span class="v" id="t-distance">&mdash;</span><span class="k">Distance</span></div>
-  <div class="total"><span class="v" id="t-airborne">&mdash;</span><span class="k">Airborne</span></div>
+  <div class="sumgroup">
+    <div class="sumlabel">All time</div>
+    <div class="sumrow">
+      <div class="total"><span class="v" id="t-sorties">&mdash;</span><span class="k">Flights</span></div>
+      <div class="total"><span class="v" id="t-days">&mdash;</span><span class="k">Days</span></div>
+      <div class="total"><span class="v" id="t-landings">&mdash;</span><span class="k">Landings</span></div>
+      <div class="total"><span class="v" id="t-distance">&mdash;</span><span class="k">Distance</span></div>
+      <div class="total"><span class="v" id="t-airborne">&mdash;</span><span class="k">Airborne</span></div>
+    </div>
+  </div>
+  <!-- The flights the filters below are showing, added up the same way. -->
+  <div class="sumgroup sumview" id="sum-view" hidden>
+    <div class="sumlabel" id="v-label">In view</div>
+    <div class="sumrow">
+      <div class="total"><span class="v" id="v-sorties">&mdash;</span><span class="k">Flights</span></div>
+      <div class="total"><span class="v" id="v-days">&mdash;</span><span class="k">Days</span></div>
+      <div class="total"><span class="v" id="v-landings">&mdash;</span><span class="k">Landings</span></div>
+      <div class="total"><span class="v" id="v-distance">&mdash;</span><span class="k">Distance</span></div>
+      <div class="total"><span class="v" id="v-airborne">&mdash;</span><span class="k">Airborne</span></div>
+    </div>
+  </div>
 </div>
 
 <div class="filters">

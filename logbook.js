@@ -1543,11 +1543,52 @@
     return days;
   }
 
+  // What the filters are showing, in words: the month (or every month, for
+  // a search), the airframe, the search.
+  function viewLabel() {
+    var parts = [searching() ? "All months"
+                             : (state.month ? monthLabel(state.month) : "This month")];
+    if (state.airframe !== "all") parts.push(state.airframe);
+    var q = state.query.trim();
+    if (q) parts.push("\u201c" + q + "\u201d");
+    return "In view \u00b7 " + parts.join(" \u00b7 ");
+  }
+
+  // The flights in view, added up as the builder adds up the whole logbook:
+  // a flight's own distance, airborne time and landings - every leg of it,
+  // the ones the list shows - and the days they were flown on. Hidden when
+  // the view is the whole logbook, which the all-time numbers already say.
+  function renderViewSummary(list) {
+    var box = $("#sum-view");
+    var total = ((state.index || {}).totals || {}).sorties;
+    if (state.loadingMonths || (total != null && list.length === total)) {
+      box.hidden = true;
+      return;
+    }
+    var days = {}, landings = 0, dist = 0, air = 0;
+    list.forEach(function (s) {
+      if (s.date) days[s.date] = true;
+      landings += s.landings || 0;
+      dist += s.distance_nm || 0;
+      air += s.airborne_s || 0;
+    });
+    $("#v-sorties").textContent = list.length;
+    $("#v-days").textContent = Object.keys(days).length;
+    $("#v-landings").textContent = landings;
+    $("#v-distance").textContent = fmtNm(Math.round(dist * 100) / 100);
+    $("#v-airborne").textContent = fmtDuration(Math.round(air));
+    var label = $("#v-label");
+    label.textContent = viewLabel();
+    label.title = label.textContent;
+    box.hidden = false;
+  }
+
   function renderList() {
     var host = $("#sorties");
     host.innerHTML = "";
     var list = visibleSorties();
     var filtered = filtering();
+    renderViewSummary(list);
     $("#result-count").textContent =
       list.length + (list.length === 1 ? " flight" : " flights") + (filtered ? " matching" : "");
 
