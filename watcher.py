@@ -5936,6 +5936,37 @@ def _landing_points_on_record():
     return out
 
 
+# The prefilter's grid: 0.1 degree cells, so 84,000 airports are not each
+# measured against every landing - only the cells near an airport are looked
+# in, and the exact distance decides. It looked one cell either way, which is
+# 6 nm of latitude anywhere but 6 nm x cos(latitude) of longitude: under the
+# 3 nm radius beyond about 60 degrees, so Iceland, most of Alaska and northern
+# Scandinavia could miss an airport inside the radius (SME review R6). And
+# int() rounds toward zero, which made the cells either side of 0 degrees one
+# double-width cell; floor() keeps every cell the same size.
+RUNWAY_CELLS_PER_DEG = 10
+_LON_CELLS = 360 * RUNWAY_CELLS_PER_DEG
+
+
+def _runway_cell(lat, lon):
+    """(row, column) of the cell a point is in; columns wrap at 180 degrees."""
+    return (int(math.floor(lat * RUNWAY_CELLS_PER_DEG)),
+            int(math.floor((lon + 180.0) * RUNWAY_CELLS_PER_DEG)) % _LON_CELLS)
+
+
+def _runway_cell_reach(lat, radius_nm):
+    """How many columns either side can hold a point within radius_nm.
+
+    Measured where a degree of longitude is shortest: the airport's latitude
+    plus a row and the radius, toward the pole. Near the pole that is every
+    column, which is also the bound - half the circle either way."""
+    edge = min(90.0, abs(lat) + 1.0 / RUNWAY_CELLS_PER_DEG + radius_nm / 60.0)
+    nm_per_column = 60.0 / RUNWAY_CELLS_PER_DEG * math.cos(math.radians(edge))
+    if nm_per_column * (_LON_CELLS // 2) <= radius_nm:
+        return _LON_CELLS // 2
+    return min(_LON_CELLS // 2, max(1, int(math.ceil(radius_nm / nm_per_column))))
+
+
 def lookup_runways(points, backfill=False, keep_going=None):
     """Cache the runways of every airport near these points that is not cached.
 
@@ -5976,11 +6007,10 @@ def lookup_runways(points, backfill=False, keep_going=None):
         return {"status": "done", "saved": 0}
     if not keep_going():
         return {"status": "cancelled", "saved": 0}
-    # A coarse grid, so 84,000 airports are not each measured against every
-    # point: only the cells around a point are looked in.
+    # The grid: see _runway_cell.
     cells = {}
     for p in want:
-        cells.setdefault((int(p[0] * 10), int(p[1] * 10)), []).append(p)
+        cells.setdefault(_runway_cell(p[0], p[1]), []).append(p)
 
     gsc = GameSimConnect()
     try:
@@ -5992,11 +6022,14 @@ def lookup_runways(points, backfill=False, keep_going=None):
             log("runways: the sim returned no airport list")
             return {"status": "failed", "saved": 0}
         targets = {}
+        rows = int(math.ceil(RUNWAY_LOOKUP_RADIUS_NM / (60.0 / RUNWAY_CELLS_PER_DEG)))
         for ident, region, la, lo, al in listed:
-            ci, cj = int(la * 10), int(lo * 10)
-            for di in (-1, 0, 1):
-                for dj in (-1, 0, 1):
-                    for p in cells.get((ci + di, cj + dj), ()):
+            ci, cj = _runway_cell(la, lo)
+            reach = _runway_cell_reach(la, RUNWAY_LOOKUP_RADIUS_NM)
+            columns = set((cj + dj) % _LON_CELLS for dj in range(-reach, reach + 1))
+            for di in range(-rows, rows + 1):
+                for col in columns:
+                    for p in cells.get((ci + di, col), ()):
                         if runways_mod.nm_apart(p[0], p[1], la, lo) <= RUNWAY_LOOKUP_RADIUS_NM:
                             targets[ident] = region
         saved = 0

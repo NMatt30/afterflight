@@ -950,6 +950,68 @@ def test_work_past_the_per_pass_limit_is_kept():
         look.close()
 
 
+def _asked_for(touchdown, airport):
+    """Which airports lookup_runways asks the sim about, for one landing and
+    one airport at the given positions - the real prefilter, a stand-in sim."""
+    d = tempfile.mkdtemp()
+    keep = (watcher.RUNWAYS_DIR, watcher.GameSimConnect)
+    asked = []
+
+    class FakeSim(object):
+        def open(self):
+            return True
+
+        def close(self):
+            pass
+
+        def facility_airports(self):
+            return [("XTST", "K2", airport[0], airport[1], 0.0)]
+
+        def facility_runways(self, ident, region):
+            asked.append(ident)
+            return runways.from_facility(ident, region, (airport[0], airport[1], 0.0, 0), [])
+
+    try:
+        watcher.RUNWAYS_DIR = d
+        watcher.GameSimConnect = FakeSim
+        watcher.lookup_runways([touchdown], keep_going=lambda: True)
+    finally:
+        watcher.RUNWAYS_DIR, watcher.GameSimConnect = keep
+        shutil.rmtree(d, ignore_errors=True)
+    return asked
+
+
+def test_the_runway_search_reaches_3_nm_at_every_latitude():
+    """SME review R6. The prefilter looked one 0.1 degree cell either way,
+    which is under 3 nm of longitude beyond about 60 degrees: an airport
+    2.19 nm from a landing at 80 N was never asked about."""
+    cases = [
+        ("80 N, three columns apart", (80.0, 10.09), (80.0, 10.30)),
+        ("80 S", (-80.0, 10.09), (-80.0, 10.30)),
+        ("65 N, two columns apart", (65.0, -17.999), (65.0, -18.11)),
+        ("across 0 degrees, both ways", (-0.001, -0.001), (0.03, 0.03)),
+        ("across the antimeridian", (0.0, 179.99), (0.0, -179.99)),
+        ("near the pole, far apart in longitude", (89.97, 10.0), (89.97, 100.0)),
+    ]
+    for name, td, ap in cases:
+        nm = runways.nm_apart(td[0], td[1], ap[0], ap[1])
+        assert nm <= watcher.RUNWAY_LOOKUP_RADIUS_NM, "fixture %s: %.2f nm" % (name, nm)
+        assert _asked_for(td, ap) == ["XTST"], (
+            "%s: an airport %.2f nm from the landing was never asked about" % (name, nm))
+    # and the exact distance still decides: just outside is not asked about
+    far = ((80.0, 10.09), (80.0, 10.41))
+    nm = runways.nm_apart(far[0][0], far[0][1], far[1][0], far[1][1])
+    assert nm > watcher.RUNWAY_LOOKUP_RADIUS_NM, "fixture: %.2f nm" % nm
+    assert _asked_for(*far) == [], "an airport %.2f nm away was asked about" % nm
+    # and in the same cell, where only the exact distance can say no
+    near_cell = ((0.0, 0.0), (0.06, 0.0))
+    assert watcher._runway_cell(*near_cell[0]) == watcher._runway_cell(*near_cell[1])
+    nm = runways.nm_apart(0.0, 0.0, 0.06, 0.0)
+    assert nm > watcher.RUNWAY_LOOKUP_RADIUS_NM, "fixture: %.2f nm" % nm
+    assert _asked_for(*near_cell) == [], (
+        "an airport %.2f nm away, in the landing's own cell, was asked about" % nm)
+
+
 def test_the_watcher_asks_the_sim_about_airplane_runways_only():
     assert watcher.measures_runway("Airplane", 90.0, "Test Jet")
     assert watcher.measures_runway("Airplane", 45.0, "Test Single")

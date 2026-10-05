@@ -537,6 +537,15 @@ touchdown located on a runway centreline to within 10 ft. A sortie signs the
 runway files near its own landings, so a runway cached later rebuilds that
 sortie and nothing else.
 
+**Which airports are near is measured in nautical miles, not grid cells.**
+84,000 airports are sorted into 0.1 degree cells so that only those near a
+landing are measured exactly. One cell either way is 6 nm of latitude
+anywhere, but 6 nm x cos(latitude) of longitude - under the 3 nm radius
+beyond about 60 degrees, so an airport 2.2 nm from a landing at 80 N was
+never asked about. The reach in longitude now follows the latitude, wraps
+across 180 degrees, and at the pole is every column; the exact distance
+still decides.
+
 **A landing's runway is known when a cached runway contains the touchdown,**
 not when a cached airport is near it. A heliport cached 2.5 nm from a landing
 once made that landing count as covered, and the airport it was really at was
