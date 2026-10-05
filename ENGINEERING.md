@@ -621,9 +621,21 @@ arrival is the touchdown match itself.
   quick turnaround kept the same runway end; a full stop that taxied back
   departed the reciprocal. No grade, passenger line or touchdown measurement
   moved.
-- **Not measured:** airport names ("Boeing Field") - the facility fields the
-  lookup reads carry the ident, not the name, and a name field would have to
-  be checked against a running sim first.
+- **Airport names** are a tooltip on the code, from the sim's facility data:
+  a definition of its own (`AIRPORT_NAME_FIELDS`), so a failure costs the
+  name and never the runways. Measured live before it was built: `NAME64`
+  arrives as one 64-byte airport record of plain text ending at the first
+  zero byte - and the bytes after that zero are leftover memory ("Zurich"
+  came back as `Zurich\0A\0...`), so the text is cut there. `NAME`, 32
+  bytes, gave the same text for nine airports; the longer field keeps names
+  like "Municipal Acoustics Center Madrid City Council" whole. About 37 ms an
+  airport. Names are short - "Vance Brand", "Pensacola Intl". They live in
+  `sessions/runways/_names.json`, never in the airport files, which are the
+  evidence landings are graded against and are not rewritten; every cached
+  airport is asked once, an airport with no name is recorded so it is not
+  asked again, and a request that fails is asked for at the next lookup.
+  The index carries `{ident: name}` for the airports the logbook uses,
+  read at every build, so a name arriving later rebuilds no flight.
 
 ---
 

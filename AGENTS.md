@@ -323,7 +323,10 @@ Data lives in `sessions/` and is **not** in git: flight tracks, clips, maps,
   Takeoffs are queued as well as landings: the same match names both ends of
   a leg, and the sortie signature folds in runway files near either. The
   airport list is held per sim connection (`sim_session_changed`), not
-  fetched per lookup; each lookup logs what it cost.
+  fetched per lookup; each lookup logs what it cost. **Airport names were
+  measured too:** `NAME64` is text ending at the first zero byte with
+  leftover memory after it, so cut there (`airport_name_from`). They are
+  kept in `sessions/runways/_names.json`, never in an airport file.
   **A landing's runway is known when a cached runway contains the touchdown**,
   not when a cached airport is near it: a heliport cached 2.5 nm from a
   landing once hid the airport it was really at from every later lookup.

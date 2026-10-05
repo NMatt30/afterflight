@@ -871,16 +871,29 @@
   // A bare coordinate is a field, a strip or somebody's pasture, and only
   // a real map knows which. Named points link too - the name came from
   // places.json, not from knowing anything about the place.
-  function placeLink(text, side) {
+  // The sim's name for an airport, by its code, or "". The builder carries
+  // only the names of airports the logbook uses.
+  function airportName(ident) {
+    var names = (state.index && state.index.airport_names) || {};
+    return (ident && names[ident]) || "";
+  }
+
+  // airport: the code behind text when the end is shown as an airport, so
+  // hovering it gives the airport's name.
+  function placeLink(text, side, airport) {
     var lat = side && side.lat, lon = side && side.lon;
+    var name = airportName(airport);
     if (typeof lat !== "number" || typeof lon !== "number") {
-      return document.createTextNode(text);
+      var plain = el("span", null, text);
+      if (name) plain.title = name;
+      return plain;
     }
     var a = el("a", "place", text);
     a.href = mapsPin(lat, lon);
     a.target = "_blank";
     a.rel = "noopener noreferrer";
-    a.title = "Look at " + text + " in Google Maps";
+    a.title = name ? name + " · click to look at it in Google Maps"
+                   : "Look at " + text + " in Google Maps";
     a.addEventListener("click", function (ev) { ev.stopPropagation(); });
     return a;
   }
@@ -1004,9 +1017,11 @@
     }
     var route = el("span", "route");
     var r = leg.route || {};
-    route.appendChild(placeLink(r.from || "—", leg.takeoff));
+    route.appendChild(placeLink(r.from || "—", leg.takeoff,
+      r.from_kind === "airport" && (leg.departure || {}).airport));
     route.appendChild(document.createTextNode("  →  "));
-    route.appendChild(placeLink(r.to || "—", leg.landing));
+    route.appendChild(placeLink(r.to || "—", leg.landing,
+      r.to_kind === "airport" && (leg.arrival || {}).airport));
     if (!r.from_named && !r.to_named) {
       route.classList.add("coords");
       route.title = "Not on a runway the sim describes. Add places.json to name these points";
@@ -1201,9 +1216,20 @@
     var who = el("span", "col who");
     who.appendChild(el("span", "t", s.aircraft || "unknown"));
     var rt = el("span", "sub route");
-    rt.textContent = (s.route_from || s.route_to)
-      ? (s.route_from || "—") + " → " + (s.route_to || "—")
-      : "no route recorded";
+    if (s.route_from || s.route_to) {
+      // Each end its own span, so an airport is named on hover.
+      var end = function (text, ident) {
+        var sp = el("span", null, text || "—");
+        var name = airportName(ident);
+        if (name) sp.title = name;
+        return sp;
+      };
+      rt.appendChild(end(s.route_from, s.route_from_airport));
+      rt.appendChild(document.createTextNode(" → "));
+      rt.appendChild(end(s.route_to, s.route_to_airport));
+    } else {
+      rt.textContent = "no route recorded";
+    }
     who.appendChild(rt);
     head.appendChild(who);
 

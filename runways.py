@@ -222,6 +222,40 @@ def from_facility(ident, region, airport, runways):
     }
 
 
+# Airport names, one file beside the airport files: {"schema", "names":
+# {ident: name}}. Kept apart so that adding a name never rewrites an airport's
+# runway file - those are the evidence landings are graded against, and are
+# never replaced automatically. load_airport refuses it - it has no ident or
+# runways - so it never enters the airport index.
+NAMES_FILE = "_names.json"
+NAMES_SCHEMA = 1
+
+
+def names_path(cache_dir):
+    return os.path.join(cache_dir, NAMES_FILE)
+
+
+def load_names(cache_dir, asked=False):
+    """{ident: name} for the airports whose names the sim has given, or {}.
+
+    With asked, also the airports it was asked about and gave no name for,
+    as "" - so they are not asked again."""
+    try:
+        with open(names_path(cache_dir), encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if not (isinstance(doc, dict) and doc.get("schema") == NAMES_SCHEMA
+            and isinstance(doc.get("names"), dict)):
+        return {}
+    return {str(k): str(v) for k, v in doc["names"].items()
+            if isinstance(v, str) and (asked or v.strip())}
+
+
+def names_doc(names):
+    return {"schema": NAMES_SCHEMA, "names": dict(sorted(names.items()))}
+
+
 def cache_path(cache_dir, ident):
     safe = "".join(ch for ch in str(ident) if ch.isalnum() or ch in "-_")
     return os.path.join(cache_dir, (safe or "unnamed") + ".json")

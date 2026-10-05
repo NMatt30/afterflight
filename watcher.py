@@ -408,6 +408,35 @@ FACILITY_FIELDS = (
     "OPEN SECONDARY_THRESHOLD", "LENGTH", "CLOSE SECONDARY_THRESHOLD",
     "CLOSE RUNWAY", "CLOSE AIRPORT")
 
+# An airport's name, in a definition of its own so that a failure costs the
+# name and never the runways. Measured against a running sim, not taken from
+# the SDK: NAME64 arrives as one FACILITY_DATA record of 64 bytes (type 0,
+# the airport), plain text ending at the first zero byte, and the bytes after
+# that zero are whatever was in memory - "Zurich" came back as
+# b"Zurich\0A\0..." - so the text is cut there. NAME, 32 bytes, gave the same
+# text for each of nine airports tried; the longer field is used so a long
+# name is not cut. Names are short: "Vance Brand", "Pensacola Intl".
+AIRPORT_NAME_DEFINE_ID = 7702
+AIRPORT_NAME_FIELDS = ("OPEN AIRPORT", "NAME64", "CLOSE AIRPORT")
+AIRPORT_NAME_BYTES = 64
+# Names asked for in one pass. Measured at about 37 ms each, so 200 is some
+# seconds of parked time; the runway limit (60) left a backlog for the next
+# session.
+AIRPORT_NAMES_MAX = 200
+
+
+def airport_name_from(data):
+    """The name in a NAME64 record, or "" for none.
+
+    A localisation key ("TT:...") is not a name a person can read; it has not
+    been seen, and is refused rather than shown if it ever is."""
+    text = bytes(data[:AIRPORT_NAME_BYTES]).split(b"\0")[0]
+    name = text.decode("utf-8", "replace").strip()
+    if name.startswith("TT:"):
+        return ""
+    return name
+
+
 # The real camera struct is 84 bytes. CameraSet's packet is 0x68 = 104 = a
 # 16-byte header + an 84-byte struct + a 4-byte mask, and CameraGet replies with
 # exactly 84 bytes. The old 96-byte ctypes struct was rejected by the sim with
@@ -4304,6 +4333,39 @@ class GameSimConnect:
             recs.append(tuple(rws[uniq]) + (disp[0], disp[1]))
         return runways_mod.from_facility(ident, region, airport, recs)
 
+    def facility_name(self, ident, region, timeout=RUNWAY_LOOKUP_TIMEOUT):
+        """One airport's name: the text, "" when the sim has none, or None
+        when it could not be asked or did not answer. Read-only."""
+        add = self.fns.get("SimConnect_AddToFacilityDefinition")
+        req = self.fns.get("SimConnect_RequestFacilityData")
+        if add is None or req is None:
+            return None
+        if not getattr(self, "_name_defined", False):
+            for field in AIRPORT_NAME_FIELDS:
+                if not _is_hr(add(self._h(), AIRPORT_NAME_DEFINE_ID, field.encode()), 0):
+                    return None
+            self._name_defined = True
+        rid = self.new_request_id()
+        with self._lock:
+            self._fac[rid] = {"parts": [], "done": False}
+        if not _is_hr(req(self._h(), AIRPORT_NAME_DEFINE_ID, rid,
+                          str(ident).encode("ascii", "replace"),
+                          str(region).encode("ascii", "replace")), 0):
+            with self._lock:
+                self._fac.pop(rid, None)
+            return None
+        ent = self._fac_wait(rid, lambda e: e["done"], timeout)
+        if ent is None:
+            return None
+        for raw in ent["parts"]:
+            if len(raw) < 40 + AIRPORT_NAME_BYTES:
+                continue
+            # The same record header facility_runways reads: type at 24,
+            # 0 for the airport itself; the data from 40.
+            if struct.unpack_from("<I", raw, 24)[0] == 0:
+                return airport_name_from(raw[40:])
+        return ""
+
     def wait_object_id(self, request_id, timeout=4.0):
         t0 = time.time()
         while time.time() - t0 < timeout:
@@ -6169,6 +6231,61 @@ def _runway_cell_reach(lat, radius_nm):
     return min(_LON_CELLS // 2, max(1, int(math.ceil(radius_nm / nm_per_column))))
 
 
+def _airports_unnamed():
+    """Idents of cached airports the sim has not yet been asked to name."""
+    import runways as runways_mod
+    asked = runways_mod.load_names(RUNWAYS_DIR, asked=True)
+    return sorted(i for i in runways_mod.load_index(RUNWAYS_DIR) if i not in asked)
+
+
+def _fill_airport_names(connection, keep_going):
+    """Never at the runways' expense: any failure here is a note in the log,
+    not an exception through the lookup that would lose its landings."""
+    try:
+        return _fill_airport_names_unguarded(connection, keep_going)
+    except Exception as e:
+        return {"named": 0, "note": "airport names failed %r" % (e,)}
+
+
+def _fill_airport_names_unguarded(connection, keep_going):
+    """Ask the sim to name every cached airport not yet asked about, up to
+    AIRPORT_NAMES_MAX a pass. connection() gives the open lookup connection
+    or None. Returns {named, note}. Stops when the aircraft moves, as the
+    runway requests do; a failed request leaves that airport for next time."""
+    import runways as runways_mod
+    todo = _airports_unnamed()
+    if not todo:
+        return {"named": 0, "note": "every airport named"}
+    index = runways_mod.load_index(RUNWAYS_DIR)
+    got, ms, why = {}, [], ""
+    for ident in todo[:AIRPORT_NAMES_MAX]:
+        if not keep_going():
+            why = ", stopped: the aircraft moved"
+            break
+        gsc = connection()
+        if gsc is None:
+            why = ", stopped: SimConnect open failed"
+            break
+        doc = runways_mod.load_airport(index[ident][2]) or {}
+        t = time.perf_counter()
+        name = gsc.facility_name(ident, doc.get("region") or "")
+        ms.append((time.perf_counter() - t) * 1000.0)
+        if name is None:
+            why = ", %s did not answer" % ident
+            continue
+        got[ident] = name
+    if got:
+        with _runway_lock:
+            names = runways_mod.load_names(RUNWAYS_DIR, asked=True)
+            names.update(got)
+            os.makedirs(RUNWAYS_DIR, exist_ok=True)
+            persistence.atomic_json(runways_mod.names_path(RUNWAYS_DIR),
+                                    runways_mod.names_doc(names))
+    named = sum(1 for v in got.values() if v)
+    return {"named": named,
+            "note": "%d airport name(s) in %.0f ms%s" % (named, sum(ms), why)}
+
+
 def lookup_runways(points, backfill=False, keep_going=None):
     """Cache the runways of every airport near these points that is not cached.
 
@@ -6205,7 +6322,7 @@ def lookup_runways(points, backfill=False, keep_going=None):
     want = uncovered(points)
     if backfill:
         want += uncovered(_runway_points_on_record())
-    if not want:
+    if not want and not (backfill and _airports_unnamed()):
         return {"status": "done", "saved": 0}
     if not keep_going():
         return {"status": "cancelled", "saved": 0}
@@ -6225,6 +6342,12 @@ def lookup_runways(points, backfill=False, keep_going=None):
         return gsc
 
     try:
+        if not want:
+            # Nothing to find, but airports cached before names were asked
+            # for still want theirs: once a session, with the backfill.
+            named = _fill_airport_names(connection, keep_going)
+            log("runways: nothing to look up; %s" % named["note"])
+            return {"status": "done", "saved": 0, "named": named["named"]}
         # Timed, so the log says what the list costs: whether keeping a copy
         # between sim sessions would be worth its staleness is that number.
         session, listed = held_airport_list()
@@ -6285,12 +6408,17 @@ def lookup_runways(points, backfill=False, keep_going=None):
             os.makedirs(RUNWAYS_DIR, exist_ok=True)
             persistence.atomic_json(runways_mod.cache_path(RUNWAYS_DIR, ident), doc)
             saved += 1
-        log("runways: %d point(s), %d airport(s) nearby, %d cached, %s; %s; %s"
+        # Names last, and never at the runways' expense: they are tooltips,
+        # so their outcome does not decide whether a landing is kept.
+        named = ({"named": 0, "note": "names not asked for"}
+                 if status == "cancelled" else
+                 _fill_airport_names(connection, keep_going))
+        log("runways: %d point(s), %d airport(s) nearby, %d cached, %s; %s; %s; %s"
             % (len(want), len(targets), saved, status, list_note,
                ("%d runway request(s) in %.0f ms, slowest %.0f ms"
                 % (len(asked_ms), sum(asked_ms), max(asked_ms)))
-               if asked_ms else "no runway requests"))
-        return {"status": status, "saved": saved}
+               if asked_ms else "no runway requests", named["note"]))
+        return {"status": status, "saved": saved, "named": named["named"]}
     finally:
         if gsc is not None:
             gsc.close()
@@ -6337,7 +6465,7 @@ def start_runway_lookup():
         if status == "cancelled":
             log("runways: the aircraft moved; %d landing(s) kept for the next "
                 "parked moment" % len(points))
-        if res.get("saved"):
+        if res.get("saved") or res.get("named"):
             schedule_logbook_rebuild(reason="runways cached", bake_maps=False)
 
     t = threading.Thread(target=work, daemon=True, name="runway-lookup")

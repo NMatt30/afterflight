@@ -1002,6 +1002,23 @@ def takeoff_runway(clip_id, track, t_off, aircraft=None, category=None,
     return None
 
 
+def airport_names(sorties):
+    """{ident: name} for every airport a leg in the logbook departed from or
+    arrived at, where the sim has given its name. Read at every build and
+    carried in the index, not in the sorties: a name arriving later is a
+    tooltip, and must not rebuild a single flight."""
+    names = runways.load_names(runways_dir())
+    if not names:
+        return {}
+    used = set()
+    for s in sorties:
+        for l in s.get("legs") or []:
+            for end in (l.get("departure"), l.get("arrival")):
+                if end and end.get("airport"):
+                    used.add(end["airport"])
+    return {i: names[i] for i in sorted(used) if i in names}
+
+
 def runway_end(hit):
     """{airport, runway} of a matched runway, or None."""
     if not hit or not hit.get("airport"):
@@ -1545,12 +1562,20 @@ def summarize_sortie(sortie):
     started = sortie.get("started_at") or ""
     first_from = None
     last_to = None
+    # The airport behind each end of the row, when it is shown as one - so
+    # the page can name it on hover.
+    from_airport = None
+    to_airport = None
     for l in legs:
         r = l.get("route") or {}
         if first_from is None and r.get("from"):
             first_from = r.get("from")
+            if r.get("from_kind") == "airport":
+                from_airport = (l.get("departure") or {}).get("airport")
         if r.get("to"):
             last_to = r.get("to")
+            to_airport = ((l.get("arrival") or {}).get("airport")
+                          if r.get("to_kind") == "airport" else None)
     # Every named end of every leg - airports with their runways, and place
     # names - so a search finds a sortie by a stop in the middle as well as
     # by where it began and ended. Coordinates are not names.
@@ -1586,6 +1611,8 @@ def summarize_sortie(sortie):
         "scores": scores,
         "route_from": first_from,
         "route_to": last_to,
+        "route_from_airport": from_airport,
+        "route_to_airport": to_airport,
         "places": places_named,
         "edited": bool(sortie.get("edited")),
         "prefs": sortie.get("prefs") or {"rating": True, "passenger": True},
@@ -2329,6 +2356,8 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
         # Every flight, but only what filtering and search need. The rows
         # themselves live in the month files and are fetched when opened.
         "find": find_rows(summaries),
+        # Airport names for the page's tooltips: {ident: name}.
+        "airport_names": airport_names(sorties_out),
         "hidden": hidden_out,
     }
     atomic_write_json(LOGBOOK_JSON, doc)

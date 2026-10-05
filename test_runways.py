@@ -170,6 +170,169 @@ def test_runways_are_read_in_the_measured_layout():
     assert conn.added == list(watcher.FACILITY_FIELDS), "the definition sent differs"
 
 
+def _name_record(text_bytes):
+    """NAME64 as the sim sent it, measured: the airport record (type 0), 64
+    bytes of text ending at a zero byte, then whatever was in memory."""
+    data = (text_bytes + b"\0" + b"A\0\x88\x95\x89;\xf6\x7f\xb7\xd9")[:64].ljust(64, b"\xb7")
+    return _facility(1, 0, 0, data)
+
+
+def test_an_airport_name_is_read_in_the_measured_layout():
+    conn = _FakeConn(runway_parts=[_name_record(b"Zurich")])
+    assert conn.g.facility_name("LSZH", "LS", timeout=1.0) == "Zurich", (
+        "the bytes after the name's zero were read as part of it")
+    assert conn.added == list(watcher.AIRPORT_NAME_FIELDS)
+    long = b"Municipal Acoustics Center Madrid City Council"
+    assert _FakeConn(runway_parts=[_name_record(long)]).g.facility_name(
+        "X", "", timeout=1.0) == long.decode()
+    full = b"N" * 64                                   # no zero at all
+    assert _FakeConn(runway_parts=[_facility(1, 0, 0, full)]).g.facility_name(
+        "X", "", timeout=1.0) == "N" * 64
+    assert watcher.airport_name_from(b"TT:AIRPORT.KXXX.NAME\0".ljust(64, b"\0")) == "", (
+        "a localisation key was shown as a name")
+    # A record that is not the airport's, or too short, is no name.
+    assert _FakeConn(runway_parts=[_facility(2, 1, 1, b"Runway".ljust(64, b"\0"))]).g.facility_name(
+        "X", "", timeout=1.0) == ""
+
+
+def test_names_are_asked_for_once_and_kept_beside_the_runways():
+    """Every cached airport is named once - the ones cached before names
+    were asked for too - in a file of its own: the airport files, the
+    evidence landings are graded against, are not rewritten."""
+    look = Lookup()
+    try:
+        look.run()
+        assert sorted(look.named) == ["KAAA", "KBBB"], look.named
+        files = {n: os.path.getmtime(os.path.join(look.dir, n))
+                 for n in os.listdir(look.dir) if not n.startswith("_")}
+        assert runways.load_names(look.dir) == {"KAAA": "Name of KAAA", "KBBB": "Name of KBBB"}
+        assert set(runways.load_index(look.dir)) == {"KAAA", "KBBB"}, (
+            "the names file was read as an airport")
+        assert look.rebuilds, "names arrived and the logbook was not rebuilt"
+
+        # Another session: the backfill runs again, and asks nobody twice.
+        look.named[:] = []
+        watcher._runway_state.update(backfilled=False)
+        look.run()
+        assert look.named == [], "named again: %r" % look.named
+        assert files == {n: os.path.getmtime(os.path.join(look.dir, n))
+                         for n in os.listdir(look.dir) if not n.startswith("_")}, (
+            "an airport file was rewritten")
+    finally:
+        look.close()
+
+
+def test_an_airport_cached_before_names_gets_one_at_the_backfill():
+    """Nothing left to look up, but an airport with no name yet: the
+    once-a-session backfill asks for it alone."""
+    look = Lookup()
+    try:
+        look.run()
+        os.remove(runways.names_path(look.dir))
+        look.named[:] = []
+        look.rebuilds[:] = []
+        watcher._runway_state.update(backfilled=False)
+        look.run()
+        assert sorted(look.named) == ["KAAA", "KBBB"], look.named
+        assert look.lists == 1, "the airport list was asked for with nothing to look up"
+        assert look.rebuilds, "names arrived and the logbook was not rebuilt"
+    finally:
+        look.close()
+
+
+def test_a_name_that_fails_is_asked_for_next_time_and_costs_no_landing():
+    look = Lookup()
+    try:
+        look.name_for = lambda ident: None if ident == "KBBB" else "Name of " + ident
+        look.run()
+        assert watcher._runway_queue == [], "a failed name kept the landing queued"
+        assert runways.load_names(look.dir, asked=True) == {"KAAA": "Name of KAAA"}
+        look.name_for = lambda ident: "Name of " + ident
+        look.named[:] = []
+        watcher._runway_state.update(backfilled=False)
+        look.run()
+        assert look.named == ["KBBB"], look.named
+    finally:
+        look.close()
+
+
+def test_names_breaking_never_costs_the_runways():
+    """Names are tooltips. A name request that raises leaves the runways
+    saved and the landing done, with a note in the log."""
+    look = Lookup()
+    try:
+        def boom(ident):
+            raise RuntimeError("names broke")
+        look.name_for = boom
+        look.run()
+        assert set(runways.load_index(look.dir)) == {"KAAA", "KBBB"}
+        assert watcher._runway_queue == [] and watcher._runway_state["backfilled"], (
+            "a names failure cost the landing its finished lookup")
+    finally:
+        look.close()
+
+
+def test_no_name_is_asked_for_once_the_aircraft_moves():
+    look = Lookup()
+    try:
+        # Moving during the runway requests: no names at all.
+        look.on_request = lambda ident: look.parked(False)
+        look.run()
+        assert look.named == [], "named %r while moving" % look.named
+        # Moving during the names: the one in hand, and no more.
+        look.on_request = None
+        look.parked(True)
+        watcher._runway_state.update(retry_after=0.0)
+
+        def then_move(ident):
+            look.parked(False)
+            return "Name of " + ident
+        look.name_for = then_move
+        look.run()
+        assert len(look.named) == 1, "named %r after the aircraft moved" % look.named
+    finally:
+        look.close()
+
+
+def test_the_logbook_carries_the_names_of_the_airports_it_uses():
+    """The page's tooltips read {ident: name} from the index. Only airports
+    a leg used, and a name arriving later rebuilds no flight."""
+    t = Tree()
+    try:
+        _flight(t, 1800.0)
+        t.runway()
+        _departure_runway(t)
+        t.runway("KFAR", lat=LAT0 + 2.0)
+        _leg(t)
+        doc = _logbook(t)
+        assert doc.get("airport_names") == {}, doc.get("airport_names")
+        # The row the page draws: the fixture's 1970 dates make no month
+        # file, so the summary is taken from the flight's own detail.
+        detail = json.load(open(os.path.join(t.dir, "detail", FID + ".json"), encoding="utf-8"))
+        row = logbook_build.summarize_sortie(detail)
+        assert (row["route_from_airport"], row["route_to_airport"]) == ("KDEP", "KTST"), row
+
+        def sig():
+            flights = logbook_build.scan_flights()
+            group = logbook_build.group_sorties(flights)[0]
+            events = {}
+            for line in open(logbook_build.EVENTS_JSONL, encoding="utf-8"):
+                e = json.loads(line)
+                events.setdefault(e["flight_id"], []).append(e)
+            return logbook_build.sortie_signature(group, "g", events, FID, None, {})
+        before = sig()
+        d = os.path.join(t.dir, "runways")
+        with open(runways.names_path(d), "w", encoding="utf-8") as f:
+            json.dump(runways.names_doc({"KDEP": "Departure Field", "KTST": "Test Intl",
+                                         "KFAR": "Far Away", "KNONE": ""}), f)
+        assert sig() == before, "a name rebuilt the flight"
+        logbook_build.build(bake_maps=False, allow_network=False, force=False)
+        assert _logbook(t)["airport_names"] == {"KDEP": "Departure Field", "KTST": "Test Intl"}, (
+            _logbook(t)["airport_names"])
+    finally:
+        t.close()
+
+
 def test_nothing_is_sent_to_an_aircraft():
     """The lookup is facility data only; it must never reach for an object id."""
     import inspect
@@ -803,6 +966,8 @@ class Lookup(object):
         self.lists = 0
         self.on_request = None
         self.on_list = None
+        self.named = []
+        self.name_for = lambda ident: "Name of " + ident
         # A list held from an earlier test's "connection" would answer for
         # this one.
         watcher.sim_session_changed()
@@ -832,6 +997,10 @@ class Lookup(object):
                     look.on_list()
                 return [(ident, "K2", LAT0 + look.far + 0.01 * i, LON0, 0.0)
                         for i, ident in enumerate(look.airports)]
+
+            def facility_name(self, ident, region):
+                look.named.append(ident)
+                return look.name_for(ident)
 
             def facility_runways(self, ident, region):
                 look.asked.append(ident)
@@ -1024,6 +1193,9 @@ def _asked_for(touchdown, airport):
 
         def facility_airports(self):
             return [("XTST", "K2", airport[0], airport[1], 0.0)]
+
+        def facility_name(self, ident, region):
+            return ""
 
         def facility_runways(self, ident, region):
             asked.append(ident)

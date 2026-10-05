@@ -74,8 +74,9 @@ Helicopters are never graded on either.
 **Names the airport and runway at each end.** A leg that departs from or
 lands on a runway the sim describes reads `KBFI 14R → KSEA 16L`; one that
 starts or ends anywhere else keeps its coordinates, or the name you gave the
-place in `places.json`. The search finds a flight by any airport or runway it
-used, including a stop in the middle. Airplanes only for now.
+place in `places.json`. Hover over an airport code to see the airport's
+name. The search finds a flight by any airport or runway it used, including
+a stop in the middle. Airplanes only for now.
 
 **Writes a passenger's note.** A short paragraph, in the voice of someone
 sitting in the back, about what the flight felt like. Templates and a hash of
