@@ -40,7 +40,7 @@
     place: null,       // {id, top}: the flight a reload puts back on screen
     placeUntil: 0,     // ...until then, or until the reader scrolls
     legTab: {},        // "sortie_id:seq" -> "grading"; absent is Overview
-    buildSeq: null,    // completed-build counter as of our last load()
+    buildSeq: null,    // "pid:counter" of the last completed build we loaded
     lastStateAt: 0,    // when /state last answered, for the banner watchdog
     sawBuild: false    // a rebuild was seen running while this page was open
   };
@@ -1850,7 +1850,7 @@
     if (Date.now() - state.lastStateAt > BANNER_STALE_MS) bar.hidden = true;
   }
 
-  function syncRebuild(lb) {
+  function syncRebuild(lb, pid) {
     var bar = $("#rebuilding");
     // No block at all means no build we can see. Returning early here left
     // the banner up permanently against an older or partial /state.
@@ -1870,9 +1870,16 @@
     bar.hidden = true;
     // First sighting: adopt the counter without reloading, since load()
     // has just run anyway.
+    // The counter is per watcher process and starts again at a restart, so
+    // it is read with the process id. Alone, a page open across a restart
+    // held 1 from the old watcher's startup build, saw 1 again once the new
+    // watcher's had finished, and kept showing month files from before it -
+    // flights whose rows had no airports while their legs, fetched fresh on
+    // opening, did.
+    var key = (pid == null ? "" : pid) + ":" + lb.seq;
     var first = state.buildSeq === null;
-    var advanced = !first && lb.seq !== state.buildSeq;
-    state.buildSeq = lb.seq;
+    var advanced = !first && key !== state.buildSeq;
+    state.buildSeq = key;
     // sawBuild covers the ordinary case a seq comparison misses: the page
     // was open before the build started, so there was no earlier counter
     // to compare against, and the reload would never fire.
@@ -2066,7 +2073,7 @@
       // be in, so a held camera keeps its Stop no matter which branch drew it.
       syncStopButtons(rp);
       syncInFlight(j);
-      nextPoll = syncRebuild(j.logbook) ? POLL_MS_BUILD
+      nextPoll = syncRebuild(j.logbook, j.pid) ? POLL_MS_BUILD
                : (rp.active ? POLL_MS_REPLAY : POLL_MS);
       if (!j.connected) {
         syncPauseButtons(false, false);
