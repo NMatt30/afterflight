@@ -218,8 +218,10 @@ CAMERA_MASK_ALL_TARGETED = (
     CAMERA_MASK_POSITION | CAMERA_MASK_TARGETED | CAMERA_MASK_FOV | CAMERA_MASK_REFERENTIAL
 )
 # Camera modes.
-#   place  - put the camera at the event once, then do not touch it again, so
-#            the sim's own camera controls (your control pad) drive it.
+#   place  - put the camera at the event and leave it there; only the aim
+#            follows the ghost. (It was meant to hand the camera to the sim's
+#            own controls - a control pad - but the sim does not allow that:
+#            see CAMERA_ENABLE_INTERACTION.)
 #   follow - re-aim every frame, a locked chase. Smooth, but it overwrites any
 #            input you give 20 times a second.
 CHASE_MODE_PLACE = "place"
@@ -460,10 +462,11 @@ CAMERA_MASK_TARGET_ONLY = 0x04
 
 # CameraEnableFlag / CameraDisableFlag bits. Sweeping 0-7 against a live sim,
 # 1 and 2 are accepted and 0 and 4 are refused with exception 46, which matches
-# the two documented flags. INTERACTION is the one that lets a control pad move
+# the two documented flags. INTERACTION was expected to let a control pad move
 # the camera we placed; ABOVE_GROUND keeps it from sinking through terrain.
-# Off: enabling interaction snaps the camera back to the aircraft (see
-# camera_acquire). Left here so the finding is not lost.
+# Tested in the sim, interaction gives a control pad nothing and snaps the
+# camera back to the aircraft (see camera_acquire), so it is off; neither flag
+# is enabled. Left here so the finding is not lost.
 CAMERA_ENABLE_INTERACTION = False
 CAMERA_FLAG_INTERACTION = 0x01
 CAMERA_FLAG_ABOVE_GROUND = 0x02

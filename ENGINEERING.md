@@ -316,7 +316,7 @@ transports.
 | Touchdown | full marks to 60 fpm, zero at 600 | full marks 100 to 250 fpm, less either side, zero at 600 |
 | Touchdown bank | full marks 4°, zero 14° | same - uncalibrated |
 | Rollout slide | full marks 0.15 g, zero 0.55 g | same - uncalibrated |
-| Float, touchdown spot | the published zones - see Where on the runway | same |
+| Float, touchdown spot | published figures plus AfterFlight's float allowance - see Where on the runway | same |
 
 A steepest-turn band was once narrowed because the wide one gave full marks
 to every flight in the logbook. Those flights had simply never banked hard
@@ -954,20 +954,22 @@ that sorts chronologically as text.
 
 ## Clip windows
 
-60 s per clip, weighted the way each event actually reads:
+By default, 60 s per clip, weighted the way each event actually reads. Both
+windows are settings (Settings, Clip windows):
 
 | Clip | Before | After |
 |---|---|---|
 | Takeoff | 5 s | 55 s |
 | Landing | 55 s | 5 s |
 
-The ring buffer holds **60 s** at 5 Hz (316 samples) - it has to cover the
-landing's 55 s lookback, or the start of the approach has already fallen out of
-the buffer by the time the touchdown is detected. This widens the doc's 45 s
-buffer in section 6.
+The ring buffer holds **60 s** at the 10 Hz capture rate (`BUFFER_MAX`, 616
+samples) - it has to cover the landing's lookback, or the start of the
+approach has already fallen out of the buffer by the time the touchdown is
+detected. A setting that asks for a longer lookback grows the buffer to match
+(`resize_live_buffer`), with no restart.
 
-Clips already on disk keep the length they were recorded at (the old 25 s / 30 s
-windows); the new windows apply to everything recorded from now on.
+*History:* the first clips were 25 s and 30 s, at a lower sample rate. Clips
+already on disk keep the length and rate they were recorded at.
 
 ### The ghost used to jump at the touchdown
 
@@ -999,7 +1001,8 @@ full sample() cost: 0.649 s  -> 1.54 Hz ceiling   (13 vars x ~50 ms)
 ```
 
 The `_time=200` cache softens this to a measured ~0.38 s per clip sample
-(~2.6 Hz), which is why clips carry roughly half the points section 6 assumes.
+(~2.6 Hz), which is why clips carried roughly half the points the original
+design assumed.
 `PLANE_HEADING_DEGREES_MAGNETIC` was being fetched and never read, and is gone.
 
 The real fix is one SimConnect data definition fetched as a single struct
@@ -1133,9 +1136,10 @@ Rates: **42.4 Hz pushed** against a legacy ceiling of **1.67 Hz**, and
 `latest()` costs nothing measurable. Shadow mode also logged `all fields agree`
 across ~10,000 pushes before the switch.
 
-`SAMPLER_MODE` is now `fast`. The detect loop measures **4.99 Hz** sustained -
-the 5 Hz that section 6 specifies, up from the 2.84 Hz the clips were actually
-recording at. `/state` reports `sampler.mode` and `sampler.sample_hz`, so the
+`SAMPLER_MODE` is now `fast`. The detect loop then measured **4.99 Hz**
+sustained - the 5 Hz the original design specified, up from the 2.84 Hz the
+clips were actually recording at. *(Capture has since moved to 10 Hz: see
+"Capture is now 10 Hz".)* `/state` reports `sampler.mode` and `sampler.sample_hz`, so the
 rate can be checked at any time without flying.
 
 **On the native connection - the default since 0.7.0 - there is no legacy
@@ -1207,14 +1211,14 @@ Starting another replay tears the previous one down first.
 
 ## Performance
 
-Unchanged from the budget: detect 1 Hz, buffer 5 Hz / 45 s, watcher
-Below Normal. The logbook rebuild is the only addition — ~0.4 s for the current
-tree, debounced 20 s, on a background thread, and it never runs during a clip
-window.
+Detect work about 1 Hz, watcher Below Normal - the hard rule in AGENTS.md.
+Capture runs at 10 Hz into a 60 s buffer (see "Capture is now 10 Hz"); the
+original budget was 5 Hz and 45 s. The logbook rebuild runs on a background
+thread, debounced, and never during a clip window.
 
-The tray opens your **default browser** rather than embedding one.  budgets
-no Chromium compositing in VR and  lists a left-open Chromium as a risk, so
-there is no browser to leave open by accident.
+The tray opens your **default browser** rather than embedding one. The
+original design budgeted no Chromium compositing in VR and listed a left-open
+Chromium as a risk, so there is no browser to leave open by accident.
 
 The UI used to tell you to close the tab before flying in VR. That was inherited
 caution about an embedded browser, not a measured property of this page, and it
@@ -1266,22 +1270,27 @@ handed back when the clip ends or you press Stop.
 
 ### Camera modes
 
+*History, superseded where marked. The current behavior: the camera bar's
+**Follow the ghost** box, on by default (`chase_follow`), travels with the
+aircraft; off, the camera is planted at the event and only its aim follows
+(see "Place mode is a tripod" below). Distance, Height and Orbit re-plant it
+live. A control pad cannot move it (see "A control pad cannot move the placed
+camera").*
+
 3. **The replay loop was re-aiming the camera 20 times a second.** Even once
-   acquire worked, any input you gave was overwritten within 50 ms. There are
-   now two modes, selected in the camera bar:
+   acquire worked, any input you gave was overwritten within 50 ms. Two modes
+   were added, selected in the camera bar:
 
    | Mode | Behavior |
    |---|---|
-   | **Place & let go** (default) | One `CameraSet` puts the camera at the event, then the watcher does not touch it again — the sim's own camera controls, i.e. your control pad, own it. |
-   | **Locked follow** | The old behavior: re-aims every frame. Smooth, but it fights any input. |
+   | **Place & let go** (then the default) | One `CameraSet` puts the camera at the event, then the watcher does not touch it again - meant to leave it to the sim's own camera controls. *Superseded:* the sim gives a control pad no control of a camera an add-on holds, and place mode now re-aims every frame as a tripod. |
+   | **Locked follow** | Re-aims every frame. Now the default, as **Follow the ghost**. |
 
    `POST /replay/recenter` (the **Recenter on ghost** button) re-places the
-   camera on the ghost once, for when you have flown the view somewhere else
-   and want to get back.
+   camera on the ghost once, for when the shot has lost it.
 
-   Moving Distance / Height / Orbit also re-places the camera once, so the
-   sliders now set the *initial vantage* rather than driving a live chase.
-   Defaults are 45 m back, 15 m up.
+   Moving Distance / Height / Orbit re-places the camera. Defaults are 45 m
+   back, 15 m up.
 
 4. **The camera struct was the wrong size, so the sim rejected every
    `CameraSet`.** This was the real reason nothing ever moved, and why fixes
@@ -1450,11 +1459,11 @@ SimConnect_CameraEnableFlag(HANDLE, DWORD flag);
 ```
 
 Sweeping 0-7 against a live sim: 1 and 2 are accepted, 0 and 4 are refused with
-exception 46 - matching the two documented flags. The watcher now enables both
-right after acquiring:
+exception 46 - matching the two documented flags. The watcher once enabled both
+right after acquiring; it now enables neither:
 
-- `CAMERA_FLAG_INTERACTION` (1) - the sim's own camera controls, and therefore a
-  control pad, can move the camera we placed
+- `CAMERA_FLAG_INTERACTION` (1) - meant to let the sim's own camera controls,
+  and therefore a control pad, move the camera we placed
 - `CAMERA_FLAG_ABOVE_GROUND` (2) - keeps it from sinking through terrain
 
 **This does not give a control pad control of the camera.** Tested in the sim:
@@ -1470,6 +1479,8 @@ So articulation is the Distance / Height / Orbit knobs in the camera bar, which
 re-plant the camera live during a replay.
 
 ### Lock to ghost
+
+*The box is now labelled **Follow the ghost**, and is on by default.*
 
 **Lock to ghost** in the camera bar holds the vantage you have set up as the
 ghost moves, instead of planting the camera and letting the ghost fly out of
@@ -1771,9 +1782,11 @@ measurement — **livery third, before the tail number**. The other order return
 
 A clip may carry no livery. Playback then borrows
 the livery of the aircraft loaded right now, but only when it is the same
-variant the clip was flown in, so it cannot guess across aircraft. The UI's
-**Livery** field covers what that cannot. Every replay reports the livery used
-and its source (`clip`, `current aircraft`, or `typed`).
+variant the clip was flown in, so it cannot guess across aircraft; failing
+that, the sim picks its default. There is no way to type one: the UI once had
+a **Livery** field, removed because a livery chosen by hand can be wrong while
+the recording already knows. Every replay reports the livery used and its
+source (`clip` or `current aircraft`).
 
 ## The EFB package
 

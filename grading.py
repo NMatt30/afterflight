@@ -1464,7 +1464,7 @@ FIXED_WING = {
 FIXED_WING.update(WING_WORDS)
 FIXED_WING["phase_sources"] = WING_SOURCES_TRANSPORT
 # Same bands as the light profile, which is a placeholder and is labelled one:
-# no transport landing has ever been recorded here, and a jet has far
+# no transport-category source has been found for them, and a jet has far
 # less bank available before a pod or a tip touches. Narrowing it without a
 # source would be inventing a number.
 FIXED_WING["alignment"] = True
@@ -1572,7 +1572,8 @@ def _unclassified():
 #   bank - FAA Airplane Flying Handbook calls a turn shallow below about 20
 #     degrees and medium from 20 to 45, and says the turn to final should not
 #     exceed a medium bank. Full marks for an unhurried shallow turn, zero at
-#     30, which is the steepest a light airplane should see in a pattern.
+#     45, the top of a medium bank. (Zero was once at 30, which marked down
+#     a correct pattern turn.)
 #   gate - GA stabilized approach guidance puts a normal descent at 500 to
 #     1000 fpm with sink not to exceed 1000, stabilized by 500 ft AGL in VMC.
 #     A three degree path at 70 kt is about 370 fpm, so full marks at 400 and

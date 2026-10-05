@@ -477,7 +477,8 @@ publishes nothing - the zip goes on the GitHub release by hand, once checked.
 
 1. `py -3 test_safety.py` passes. If you changed something it covers,
    say why the invariant still holds.
-2. Both self-tests pass, and everything compiles.
+2. Every test file and the offline self-tests listed above pass, and
+   everything compiles.
 3. A full rebuild produces the same grades for existing legs, unless changing
    grades is the point — and if it is, say which legs moved and why.
 4. Anything user-visible was checked in a browser, not only in the DOM.

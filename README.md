@@ -497,9 +497,10 @@ handle write. **Watched in the sim on a Vision Jet: the gear stays down
 through the landing.** Same shape as the flaps fix, and confirmed the same
 way - by looking, not by S_OK.
 
-Whether a control pad actually moves the placed camera is confirmed only as far
-as the API goes (the flag is accepted and interaction is enabled); it still
-wants a look in the sim.
+A control pad cannot move the replay camera. Tested in the sim: the sim
+accepts the interaction flag, but a camera an add-on holds does not answer the
+pad, and handing it back snaps the view to your aircraft. The camera is moved
+with the Distance, Height and Orbit knobs in the camera bar instead.
 
 Live clip capture and replay have been exercised against the sim.
 
