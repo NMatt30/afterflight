@@ -928,8 +928,9 @@ def test_a_landing_tells_the_tablet_how_it_felt_on_its_own_scale():
 
 
 def test_a_takeoff_and_a_landing_each_ask_for_their_runways():
-    """Both ends of a leg are named from the runway they were on, so both are
-    queued for the parked lookup - an airplane's, never a helicopter's."""
+    """Both ends of a leg are named from where they were - a runway, a
+    helipad - so both are queued for the parked lookup, an airplane's and a
+    helicopter's; never an aircraft whose kind is not known."""
     c = Clips()
     keep = (watcher.RUNWAY_LOOKUP, list(watcher._runway_queue))
     try:
@@ -941,7 +942,9 @@ def test_a_takeoff_and_a_landing_each_ask_for_their_runways():
         _committed_clip("landing", 1, category="Airplane", vs0=40.0)
         assert len(watcher._runway_queue) == 2, watcher._runway_queue
         _committed_clip("takeoff", 2, category="Helicopter", vs0=0.0)
-        assert len(watcher._runway_queue) == 2, "a helicopter takeoff asked for a runway"
+        assert len(watcher._runway_queue) == 3, "a helicopter takeoff asked about no airport"
+        _committed_clip("takeoff", 3, category=None, vs0=None)
+        assert len(watcher._runway_queue) == 3, "an aircraft of no known kind asked"
     finally:
         watcher.RUNWAY_LOOKUP = keep[0]
         watcher._runway_queue[:] = keep[1]

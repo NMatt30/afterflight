@@ -235,6 +235,16 @@ def names_path(cache_dir):
     return os.path.join(cache_dir, NAMES_FILE)
 
 
+def clean_name(text):
+    """An airport name as a person reads it. The sim's are UTF-8, measured,
+    but one hospital's carried a no-break space and an invisible left-to-
+    right mark; both go, and runs of spaces become one."""
+    import unicodedata
+    text = "".join(" " if unicodedata.category(c) == "Zs" else c
+                   for c in str(text) if unicodedata.category(c) != "Cf")
+    return " ".join(text.split())
+
+
 def load_names(cache_dir, asked=False):
     """{ident: name} for the airports whose names the sim has given, or {}.
 
@@ -248,12 +258,62 @@ def load_names(cache_dir, asked=False):
     if not (isinstance(doc, dict) and doc.get("schema") == NAMES_SCHEMA
             and isinstance(doc.get("names"), dict)):
         return {}
-    return {str(k): str(v) for k, v in doc["names"].items()
-            if isinstance(v, str) and (asked or v.strip())}
+    return {str(k): clean_name(v) for k, v in doc["names"].items()
+            if isinstance(v, str) and (asked or clean_name(v))}
 
 
 def names_doc(names):
     return {"schema": NAMES_SCHEMA, "names": dict(sorted(names.items()))}
+
+
+# Helipads, one file beside the airport files as the names are, for the same
+# reason: {"schema", "helipads": {ident: [{lat, lon, heading, length_ft,
+# width_ft}]}}. An empty list is an airport asked about that has none.
+HELIPADS_FILE = "_helipads.json"
+HELIPADS_SCHEMA = 1
+
+
+def helipads_path(cache_dir):
+    return os.path.join(cache_dir, HELIPADS_FILE)
+
+
+def load_helipads(cache_dir):
+    """{ident: [pad]} for every airport asked about, or {}."""
+    try:
+        with open(helipads_path(cache_dir), encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if not (isinstance(doc, dict) and doc.get("schema") == HELIPADS_SCHEMA
+            and isinstance(doc.get("helipads"), dict)):
+        return {}
+    out = {}
+    for ident, pads in doc["helipads"].items():
+        if isinstance(pads, list):
+            out[str(ident)] = [p for p in pads if isinstance(p, dict)
+                               and isinstance(p.get("lat"), (int, float))
+                               and isinstance(p.get("lon"), (int, float))]
+    return out
+
+
+def helipads_doc(pads):
+    return {"schema": HELIPADS_SCHEMA, "helipads": dict(sorted(pads.items()))}
+
+
+def on_helipad(pads, lat, lon, margin_ft):
+    """The pad this point is on, as (distance_ft, pad), or None.
+
+    On is within the pad's own half-diagonal - its corner, from its centre -
+    plus margin_ft for where the aircraft's position point sits on its body.
+    """
+    best = None
+    for pad in pads or []:
+        reach = 0.5 * math.hypot(float(pad.get("length_ft") or 0.0),
+                                 float(pad.get("width_ft") or 0.0)) + margin_ft
+        d = nm_apart(lat, lon, pad["lat"], pad["lon"]) * FT_PER_NM
+        if d <= reach and (best is None or d < best[0]):
+            best = (d, pad)
+    return best
 
 
 def cache_path(cache_dir, ident):

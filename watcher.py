@@ -408,21 +408,41 @@ FACILITY_FIELDS = (
     "OPEN SECONDARY_THRESHOLD", "LENGTH", "CLOSE SECONDARY_THRESHOLD",
     "CLOSE RUNWAY", "CLOSE AIRPORT")
 
-# An airport's name, in a definition of its own so that a failure costs the
-# name and never the runways. Measured against a running sim, not taken from
-# the SDK: NAME64 arrives as one FACILITY_DATA record of 64 bytes (type 0,
-# the airport), plain text ending at the first zero byte, and the bytes after
-# that zero are whatever was in memory - "Zurich" came back as
-# b"Zurich\0A\0..." - so the text is cut there. NAME, 32 bytes, gave the same
-# text for each of nine airports tried; the longer field is used so a long
-# name is not cut. Names are short: "Vance Brand", "Pensacola Intl".
+# An airport's name and helipads, in a definition of their own so that a
+# failure costs those and never the runways. Measured against a running sim,
+# not taken from the SDK:
+#   NAME64 arrives as the airport's record (type 0), 64 bytes of UTF-8 text
+#     ending at the first zero byte; the bytes after that zero are whatever
+#     was in memory - "Zurich" came back as b"Zurich\0A\0..." - so the text
+#     is cut there. NAME, 32 bytes, cut a hospital's name in half. Names are
+#     short: "Vance Brand", "Pensacola Intl".
+#   Each helipad is a record of type 4, 44 bytes: latitude, longitude and
+#     altitude (doubles), then heading, length and width (floats; length and
+#     width in METRES, as for runways), then surface and type (ints) - checked
+#     on airports and heliports in more than one country: tower-top and
+#     hospital pads at 12-21 m, an airport's helicopter stands at 6-9 m.
 AIRPORT_NAME_DEFINE_ID = 7702
-AIRPORT_NAME_FIELDS = ("OPEN AIRPORT", "NAME64", "CLOSE AIRPORT")
+AIRPORT_NAME_FIELDS = ("OPEN AIRPORT", "NAME64",
+                       "OPEN HELIPAD", "LATITUDE", "LONGITUDE", "ALTITUDE",
+                       "HEADING", "LENGTH", "WIDTH", "SURFACE", "TYPE",
+                       "CLOSE HELIPAD", "CLOSE AIRPORT")
 AIRPORT_NAME_BYTES = 64
-# Names asked for in one pass. Measured at about 37 ms each, so 200 is some
-# seconds of parked time; the runway limit (60) left a backlog for the next
-# session.
+HELIPAD_RECORD_TYPE = 4
+HELIPAD_RECORD_BYTES = 44
+# Airports asked about in one pass. Measured at about 37 ms each, so 200 is
+# some seconds of parked time; the runway limit (60) left a backlog for the
+# next session.
 AIRPORT_NAMES_MAX = 200
+
+
+def helipad_from(data):
+    """A helipad record as a pad: {lat, lon, heading, length_ft, width_ft}."""
+    import runways as runways_mod
+    la, lo, _alt, hdg, length_m, width_m, _surface, _kind = struct.unpack_from(
+        "<dddfffii", data, 0)
+    return {"lat": la, "lon": lo, "heading": round(float(hdg), 1),
+            "length_ft": round(float(length_m) * runways_mod.FT_PER_M, 1),
+            "width_ft": round(float(width_m) * runways_mod.FT_PER_M, 1)}
 
 
 def airport_name_from(data):
@@ -430,8 +450,9 @@ def airport_name_from(data):
 
     A localisation key ("TT:...") is not a name a person can read; it has not
     been seen, and is refused rather than shown if it ever is."""
+    import runways as runways_mod
     text = bytes(data[:AIRPORT_NAME_BYTES]).split(b"\0")[0]
-    name = text.decode("utf-8", "replace").strip()
+    name = runways_mod.clean_name(text.decode("utf-8", "replace"))
     if name.startswith("TT:"):
         return ""
     return name
@@ -4333,8 +4354,9 @@ class GameSimConnect:
             recs.append(tuple(rws[uniq]) + (disp[0], disp[1]))
         return runways_mod.from_facility(ident, region, airport, recs)
 
-    def facility_name(self, ident, region, timeout=RUNWAY_LOOKUP_TIMEOUT):
-        """One airport's name: the text, "" when the sim has none, or None
+    def facility_details(self, ident, region, timeout=RUNWAY_LOOKUP_TIMEOUT):
+        """One airport's name and helipads: {"name", "helipads"} - the name
+        "" when the sim has none, helipads [] when it lists none - or None
         when it could not be asked or did not answer. Read-only."""
         add = self.fns.get("SimConnect_AddToFacilityDefinition")
         req = self.fns.get("SimConnect_RequestFacilityData")
@@ -4357,14 +4379,19 @@ class GameSimConnect:
         ent = self._fac_wait(rid, lambda e: e["done"], timeout)
         if ent is None:
             return None
+        out = {"name": "", "helipads": []}
         for raw in ent["parts"]:
-            if len(raw) < 40 + AIRPORT_NAME_BYTES:
+            if len(raw) < 40:
                 continue
             # The same record header facility_runways reads: type at 24,
             # 0 for the airport itself; the data from 40.
-            if struct.unpack_from("<I", raw, 24)[0] == 0:
-                return airport_name_from(raw[40:])
-        return ""
+            kind = struct.unpack_from("<I", raw, 24)[0]
+            data = raw[40:]
+            if kind == 0 and len(data) >= AIRPORT_NAME_BYTES:
+                out["name"] = airport_name_from(data)
+            elif kind == HELIPAD_RECORD_TYPE and len(data) == HELIPAD_RECORD_BYTES:
+                out["helipads"].append(helipad_from(data))
+        return out
 
     def wait_object_id(self, request_id, timeout=4.0):
         t0 = time.time()
@@ -6135,29 +6162,27 @@ def hold_airport_list(session, airports):
 
 
 def queue_runway_lookup(lat, lon, category=None, vs0=None, aircraft=None):
-    """Ask for the runways at this takeoff or landing at the next parked
-    moment - for an airplane. A helicopter asks the sim for nothing."""
+    """Ask about the airports at this takeoff or landing at the next parked
+    moment: their runways, names and helipads."""
     if not RUNWAY_LOOKUP or not (finite(lat) and finite(lon)):
         return
-    if not measures_runway(category, vs0, aircraft):
+    if not asks_about_airports(category, vs0, aircraft):
         return
     with _runway_lock:
         _runway_queue.append((float(lat), float(lon)))
 
 
-def measures_runway(category, vs0=None, aircraft=None):
-    """Whether a landing in this aircraft is measured against a runway.
+def asks_about_airports(category, vs0=None, aircraft=None):
+    """Whether a takeoff or landing in this aircraft asks the sim about the
+    airports near it.
 
-    The same profile test the builder uses, so a helicopter landing - at a
-    heliport, a pad or a field - asks the sim for nothing. Without a category
-    the answer is no: profile_for files an unknown as rotary.
+    An airplane's ends are named from the runway it was on, and its landing
+    measured against it; a helicopter's from the helipad it was on, or an
+    airport near it - so both ask. It once was airplanes only, when the
+    lookup's one use was grading, which still never reaches a helicopter.
+    Without a category the answer is no: nothing says what it was.
     """
-    try:
-        import grading as grading_mod
-        return grading_mod.scores_float(grading_mod.profile_for(
-            aircraft, category=category, vs0_kt=vs0))
-    except Exception:
-        return False
+    return bool(category)
 
 
 def runway_lookup_wanted():
@@ -6190,7 +6215,7 @@ def _runway_points_on_record():
                 if fid not in kinds:
                     meta = (read_json(os.path.join(SESSIONS, fid + ".meta.json"))
                             if isinstance(fid, str) else None) or {}
-                    kinds[fid] = measures_runway(
+                    kinds[fid] = asks_about_airports(
                         meta.get("category"), meta.get("vs0"),
                         meta.get("aircraft") or e.get("aircraft"))
                 if kinds[fid]:
@@ -6232,10 +6257,13 @@ def _runway_cell_reach(lat, radius_nm):
 
 
 def _airports_unnamed():
-    """Idents of cached airports the sim has not yet been asked to name."""
+    """Idents of cached airports the sim has not yet been asked to name, or
+    for their helipads."""
     import runways as runways_mod
-    asked = runways_mod.load_names(RUNWAYS_DIR, asked=True)
-    return sorted(i for i in runways_mod.load_index(RUNWAYS_DIR) if i not in asked)
+    named = runways_mod.load_names(RUNWAYS_DIR, asked=True)
+    padded = runways_mod.load_helipads(RUNWAYS_DIR)
+    return sorted(i for i in runways_mod.load_index(RUNWAYS_DIR)
+                  if i not in named or i not in padded)
 
 
 def _fill_airport_names(connection, keep_going):
@@ -6268,22 +6296,30 @@ def _fill_airport_names_unguarded(connection, keep_going):
             break
         doc = runways_mod.load_airport(index[ident][2]) or {}
         t = time.perf_counter()
-        name = gsc.facility_name(ident, doc.get("region") or "")
+        details = gsc.facility_details(ident, doc.get("region") or "")
         ms.append((time.perf_counter() - t) * 1000.0)
-        if name is None:
+        if details is None:
             why = ", %s did not answer" % ident
             continue
-        got[ident] = name
+        got[ident] = details
     if got:
         with _runway_lock:
             names = runways_mod.load_names(RUNWAYS_DIR, asked=True)
-            names.update(got)
+            pads = runways_mod.load_helipads(RUNWAYS_DIR)
+            for ident, details in got.items():
+                names[ident] = details["name"]
+                pads[ident] = details["helipads"]
             os.makedirs(RUNWAYS_DIR, exist_ok=True)
             persistence.atomic_json(runways_mod.names_path(RUNWAYS_DIR),
                                     runways_mod.names_doc(names))
-    named = sum(1 for v in got.values() if v)
-    return {"named": named,
-            "note": "%d airport name(s) in %.0f ms%s" % (named, sum(ms), why)}
+            persistence.atomic_json(runways_mod.helipads_path(RUNWAYS_DIR),
+                                    runways_mod.helipads_doc(pads))
+    named = sum(1 for v in got.values() if v["name"])
+    n_pads = sum(len(v["helipads"]) for v in got.values())
+    return {"named": len(got),
+            "note": "%d airport(s) asked for names and helipads in %.0f ms: "
+                    "%d named, %d helipad(s)%s"
+                    % (len(got), sum(ms), named, n_pads, why)}
 
 
 def lookup_runways(points, backfill=False, keep_going=None):

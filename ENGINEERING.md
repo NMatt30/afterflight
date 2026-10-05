@@ -496,7 +496,9 @@ Details that matter more than pool size:
 on a runway the sim has described, and shown on the leg. Each counts toward
 the landing only while its Settings switch is on (`GRADE_TOUCHDOWN_POINT`,
 `GRADE_FLOAT`, both off by default). Helicopters are never measured on
-either, and the watcher asks the sim for no runway after one lands.
+either. The watcher asks about the airports near a helicopter's ends too,
+for its helipads and names, but only to name the route - nothing it learns
+there reaches a helicopter's grade.
 
 - **Touchdown spot:** distance past the landing threshold - the displaced one
   where there is one. 100 within 1,400 ft (AC 91-79A's target touchdown
@@ -603,9 +605,24 @@ arrival is the touchdown match itself.
   its places.json name or its coordinates. A last ground sample more than
   `LIFTOFF_ROLL_MAX_SEC` before lift-off is a gap in the recording, not the
   roll, and names nothing.
-- **Airplanes only**, as for the touchdown spot: no runway is asked for after
-  a helicopter flies, and a heliport is not a runway. Helipads are in the
-  sim's facility data but have not been measured.
+- **A helicopter's ends come from helipads.** A heliport is not a runway, so
+  a helicopter is never matched to one. Its end is the airport or heliport
+  whose helipad it was on: within the pad's half-diagonal plus
+  `HELIPAD_MARGIN_FT` (30, for where the position point sits on a 14 m
+  airframe - a judgment, not fitted). Pads were measured live before this
+  was built: a record of type 4, 44 bytes - three doubles, three floats
+  (length and width in metres), two ints - with the name in the same
+  request. On a private copy of the owner's data, the helicopter ends on a
+  pad sat within 27 ft of its centre and the next-nearest end 370 ft from
+  any pad, so the margin decides nothing close. Off every pad, the owner
+  chose a radius: an airport **with runways** whose reference point is
+  within `HELICOPTER_AIRPORT_RADIUS_NM` (0.5) names the end, for big
+  airports that list no pads. Heliports are not named for being near - in a
+  city their towers are a few hundred feet apart - and an airplane never
+  is. The reference point is mid-field on a large airport, so a helicopter
+  at its edge can be further than the radius and keep its coordinates.
+  Pads are kept in `sessions/runways/_helipads.json`, beside the names,
+  and the sortie signature carries the pads of the airports near its ends.
 - **The watcher asks for both ends** at the next parked moment, takeoffs as
   well as landings, and the backfill reads takeoffs on record too - so flights
   recorded before this get their departures named at the first lookup.

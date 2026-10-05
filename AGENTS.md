@@ -152,7 +152,9 @@ are the published figures, kept in `grading.PUBLISHED`, and the grading panel
 says when the bands in use are the owner's own instead. The build signature
 carries the values (`runway_tunables`), because a setting changes them without
 changing `grading.py`. No setting reaches a helicopter: every use is gated on
-the profile, and the watcher asks the sim for no runway after one lands.
+the profile. The watcher does ask about the airports near a helicopter's
+takeoffs and landings - their helipads and names, to name the route - but
+nothing it learns there reaches a helicopter's grade.
 
 **The landing is a phase of its own** (`LANDING_PHASE`, on). The descent is
 the approach; "landing" holds the touchdown and the landing limits. The

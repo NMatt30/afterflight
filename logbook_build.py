@@ -57,9 +57,9 @@ SCHEMA = 2
 # logic has none, so this is what stops a stale PNG being served as current.
 # Bumped for: markers at the leg events, jump-splitting, stop markers, and
 # not splitting a jump the aircraft plainly flew across, the landing float, the
-# touchdown point, one landing grade with the touchdown as a word, and the
-# airport and runway at each end of a leg.
-BUILDER_VERSION = 39
+# touchdown point, one landing grade with the touchdown as a word, the
+# airport and runway at each end of a leg, and a helicopter's helipad.
+BUILDER_VERSION = 40
 
 # What an end of a leg is called when the aircraft was on a runway the sim
 # describes AND inside a place named in places.json: the airport and runway
@@ -67,6 +67,21 @@ BUILDER_VERSION = 39
 # way the other is kept and searchable. Off a runway it is the place's name,
 # then coordinates, as before airports were known.
 ROUTE_PREFER_PLACE_NAMES = False
+
+# A helicopter's end is named from the helipad it was on: within the pad's
+# own half-diagonal plus this margin, for where the aircraft's position point
+# sits on its body - an AS365 is 14 m long, so its centre can be 20-odd ft
+# from a skid on the pad's edge. A judgment from the airframe, not a number
+# fitted to flights.
+HELIPAD_MARGIN_FT = 30.0
+# Off a pad, an airport with runways whose reference point is within this
+# radius names a helicopter's end - the owner's choice, for airports that
+# list no helipads. The sim gives an airport one reference point, mid-field
+# on a large one, so a helicopter at the edge of a big airport can be
+# further from it than this and keep its coordinates. Not used for a
+# heliport, and never for an airplane: an airplane's end is the runway it
+# was on or nothing.
+HELICOPTER_AIRPORT_RADIUS_NM = 0.5
 EXCLUDED_JSON = os.path.join(BASE, "excluded.json")
 DETAIL_DIR = os.path.join(SESSIONS, "detail")
 
@@ -1019,6 +1034,61 @@ def airport_names(sorties):
     return {i: names[i] for i in sorted(used) if i in names}
 
 
+_helipad_memo = {"key": None, "pads": {}}
+
+
+def helipad_index():
+    """{ident: [pad]}, reread only when the helipads file moves."""
+    path = runways.helipads_path(runways_dir())
+    key = file_sig(path)
+    if key != _helipad_memo["key"]:
+        _helipad_memo["key"] = key
+        _helipad_memo["pads"] = runways.load_helipads(runways_dir())
+    return _helipad_memo["pads"]
+
+
+def helicopter_end(event, aircraft=None, category=None, vs0_kt=None, track=None):
+    """The airport a helicopter took off from or landed at, or None.
+
+    The helipad it was on, first - the airport or heliport that lists it.
+    Failing that, an airport with runways whose reference point is within
+    HELICOPTER_AIRPORT_RADIUS_NM. None for an airplane, which is named from
+    its runway, and for anywhere the sim lists nothing.
+    """
+    if not event or not usable_fix(event.get("lat"), event.get("lon")):
+        return None
+    if not category:
+        category = grading.infer_category(track or [])
+    if grading.scores_float(grading.profile_for(aircraft, category=category,
+                                                vs0_kt=vs0_kt)):
+        return None
+    lat, lon = float(event["lat"]), float(event["lon"])
+    index = runway_index()
+    if not index:
+        return None
+    pads = helipad_index()
+    nearby = sorted((runways.nm_apart(lat, lon, la, lo), ident, path)
+                    for ident, (la, lo, path) in index.items()
+                    if abs(la - lat) < 0.1
+                    and runways.nm_apart(lat, lon, la, lo) <= RUNWAY_RADIUS_NM)
+    best = None
+    for _d, ident, _path in nearby:
+        hit = runways.on_helipad(pads.get(ident), lat, lon, HELIPAD_MARGIN_FT)
+        if hit and (best is None or hit[0] < best[0]):
+            best = (hit[0], ident)
+    if best:
+        return {"airport": best[1], "runway": None, "how": "helipad",
+                "distance_ft": round(best[0], 1)}
+    for d, ident, path in nearby:
+        if d > HELICOPTER_AIRPORT_RADIUS_NM:
+            break
+        doc = runways.load_airport(path) or {}
+        if doc.get("runways"):
+            return {"airport": ident, "runway": None, "how": "nearby",
+                    "distance_ft": round(d * runways.FT_PER_NM, 1)}
+    return None
+
+
 def runway_end(hit):
     """{airport, runway} of a matched runway, or None."""
     if not hit or not hit.get("airport"):
@@ -1340,6 +1410,7 @@ def global_signature(bake_maps):
         # at the doc, below.
         "places:" + file_sig(PLACES_JSON),
         "route:%d" % bool(ROUTE_PREFER_PLACE_NAMES),
+        "heli:%s/%s" % (HELIPAD_MARGIN_FT, HELICOPTER_AIRPORT_RADIUS_NM),
         # A cached sortie must not survive a change to what is hidden.
         "grading:" + grading_revision(),
         # The float and touchdown-point bands are settings, so they change
@@ -1469,6 +1540,15 @@ def sortie_signature(group, gsig, events_by_flight=None, sortie_id=None,
                                                   RUNWAY_RADIUS_NM))
     for path in sorted(near):
         parts.append("rwy:%s:%s" % (os.path.basename(path), file_sig(path)))
+    # The helipads of those airports, from the one file every airport's pads
+    # share: the resolved pads, not the file's signature, so a pad found for
+    # an airport elsewhere rebuilds nothing here.
+    if near:
+        by_path = {p: ident for ident, (_la, _lo, p) in index.items()}
+        pads = helipad_index()
+        mine = {by_path[p]: pads.get(by_path[p]) for p in near if p in by_path}
+        parts.append("pads:" + hashlib.sha1(
+            json.dumps(mine, sort_keys=True).encode("utf-8")).hexdigest()[:12])
     return "|".join(parts)
 
 
@@ -1912,12 +1992,18 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
             # place's name or the coordinates.
             departure = None
             try:
-                departure = takeoff_runway(to_clip, track, t0, aircraft,
-                                           category, vs0_kt)
+                departure = (takeoff_runway(to_clip, track, t0, aircraft,
+                                            category, vs0_kt)
+                             or helicopter_end(to_e, aircraft, category, vs0_kt, track))
             except Exception as e:
                 say("%s leg %d: departure runway failed %r" % (sortie_id, i, e))
                 departure = None
             arrival = runway_end(touchdown_point)
+            if arrival is None:
+                try:
+                    arrival = helicopter_end(ld_e, aircraft, category, vs0_kt, track)
+                except Exception as e:
+                    say("%s leg %d: arrival helipad failed %r" % (sortie_id, i, e))
             from_end = route_end(to_e, departure, places)
             to_end = route_end(ld_e, arrival, places)
 

@@ -177,22 +177,61 @@ def _name_record(text_bytes):
     return _facility(1, 0, 0, data)
 
 
+def _name(conn):
+    return conn.g.facility_details("X", "", timeout=1.0)["name"]
+
+
+def _pad_record(lat, lon, length_m, width_m, heading=0.0):
+    """A helipad as the sim sent it, measured: type 4, 44 bytes - latitude,
+    longitude, altitude (doubles), heading, length, width (floats, metres),
+    surface, type (ints)."""
+    return _facility(5, 1, 4, struct.pack("<dddfffii", lat, lon, 733.8,
+                                          heading, length_m, width_m, 0, 0))
+
+
 def test_an_airport_name_is_read_in_the_measured_layout():
     conn = _FakeConn(runway_parts=[_name_record(b"Zurich")])
-    assert conn.g.facility_name("LSZH", "LS", timeout=1.0) == "Zurich", (
-        "the bytes after the name's zero were read as part of it")
+    got = conn.g.facility_details("LSZH", "LS", timeout=1.0)
+    assert got == {"name": "Zurich", "helipads": []}, (
+        "the bytes after the name's zero were read as part of it: %r" % (got,))
     assert conn.added == list(watcher.AIRPORT_NAME_FIELDS)
     long = b"Municipal Acoustics Center Madrid City Council"
-    assert _FakeConn(runway_parts=[_name_record(long)]).g.facility_name(
-        "X", "", timeout=1.0) == long.decode()
+    assert _name(_FakeConn(runway_parts=[_name_record(long)])) == long.decode()
     full = b"N" * 64                                   # no zero at all
-    assert _FakeConn(runway_parts=[_facility(1, 0, 0, full)]).g.facility_name(
-        "X", "", timeout=1.0) == "N" * 64
+    assert _name(_FakeConn(runway_parts=[_facility(1, 0, 0, full)])) == "N" * 64
     assert watcher.airport_name_from(b"TT:AIRPORT.KXXX.NAME\0".ljust(64, b"\0")) == "", (
         "a localisation key was shown as a name")
-    # A record that is not the airport's, or too short, is no name.
-    assert _FakeConn(runway_parts=[_facility(2, 1, 1, b"Runway".ljust(64, b"\0"))]).g.facility_name(
-        "X", "", timeout=1.0) == ""
+    # A record that is not the airport's is no name.
+    assert _name(_FakeConn(runway_parts=[_facility(2, 1, 1, b"Runway".ljust(64, b"\0"))])) == ""
+    # Measured: UTF-8, with a no-break space and an invisible mark in one.
+    hospital = b"Our Lady Of Sonsoles Hospital,\xc2\xa0\xc3\x81vila\xe2\x80\x8e"
+    assert _name(_FakeConn(runway_parts=[_name_record(hospital)])) == (
+        "Our Lady Of Sonsoles Hospital, \u00c1vila")
+
+
+def test_helipads_are_read_in_the_measured_layout():
+    parts = [_name_record(b"Example Tower Heliport"),
+             _pad_record(LAT0 + 0.001, LON0, 20.7, 20.7, 101.6),
+             _pad_record(LAT0 + 0.002, LON0, 21.0, 21.0, 11.7)]
+    got = _FakeConn(runway_parts=parts).g.facility_details("XHEL", "XX", timeout=1.0)
+    assert got["name"] == "Example Tower Heliport"
+    assert len(got["helipads"]) == 2, got
+    p = got["helipads"][0]
+    assert abs(p["lat"] - (LAT0 + 0.001)) < 1e-9 and abs(p["lon"] - LON0) < 1e-9, p
+    assert abs(p["length_ft"] - 20.7 * runways.FT_PER_M) < 0.2, "pad sizes not read as metres"
+    assert p["heading"] == 101.6
+    # A record of another size is not a pad.
+    odd = _facility(5, 1, 4, struct.pack("<dddfffi", 1.0, 2.0, 3.0, 0.0, 20.0, 20.0, 0))
+    assert _FakeConn(runway_parts=[odd]).g.facility_details("X", "", timeout=1.0)["helipads"] == []
+
+
+def test_on_a_helipad_is_inside_its_corner_plus_the_margin():
+    pad = {"lat": LAT0, "lon": LON0, "length_ft": 60.0, "width_ft": 80.0}
+    reach = 50.0 + 30.0                              # half of the 100 ft diagonal, + margin
+    inside = _east_of(LAT0, LON0, reach - 1.0)
+    outside = _east_of(LAT0, LON0, reach + 1.0)
+    assert runways.on_helipad([pad], inside[0], inside[1], 30.0)
+    assert runways.on_helipad([pad], outside[0], outside[1], 30.0) is None
 
 
 def test_names_are_asked_for_once_and_kept_beside_the_runways():
@@ -236,6 +275,22 @@ def test_an_airport_cached_before_names_gets_one_at_the_backfill():
         assert sorted(look.named) == ["KAAA", "KBBB"], look.named
         assert look.lists == 1, "the airport list was asked for with nothing to look up"
         assert look.rebuilds, "names arrived and the logbook was not rebuilt"
+    finally:
+        look.close()
+
+
+def test_an_airport_named_before_helipads_is_asked_again_for_them():
+    """An install that named its airports before helipads were asked for
+    has every name and no pads; the backfill asks again, once."""
+    look = Lookup()
+    try:
+        look.run()
+        os.remove(runways.helipads_path(look.dir))
+        look.named[:] = []
+        watcher._runway_state.update(backfilled=False)
+        look.run()
+        assert sorted(look.named) == ["KAAA", "KBBB"], look.named
+        assert set(runways.load_helipads(look.dir)) == {"KAAA", "KBBB"}
     finally:
         look.close()
 
@@ -998,9 +1053,10 @@ class Lookup(object):
                 return [(ident, "K2", LAT0 + look.far + 0.01 * i, LON0, 0.0)
                         for i, ident in enumerate(look.airports)]
 
-            def facility_name(self, ident, region):
+            def facility_details(self, ident, region):
                 look.named.append(ident)
-                return look.name_for(ident)
+                name = look.name_for(ident)
+                return None if name is None else {"name": name, "helipads": []}
 
             def facility_runways(self, ident, region):
                 look.asked.append(ident)
@@ -1194,8 +1250,8 @@ def _asked_for(touchdown, airport):
         def facility_airports(self):
             return [("XTST", "K2", airport[0], airport[1], 0.0)]
 
-        def facility_name(self, ident, region):
-            return ""
+        def facility_details(self, ident, region):
+            return {"name": "", "helipads": []}
 
         def facility_runways(self, ident, region):
             asked.append(ident)
@@ -1247,11 +1303,12 @@ def test_the_runway_search_reaches_3_nm_at_every_latitude():
 
 
 def test_the_watcher_asks_the_sim_about_airplane_runways_only():
-    assert watcher.measures_runway("Airplane", 90.0, "Test Jet")
-    assert watcher.measures_runway("Airplane", 45.0, "Test Single")
-    assert not watcher.measures_runway("Helicopter", 0.0, "Test Helicopter")
-    assert not watcher.measures_runway("Airplane", 10.0, "Test Gyroplane")
-    assert not watcher.measures_runway(None)
+    # Any aircraft whose category is known: an airplane's ends are named
+    # from runways, a helicopter's from helipads and nearby airports.
+    assert watcher.asks_about_airports("Airplane", 90.0, "Test Jet")
+    assert watcher.asks_about_airports("Helicopter", 0.0, "Test Helicopter")
+    assert watcher.asks_about_airports("Airplane", 10.0, "Test Gyroplane")
+    assert not watcher.asks_about_airports(None)
 
     keep_q = list(watcher._runway_queue)
     keep = (watcher.RUNWAY_LOOKUP, watcher.SESSIONS, watcher.EVENTS_JSONL)
@@ -1259,10 +1316,11 @@ def test_the_watcher_asks_the_sim_about_airplane_runways_only():
     try:
         watcher.RUNWAY_LOOKUP = True
         del watcher._runway_queue[:]
+        watcher.queue_runway_lookup(LAT0, LON0, None, None, "Who Knows")
+        assert not watcher._runway_queue, "an aircraft of no known kind queued a lookup"
         watcher.queue_runway_lookup(LAT0, LON0, "Helicopter", 0.0, "Test Helicopter")
-        assert not watcher._runway_queue, "a helicopter landing queued a runway lookup"
-        watcher.queue_runway_lookup(LAT0, LON0, "Airplane", 90.0, "Test Jet")
-        assert watcher._runway_queue == [(LAT0, LON0)], watcher._runway_queue
+        assert watcher._runway_queue == [(LAT0, LON0)], (
+            "a helicopter landing did not ask about the airports near it")
 
         # The backfill reads landings on record, and skips the helicopters.
         watcher.SESSIONS = root
@@ -1281,8 +1339,10 @@ def test_the_watcher_asks_the_sim_about_airplane_runways_only():
             ev.write(json.dumps({"kind": "landing", "lat": LAT0 + 3.0,
                                  "lon": LON0}) + "\n")
         # Takeoffs too, so flights recorded before departures were named get
-        # their departure airports; still airplanes only.
-        assert watcher._runway_points_on_record() == [(LAT0 + 0.5, LON0), (LAT0, LON0)], (
+        # their departure airports; helicopters too; never an aircraft whose
+        # kind is not known.
+        assert watcher._runway_points_on_record() == [
+            (LAT0 + 0.5, LON0), (LAT0, LON0), (LAT0 + 1.5, LON0), (LAT0 + 1.0, LON0)], (
             "the backfill would ask the sim about %r"
             % watcher._runway_points_on_record())
     finally:
@@ -1471,22 +1531,137 @@ def test_a_place_name_and_an_airport_at_the_same_end():
         t.close()
 
 
-def test_a_helicopter_is_named_by_place_or_coordinates():
-    """No runway is asked for after a helicopter flies, and a heliport is
-    not a runway - so neither end is matched to one, even with runways
-    cached at both."""
+def _helicopter(tree):
+    meta = os.path.join(tree.dir, FID + ".meta.json")
+    doc = json.load(open(meta, encoding="utf-8"))
+    doc.update(aircraft="Test Helicopter", category="Helicopter", vs0=0.0)
+    json.dump(doc, open(meta, "w", encoding="utf-8"))
+
+
+def _event_point(tree, kind):
+    for line in open(os.path.join(tree.root, "events.jsonl"), encoding="utf-8"):
+        e = json.loads(line)
+        if e["kind"] == kind:
+            return e["lat"], e["lon"]
+
+
+def _heliport(tree, ident, lat, lon, pads):
+    """A heliport - an airport with no runways - and its pads."""
+    d = os.path.join(tree.dir, "runways")
+    os.makedirs(d, exist_ok=True)
+    with open(runways.cache_path(d, ident), "w", encoding="utf-8") as f:
+        json.dump(runways.from_facility(ident, "LE", (lat, lon, 0.0, 0), []), f)
+    _pads(tree, ident, pads)
+
+
+def _pads(tree, ident, pads):
+    """An airport's pads, and only those - its runway file untouched."""
+    d = os.path.join(tree.dir, "runways")
+    have = runways.load_helipads(d)
+    have[ident] = [{"lat": la, "lon": lo, "heading": 0.0, "length_ft": 66.0, "width_ft": 66.0}
+                   for la, lo in pads]
+    with open(runways.helipads_path(d), "w", encoding="utf-8") as f:
+        json.dump(runways.helipads_doc(have), f)
+
+
+def test_a_helicopter_is_named_from_the_pad_it_was_on():
+    """A helicopter's end is the heliport whose pad it was on. Off every
+    pad, and further than HELICOPTER_AIRPORT_RADIUS_NM from any airport with
+    runways, it keeps its coordinates."""
     t = Tree()
     try:
         _flight(t, 1800.0)
-        t.runway()
-        _departure_runway(t)
-        meta = os.path.join(t.dir, FID + ".meta.json")
-        doc = json.load(open(meta, encoding="utf-8"))
-        doc.update(aircraft="Test Helicopter", category="Helicopter", vs0=0.0)
-        json.dump(doc, open(meta, "w", encoding="utf-8"))
+        _helicopter(t)
+        la, lo = _event_point(t, "takeoff")
+        # A heliport 100 ft away whose only pad is under the takeoff.
+        hp = _east_of(la, lo, 100.0)
+        _heliport(t, "LEPAD", hp[0], hp[1], [(la, lo)])
         leg = _leg(t)
-        assert leg.get("departure") is None and leg.get("arrival") is None, leg
-        assert (leg["route"]["from_kind"], leg["route"]["to_kind"]) == ("coords", "coords")
+        dep = leg.get("departure") or {}
+        assert (dep.get("airport"), dep.get("how")) == ("LEPAD", "helipad"), leg.get("departure")
+        assert leg["route"]["from"] == "LEPAD" and leg["route"]["from_kind"] == "airport"
+        assert leg.get("arrival") is None and leg["route"]["to_kind"] == "coords", leg.get("arrival")
+
+        # The pad moved 200 ft away: no longer on it, and a heliport is not
+        # named for being near.
+        pad = _east_of(la, lo, 200.0)
+        _heliport(t, "LEPAD", hp[0], hp[1], [pad])
+        assert _leg(t, force=False).get("departure") is None, (
+            "a helicopter 200 ft from a pad was named as on it, or a heliport "
+            "was named for being near")
+    finally:
+        t.close()
+
+
+def test_a_helicopter_near_an_airport_with_runways_is_named_for_it():
+    """The owner's rule, for airports that list no helipads: an airport with
+    runways whose reference point is within 0.5 nm."""
+    t = Tree()
+    try:
+        _flight(t, 1800.0)
+        _helicopter(t)
+        la, lo = _event_point(t, "landing")
+        near = _east_of(la, lo, 0.4 * runways.FT_PER_NM)
+        t.runway("KNEAR", lat=near[0], lon=near[1])
+        arr = _leg(t).get("arrival") or {}
+        assert (arr.get("airport"), arr.get("how")) == ("KNEAR", "nearby"), arr
+        assert arr.get("runway") is None, "a helicopter was given a runway"
+        far = _east_of(la, lo, 0.6 * runways.FT_PER_NM)
+        os.remove(runways.cache_path(os.path.join(t.dir, "runways"), "KNEAR"))
+        t.runway("KFARR", lat=far[0], lon=far[1])
+        assert _leg(t).get("arrival") is None, "0.6 nm away was named"
+    finally:
+        t.close()
+
+
+def test_an_airplane_is_never_named_for_being_near():
+    """An airplane's end is the runway it was on, or nothing - not a pad,
+    and not an airport nearby."""
+    t = Tree()
+    try:
+        _flight(t, 1800.0)
+        la, lo = _event_point(t, "takeoff")
+        t.runway("KNEAR", lat=la + 0.1 / 60.0, lon=lo)        # 0.1 nm north
+        _heliport(t, "LEPAD", la, lo, [(la, lo)])
+        _move_roll(t, 0.003)                                  # off the runway
+        leg = _leg(t)
+        assert leg.get("departure") is None, leg.get("departure")
+    finally:
+        t.close()
+
+
+def test_a_helipad_found_later_rebuilds_that_sortie():
+    t = Tree()
+    try:
+        _flight(t, 1800.0)
+        _helicopter(t)
+        la, lo = _event_point(t, "takeoff")
+        hp = _east_of(la, lo, 100.0)
+        _heliport(t, "LEPAD", hp[0], hp[1], [])
+        _heliport(t, "LEFAR", LAT0 + 3.0, LON0, [])
+
+        def sig():
+            flights = logbook_build.scan_flights()
+            group = logbook_build.group_sorties(flights)[0]
+            events = {}
+            for line in open(logbook_build.EVENTS_JSONL, encoding="utf-8"):
+                e = json.loads(line)
+                events.setdefault(e["flight_id"], []).append(e)
+            return logbook_build.sortie_signature(group, "g", events, FID, None, {})
+        before = sig()
+        _pads(t, "LEFAR", [(LAT0 + 3.0, LON0)])
+        assert sig() == before, "a pad 180 nm away rebuilt this sortie"
+        _pads(t, "LEPAD", [(la, lo)])
+        assert sig() != before, (
+            "the pad this sortie took off from was found and its signature did "
+            "not move, so the cached sortie keeps its coordinates for ever")
+        g = logbook_build.global_signature(False)
+        keep = logbook_build.HELICOPTER_AIRPORT_RADIUS_NM
+        logbook_build.HELICOPTER_AIRPORT_RADIUS_NM = 1.0
+        try:
+            assert logbook_build.global_signature(False) != g, "the radius is not in the signature"
+        finally:
+            logbook_build.HELICOPTER_AIRPORT_RADIUS_NM = keep
     finally:
         t.close()
 
