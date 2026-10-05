@@ -339,20 +339,25 @@ ALIGNMENT_CAP_POINTS = 10.0
 # 25-32, 8.2.1) - and scored on the time it took, so one rule serves a 60 kt
 # trainer and a 120 kt jet.
 #
-# The standards describe zones, not a slope, and the score follows them:
+# The shape is AfterFlight's, built from one published figure and two
+# judgments - not a published grading scale (SME review: the float's half
+# marks were called the end of the touchdown zone, which they are not):
 #
-#   100 at 7 s. AC 25-32 8.2.4 gives "a flare time of 7 seconds" as the air
-#     distance of "an average pilot who is flying in normal operations".
-#   50 at the end of the touchdown zone. AC 91-79A puts the target touchdown
-#     point "approximately 1,000 ft down the runway", the touchdown zone at
-#     "500-3,000 ft beyond the runway threshold", and the certified distances
-#     on the gear being "at a height of 50 ft over the runway threshold". From
-#     a standard crossing, 2,000 ft of float beyond a normal flare puts the
-#     wheels at the far end of the zone - still acceptable, and the last point
-#     that is. With the cap allowance that is a D.
-#   0 a further 1,000 ft on. This one is a judgment, not a published figure:
-#     past the zone the approach should have been abandoned, and the score
-#     should reach the bottom quickly rather than at once.
+#   100 at 7 s. AC 25-32 8.2.4 uses "a flare time of 7 seconds" for the air
+#     distance of "an average pilot who is flying in normal operations" - a
+#     transport-airplane performance figure, used here for every airplane as
+#     what a normal flare looks like.
+#   50 after a further FLOAT_MARGIN_FT of floating, turned into seconds at the
+#     speed flown: an excess-float allowance, and a judgment. 2,000 ft is the
+#     gap AC 91-79A leaves between its target touchdown point (about 1,000 ft
+#     down) and the end of the touchdown zone (3,000 ft), so a normal flare
+#     plus the allowance reaches about the end of that zone - but only for a
+#     flare that ends near 1,000 ft, which from a 50 ft crossing at constant
+#     speed is about 85 kt. At 60 kt it is about 2,700 ft down, at 160 kt
+#     about 3,900, and it knows nothing of a short runway's first third. Where
+#     the wheels met the real runway is the touchdown spot's to measure.
+#   0 a further FLOAT_BEYOND_FT on - also a judgment: the score should reach
+#     the bottom quickly rather than at once.
 #
 # A first version ran linearly from 7 s to zero at the end of the zone. Built
 # against real landings it called a jet touching down 2,300 ft past the
@@ -372,9 +377,9 @@ ALIGNMENT_CAP_POINTS = 10.0
 # zero lands at 27 s.
 FLOAT_HEIGHT_FT = 50.0
 FLOAT_NORMAL_S = 7.0
-FLOAT_MARGIN_FT = 2000.0          # normal flare -> end of the touchdown zone
+FLOAT_MARGIN_FT = 2000.0          # excess-float allowance past a normal flare
 FLOAT_ZONE_END_SCORE = 50.0
-FLOAT_BEYOND_FT = 1000.0          # end of the zone -> zero (a judgment)
+FLOAT_BEYOND_FT = 1000.0          # half marks -> zero (a judgment)
 FLOAT_CAP_POINTS = ALIGNMENT_CAP_POINTS
 # Off until the owner has seen what it does to existing landings. The float is
 # measured and shown on every airplane leg either way; this decides only
@@ -1499,9 +1504,10 @@ LANDING_WEIGHTS = {"touchdown": 0.50, "touchdown_point": 0.35, "float": 0.15}
 # The phase never sits more than one band above the touchdown's own score:
 # precision can lift a firm landing a little, and cannot rescue a hard one.
 LANDING_LEAD_POINTS = 10.0
-# And the mirror of that: past the end of the touchdown zone - where the
-# touchdown spot or float scores below this - landing long is a fault the
-# standards say to go around for, not a matter of degree. There it also caps
+# And the mirror of that: where the touchdown spot or float scores below
+# this - a spot past the end of the touchdown zone, or a float past its
+# half-marks allowance - landing long is a fault the standards say to go
+# around for, not a matter of degree. There it also caps
 # the landing at its own score plus one band, so a soft touchdown cannot
 # average away a landing a third of the way down the runway. Inside the zone
 # it is weighed, not capped. Measured, the blend without this let a soft
@@ -2577,18 +2583,20 @@ def describe_profile(p):
                         "the wheels touched. The clock starts 50 ft above the "
                         "runway - or at the start of the runway, if you were "
                         "already lower than that, so time spent low over the "
-                        "approach doesn't count. The FAA treats about 7 "
-                        "seconds as normal (AC 25-32). Floating longer still "
-                        "passes while there is runway left in the touchdown "
-                        "zone (AC 91-79A); beyond that, going around was the "
-                        "better choice. How many seconds that is depends on "
-                        "how fast you were going. Only measured where the sim "
-                        "has described the runway."
+                        "approach doesn't count. A 7-second flare counts as "
+                        "normal - the figure an FAA advisory circular (AC "
+                        "25-32) uses for an average pilot. Half marks "
+                        "come after about 2,000 ft more floating and zero "
+                        "1,000 ft after that, turned into seconds at the speed "
+                        "you flew: an allowance AfterFlight sets, not an FAA "
+                        "standard. Where on the runway you touched down is "
+                        "measured separately, as the touchdown spot. Only "
+                        "measured where the sim has described the runway."
                         + (" These limits are your own settings, not the "
-                           "FAA's figures." if own_bands(FLOAT_BANDS) else "")
+                           "defaults." if own_bands(FLOAT_BANDS) else "")
                         + (" It counts toward the landing grade - a short "
                            "float helps, a long one costs - and a float past "
-                           "the touchdown zone also caps it." if GRADE_FLOAT else
+                           "half marks also caps it." if GRADE_FLOAT else
                            " Shown only for now: it doesn't change any grade "
                            "(you can switch that on in Settings).")),
                 "weight_pct": 0,

@@ -83,21 +83,24 @@ SPEC = [
      "label": "Count the float in the landing grades", "live": True,
      "note": "Off: the float is shown on each airplane landing but doesn't "
              "affect any grade. On: it counts toward the landing grade - a "
-             "short float helps, a long one costs - and a float past the "
-             "touchdown zone also caps it. Only measured on a runway the sim "
-             "knows about, so not off airport."},
+             "short float helps, a long one costs - and a float past half "
+             "marks also caps it. Only measured on a runway the sim knows "
+             "about, so not off airport."},
     {"key": "float_normal_s", "module": "grading", "attr": "FLOAT_NORMAL_S",
      "type": "float", "min": 3.0, "max": 20.0, "group": "Float and touchdown spot",
      "label": "Float: full marks up to (seconds)", "live": True,
      "note": "How long you can float without losing points. Timed from 50 ft "
              "above the runway, or from the start of the runway if you "
-             "crossed it lower. The FAA's figure for an average pilot is 7."},
+             "crossed it lower. The default, 7, is the flare time an FAA "
+             "advisory circular (AC 25-32) uses for an average pilot."},
     {"key": "float_margin_ft", "module": "grading", "attr": "FLOAT_MARGIN_FT",
      "type": "float", "min": 500.0, "max": 6000.0, "group": "Float and touchdown spot",
      "label": "Float: extra runway before half marks (feet)", "live": True,
-     "note": "How much more runway you can float over before the score "
-             "drops to half. The FAA's touchdown zone allows about 2,000 ft. "
-             "Turned into seconds using your speed."},
+     "note": "How much further you can float, past a normal flare, before "
+             "the score drops to half. Turned into seconds at your speed. "
+             "The default, 2,000 ft, is AfterFlight's own allowance - about "
+             "the gap between a normal touchdown point and the end of the "
+             "touchdown zone - not an FAA figure."},
     {"key": "float_beyond_ft", "module": "grading", "attr": "FLOAT_BEYOND_FT",
      "type": "float", "min": 100.0, "max": 6000.0, "group": "Float and touchdown spot",
      "label": "Float: more runway before zero (feet)", "live": True,

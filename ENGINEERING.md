@@ -257,8 +257,9 @@ the blend honest:
 - the phase never sits more than 10 points above the touchdown alone
   (`LANDING_LEAD_POINTS`), so precision can lift a firm landing a little and
   cannot rescue a hard one;
-- a spot or float scoring under 50 - past the end of the touchdown zone, a
-  fault the standards say to go around for - caps the phase at its own score
+- a spot or float scoring under 50 - a spot past the end of the touchdown
+  zone, or a float past its half-marks allowance, a fault the standards say
+  to go around for - caps the phase at its own score
   plus one band as well as weighing in (`LANDING_FAULT_SCORE`). Without that,
   the blend let a soft touchdown well past the zone average up to a C.
 
@@ -505,12 +506,18 @@ either, and the watcher asks the sim for no runway after one lands.
   0 more than 50 ft short of the threshold.
 - **Float:** the time from 50 ft above the runway to main-gear touchdown, the
   air distance of AC 25-32, timed from the 10 Hz landing clip. 100 for a 7 s
-  flare (AC 25-32's average pilot in normal operations), 50 at the end of the
-  touchdown zone, 0 a further 1,000 ft on, with distances turned into seconds
-  at the speed actually flown so one rule serves a trainer and a jet. A first
-  version sloped to zero at the end of the zone and failed a jet touching down
-  inside it, which AC 91-79A calls typical; the test that pins the zones is
-  that version, kept. **The clock starts at the later of 50 ft and the
+  flare (AC 25-32's average pilot in normal operations); 50 after a further
+  2,000 ft of floating and 0 after 1,000 ft more, turned into seconds at the
+  speed actually flown so one rule serves a trainer and a jet. The 7 s is the
+  published figure. The 2,000 and 1,000 ft are an excess-float allowance and
+  AfterFlight's judgment: 2,000 ft is the gap AC 91-79A leaves between its
+  target touchdown point and the end of the touchdown zone, so the half-marks
+  point reaches about that end only near 85 kt - about 2,700 ft down at 60 kt,
+  3,900 ft at 160 kt, and blind to a short runway's first third. It used to be
+  called the end of the zone; it is not, and the touchdown spot is what
+  measures the zone. A first version sloped to zero and failed a jet touching
+  down inside the zone, which AC 91-79A calls typical; the test that pins the
+  steps is that version, kept. **The clock starts at the later of 50 ft and the
   threshold:** the AC assumes 50 ft over the threshold, and an arrival
   crossing lower had its approach counted as float. So the float needs the
   runway too.

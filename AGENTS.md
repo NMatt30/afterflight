@@ -131,10 +131,14 @@ runway's surface, read from PLANE ALT ABOVE GROUND as the aircraft passed
 over it (`grading.RunwaySurface`). Above the touchdown spot was off by 20-40
 ft on runways that climb 2%. Only this landing's readings, over this runway:
 a track is the whole flight, and "past the threshold" is a distance along a
-heading - the departure and a downwind leg are past it too. It is scored on the standard's *zones*, not a slope: 100 for a 7 s
-flare, 50 at the end of the touchdown zone (AC 91-79A), 0 a further 1,000 ft
-on. A first version sloped linearly to zero at the end of the zone and
-failed a jet touching down inside it, which the AC calls typical. It is
+heading - the departure and a downwind leg are past it too. It is scored in
+steps, not a slope: 100 for a 7 s flare (AC 25-32's normal flare), 50 after a
+further 2,000 ft of floating at the speed flown, 0 a further 1,000 ft on. The
+2,000 and the 1,000 are AfterFlight's allowance, not a published scale - and
+half marks are not the end of the touchdown zone, which they reach only near
+85 kt; the touchdown spot measures the zone against the real runway. A first
+version sloped linearly to zero and failed a jet touching down inside the
+zone, which AC 91-79A calls typical. It is
 measured and shown everywhere but counts for nothing until `GRADE_FLOAT` is
 turned on.
 **The touchdown point likewise** (`GRADE_TOUCHDOWN_POINT`, off by default):
@@ -163,8 +167,9 @@ to the touchdown alone.
 touchdown, touchdown spot and float blended (`LANDING_WEIGHTS`, a
 judgment and labelled one), each only when its Settings switch is on. Two
 limits keep the blend honest: it never sits more than a band above the
-touchdown alone, so precision cannot rescue a hard landing; and a spot or
-float past the touchdown zone caps it as well as weighing in, because a
+touchdown alone, so precision cannot rescue a hard landing; and a spot
+past the touchdown zone, or a float past half marks, caps it as well as
+weighing in, because a
 soft touchdown otherwise averaged a landing far down the runway up to a C.
 
 **The light touchdown curve steps at 60 fpm**, from 100 to 89. It was added

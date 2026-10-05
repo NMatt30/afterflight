@@ -66,8 +66,9 @@ square arrival at 600 fpm is still a very hard one.
 runway, it asks the sim which runway that was, and measures how far past the
 threshold the wheels touched and how long the aircraft floated first. Both
 are shown. Two switches in Settings, off to begin with, let them count toward
-the landing grade as well, against published criteria: a landing far down
-the runway, or one that floated past the touchdown zone, is marked down.
+the landing grade as well: a landing past the touchdown zone (a published
+criterion), or a float well beyond a normal 7-second flare (a published
+figure, with an allowance AfterFlight sets), is marked down.
 Helicopters are never graded on either.
 
 **Writes a passenger's note.** A short paragraph, in the voice of someone
