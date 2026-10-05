@@ -717,16 +717,181 @@ def test_the_lookup_fetches_the_airport_a_heliport_used_to_hide():
         heli = runways.from_facility("XHEL", "K2", (LAT0 + 0.04, LON0, 0.0, 0), [])
         with open(runways.cache_path(d, "XHEL"), "w", encoding="utf-8") as f:
             json.dump(heli, f)
-        saved = watcher.lookup_runways([(LAT0, LON0)])
+        saved = watcher.lookup_runways([(LAT0, LON0)], keep_going=lambda: True)["saved"]
         assert asked == ["KTST"] and saved == 1, (
             "asked the sim for %r and saved %d: the landing's own airport was "
             "not fetched, or a cached one was fetched again" % (asked, saved))
         del asked[:]
-        assert watcher.lookup_runways([(LAT0, LON0)]) == 0 and asked == [], (
+        again = watcher.lookup_runways([(LAT0, LON0)], keep_going=lambda: True)
+        assert again == {"status": "done", "saved": 0} and asked == [], (
             "a landing on a cached runway was looked up again")
     finally:
         watcher.RUNWAYS_DIR, watcher.GameSimConnect = keep
         shutil.rmtree(d, ignore_errors=True)
+
+
+class Lookup(object):
+    """start_runway_lookup for real, on a stand-in sim with two airports near
+    the landing, and the aircraft's state in RUNTIME - which is what the
+    lookup's parked check reads - set by the test."""
+
+    # The landing is 1.2 and 1.8 nm from the two airports and on neither's
+    # runway, so both are needed: a landing on a cached runway is covered,
+    # and its other neighbours are rightly never asked about.
+    TOUCHDOWN = (LAT0 - 0.02, LON0)
+
+    def __init__(self, open_ok=True, airports=("KAAA", "KBBB"), far=False):
+        self.dir = tempfile.mkdtemp()
+        self.far = 1.0 if far else 0.0
+        self.asked = []
+        self.lists = 0
+        self.on_request = None
+        self.airports = airports
+        self.open_ok = open_ok
+        self.rebuilds = []
+        events = os.path.join(self.dir, "events.jsonl")
+        open(events, "w").close()
+        self._keep = (watcher.RUNWAYS_DIR, watcher.GameSimConnect,
+                      watcher.EVENTS_JSONL, watcher.schedule_logbook_rebuild,
+                      dict(watcher._runway_state), list(watcher._runway_queue))
+        with watcher.RUNTIME_LOCK:
+            self._keep_rt = (watcher.RUNTIME["connected"],
+                             watcher.RUNTIME.get("current_doc"))
+        look = self
+
+        class FakeSim(object):
+            def open(self):
+                return look.open_ok
+
+            def close(self):
+                pass
+
+            def facility_airports(self):
+                look.lists += 1
+                return [(ident, "K2", LAT0 + look.far + 0.01 * i, LON0, 0.0)
+                        for i, ident in enumerate(look.airports)]
+
+            def facility_runways(self, ident, region):
+                look.asked.append(ident)
+                if look.on_request:
+                    look.on_request(ident)
+                i = look.airports.index(ident)
+                rws = [(LAT0 + 0.01 * i, LON0, 0.0, 90.0, 2865.0, 45.0, 9, 0, 27, 0, 0.0, 0.0)]
+                return runways.from_facility(ident, region,
+                                             (LAT0 + 0.01 * i, LON0, 0.0, 1), rws)
+
+        watcher.RUNWAYS_DIR = self.dir
+        watcher.GameSimConnect = FakeSim
+        watcher.EVENTS_JSONL = events
+        watcher.schedule_logbook_rebuild = lambda **k: self.rebuilds.append(k)
+        watcher._runway_state.update(thread=None, backfilled=False, retry_after=0.0)
+        watcher._runway_queue[:] = [self.TOUCHDOWN]
+        self.parked(True)
+
+    def parked(self, yes):
+        with watcher.RUNTIME_LOCK:
+            watcher.RUNTIME["connected"] = True
+            watcher.RUNTIME["current_doc"] = (
+                {"on_ground": True, "gs": 0.0} if yes else {"on_ground": False, "gs": 100.0})
+
+    def run(self):
+        started = watcher.start_runway_lookup()
+        th = watcher._runway_state.get("thread")
+        if started and th is not None:
+            th.join(10)
+        return started
+
+    def close(self):
+        (watcher.RUNWAYS_DIR, watcher.GameSimConnect, watcher.EVENTS_JSONL,
+         watcher.schedule_logbook_rebuild, state, queue) = self._keep
+        watcher._runway_state.clear()
+        watcher._runway_state.update(state)
+        watcher._runway_queue[:] = queue
+        with watcher.RUNTIME_LOCK:
+            watcher.RUNTIME["connected"], watcher.RUNTIME["current_doc"] = self._keep_rt
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+
+def test_a_lookup_stops_when_the_aircraft_moves_and_finishes_later():
+    """SME review R5. The parked check was made once, before the worker
+    started; a touch-and-go after the first airport still had the second
+    requested and written. Now it stops after the request in hand, keeps the
+    landing, and the next parked moment finishes the job."""
+    look = Lookup()
+    try:
+        look.on_request = lambda ident: look.parked(False)   # moving from here
+        look.run()
+        assert look.asked == ["KAAA"], (
+            "the sim was asked about %r after the aircraft started moving" % look.asked)
+        assert watcher._runway_queue == [Lookup.TOUCHDOWN], (
+            "the landing was dropped by a lookup that never finished")
+        assert not watcher._runway_state["backfilled"], (
+            "an unfinished backfill was marked done")
+        look.on_request = None
+        look.parked(True)
+        look.run()
+        assert look.asked == ["KAAA", "KBBB"], look.asked
+        assert watcher._runway_queue == [] and watcher._runway_state["backfilled"]
+        assert look.rebuilds, "runways were cached and nothing was rebuilt"
+    finally:
+        look.close()
+
+
+def test_the_airport_list_is_not_asked_for_while_moving():
+    """The airport list is the big request - every airport in the world - so
+    the check comes before it too."""
+    look = Lookup()
+    try:
+        look.parked(False)
+        look.run()
+        assert look.lists == 0 and look.asked == [], "the sim was asked while moving"
+        assert watcher._runway_queue == [Lookup.TOUCHDOWN]
+    finally:
+        look.close()
+
+
+def test_a_failed_lookup_keeps_its_work_and_waits_before_asking_again():
+    look = Lookup(open_ok=False)
+    try:
+        look.run()
+        assert watcher._runway_queue == [Lookup.TOUCHDOWN], "a failed lookup lost its landing"
+        assert not watcher._runway_state["backfilled"]
+        assert not watcher.runway_lookup_wanted(), (
+            "a sim that could not be asked is asked again at once")
+        assert not look.run(), "a second lookup started inside the retry window"
+        watcher._runway_state["retry_after"] = 0.0
+        look.open_ok = True
+        look.run()
+        assert watcher._runway_queue == [] and look.asked == ["KAAA", "KBBB"]
+    finally:
+        look.close()
+
+
+def test_an_off_airport_landing_is_searched_once_and_not_again():
+    """Done with nothing saved is a finished search, not unfinished work."""
+    look = Lookup(airports=("KFAR",), far=True)
+    try:
+        look.run()
+        assert look.lists == 1 and watcher._runway_queue == [], (
+            "an off-airport landing was kept to be searched again")
+        assert watcher._runway_state["backfilled"]
+    finally:
+        look.close()
+
+
+def test_work_past_the_per_pass_limit_is_kept():
+    keep = watcher.RUNWAY_BACKFILL_MAX
+    look = Lookup()
+    try:
+        watcher.RUNWAY_BACKFILL_MAX = 1
+        look.run()
+        assert look.asked == ["KAAA"] and watcher._runway_queue == [Lookup.TOUCHDOWN], (
+            "work past the per-pass limit was dropped")
+        look.run()
+        assert look.asked == ["KAAA", "KBBB"] and watcher._runway_queue == []
+    finally:
+        watcher.RUNWAY_BACKFILL_MAX = keep
+        look.close()
 
 
 def test_the_watcher_asks_the_sim_about_airplane_runways_only():

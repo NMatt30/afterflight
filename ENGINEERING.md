@@ -528,10 +528,15 @@ without changing `grading.py`. The letter ladder is not a setting.
 **The runway comes from the sim,** the only authority on its own scenery, and
 nothing about what it sends was taken from the SDK on trust: the message
 layout was measured against a running sim first, and the facility-data trap
-in AGENTS.md records it. Once parked after a landing - never in flight - the
-watcher opens a short-lived connection of its own, asks for the airport list
-and the runways of every airport within 3 nm of the touchdown, and caches them
-under `sessions/runways/`. Read-only throughout. Every recorded airplane
+in AGENTS.md records it. Once parked after a landing the watcher opens a
+short-lived connection of its own, asks for the airport list and the runways
+of every airport within 3 nm of the touchdown, and caches them under
+`sessions/runways/`. Read-only throughout. "Parked" is checked before the
+airport list and again before each airport: it used to be checked once, as
+the lookup started, and a touch-and-go overlapped every request after that.
+A lookup cut short by movement, or one that fails, keeps its landings for the
+next parked moment - a failure waits two minutes before asking again - and
+only a finished search, an off-airport landing included, lets them go. Every recorded airplane
 touchdown located on a runway centreline to within 10 ft. A sortie signs the
 runway files near its own landings, so a runway cached later rebuilds that
 sortie and nothing else.

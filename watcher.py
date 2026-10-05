@@ -192,6 +192,10 @@ RUNWAY_LOOKUP_TIMEOUT = 10.0
 # The first lookup of a session also fills in airports for landings recorded
 # before their runways were cached, at most this many airports per pass.
 RUNWAY_BACKFILL_MAX = 60
+# After a lookup that could not ask the sim at all, wait this long before
+# asking again - not every time the aircraft has been parked ten seconds,
+# which an unavailable sim would answer the same way each time.
+RUNWAY_RETRY_SEC = 120.0
 # 60 s per clip either way: a takeoff is mostly what happens after it, a
 # landing mostly what happens before it.
 TAKEOFF_BEFORE = 5.0
@@ -5864,7 +5868,7 @@ def _keep_existing_flight(flight, tracker, s, why):
 
 RUNWAYS_DIR = os.path.join(SESSIONS, "runways")
 _runway_queue = []                 # (lat, lon) of landings not yet looked up
-_runway_state = {"thread": None, "backfilled": False}
+_runway_state = {"thread": None, "backfilled": False, "retry_after": 0.0}
 _runway_lock = threading.Lock()
 
 
@@ -5896,6 +5900,8 @@ def measures_runway(category, vs0=None, aircraft=None):
 
 def runway_lookup_wanted():
     with _runway_lock:
+        if time.time() < _runway_state.get("retry_after", 0.0):
+            return False
         return bool(_runway_queue) or not _runway_state["backfilled"]
 
 
@@ -5930,13 +5936,28 @@ def _landing_points_on_record():
     return out
 
 
-def lookup_runways(points, backfill=False):
+def lookup_runways(points, backfill=False, keep_going=None):
     """Cache the runways of every airport near these points that is not cached.
 
-    Runs on its own thread and its own SimConnect connection; returns the
-    number of airports written. With backfill, landings already on record whose
-    airports have no runways cached are added, up to RUNWAY_BACKFILL_MAX.
+    Runs on its own thread and its own SimConnect connection. With backfill,
+    landings already on record whose airports have no runways cached are
+    added. Returns {"status", "saved"} - the outcome, not just a count, since
+    nothing saved can mean every one of these (SME review R5):
+      done       every point was searched; saved may be 0 - off airport, or
+                 everything near was already cached
+      more       RUNWAY_BACKFILL_MAX airports were saved this pass and more
+                 are still to fetch
+      cancelled  the aircraft started moving; stopped after the request in hand
+      failed     the sim could not be asked, or did not answer for an airport
+
+    The parked check was made once, before the worker started, and the
+    lookup then ran to the end whatever the aircraft did - a touch-and-go or
+    a taxi overlapped every facility request and cache write. keep_going()
+    is asked before the airport list and before each airport; by default it
+    is "still stationary on the ground", the test heavy maintenance uses.
     """
+    if keep_going is None:
+        keep_going = lambda: not maintenance_unsafe()
     import runways as runways_mod
     index = runways_mod.load_index(RUNWAYS_DIR)
 
@@ -5952,7 +5973,9 @@ def lookup_runways(points, backfill=False):
     if backfill:
         want += uncovered(_landing_points_on_record())
     if not want:
-        return 0
+        return {"status": "done", "saved": 0}
+    if not keep_going():
+        return {"status": "cancelled", "saved": 0}
     # A coarse grid, so 84,000 airports are not each measured against every
     # point: only the cells around a point are looked in.
     cells = {}
@@ -5963,11 +5986,11 @@ def lookup_runways(points, backfill=False):
     try:
         if not gsc.open():
             log("runways: SimConnect open failed")
-            return 0
+            return {"status": "failed", "saved": 0}
         listed = gsc.facility_airports()
         if not listed:
             log("runways: the sim returned no airport list")
-            return 0
+            return {"status": "failed", "saved": 0}
         targets = {}
         for ident, region, la, lo, al in listed:
             ci, cj = int(la * 10), int(lo * 10)
@@ -5977,42 +6000,75 @@ def lookup_runways(points, backfill=False):
                         if runways_mod.nm_apart(p[0], p[1], la, lo) <= RUNWAY_LOOKUP_RADIUS_NM:
                             targets[ident] = region
         saved = 0
+        status = "done"
         for ident in sorted(targets):
             if ident in index:
                 continue
             if saved >= RUNWAY_BACKFILL_MAX:
+                status = "more"
+                break
+            if not keep_going():
+                status = "cancelled"
                 break
             doc = gsc.facility_runways(ident, targets[ident])
             if doc is None:
+                status = "failed"
                 continue
             # Saved even with no runways: a heliport is still an airport that
             # has been asked about, and asking again would find the same.
             os.makedirs(RUNWAYS_DIR, exist_ok=True)
             persistence.atomic_json(runways_mod.cache_path(RUNWAYS_DIR, ident), doc)
             saved += 1
-        log("runways: %d point(s), %d airport(s) nearby, %d cached"
-            % (len(want), len(targets), saved))
-        return saved
+        log("runways: %d point(s), %d airport(s) nearby, %d cached, %s"
+            % (len(want), len(targets), saved, status))
+        return {"status": status, "saved": saved}
     finally:
         gsc.close()
 
 
 def start_runway_lookup():
-    """Start a lookup on its own thread unless one is already running."""
+    """Start a lookup on its own thread unless one is already running.
+
+    The queue and the backfill flag are settled by the outcome, not before
+    it: they were emptied and marked done as the worker started, so a lookup
+    that failed or was cut short lost its landings for the session. Only a
+    finished search - an off-airport landing included - takes points off the
+    queue; anything else puts them back for the next parked moment, and a
+    failure also waits RUNWAY_RETRY_SEC before trying again."""
     with _runway_lock:
         t = _runway_state["thread"]
         if t is not None and t.is_alive():
             return False
+        if time.time() < _runway_state.get("retry_after", 0.0):
+            return False
         points, _runway_queue[:] = list(_runway_queue), []
         backfill = not _runway_state["backfilled"]
-        _runway_state["backfilled"] = True
 
     def work():
         try:
-            if lookup_runways(points, backfill=backfill):
-                schedule_logbook_rebuild(reason="runways cached", bake_maps=False)
+            res = lookup_runways(points, backfill=backfill)
         except Exception as e:
             log("runways: lookup failed %r" % (e,))
+            res = {"status": "failed", "saved": 0}
+        status = res.get("status")
+        with _runway_lock:
+            if status == "done":
+                if backfill:
+                    _runway_state["backfilled"] = True
+            else:
+                # Back in front of anything queued meanwhile, once each.
+                kept = list(points)
+                for p in _runway_queue:
+                    if p not in kept:
+                        kept.append(p)
+                _runway_queue[:] = kept
+                if status == "failed":
+                    _runway_state["retry_after"] = time.time() + RUNWAY_RETRY_SEC
+        if status == "cancelled":
+            log("runways: the aircraft moved; %d landing(s) kept for the next "
+                "parked moment" % len(points))
+        if res.get("saved"):
+            schedule_logbook_rebuild(reason="runways cached", bake_maps=False)
 
     t = threading.Thread(target=work, daemon=True, name="runway-lookup")
     with _runway_lock:

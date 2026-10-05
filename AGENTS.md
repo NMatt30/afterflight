@@ -301,8 +301,10 @@ Data lives in `sessions/` and is **not** in git: flight tracks, clips, maps,
   Seattle's runways within 0.1% of their published lengths, San Diego's
   displaced 27 at 1,808 ft against 1,810, and every recorded airplane
   touchdown located on a runway centreline to within 10 ft. `test_runways.py` encodes the layout
-  so drifting from it fails offline. The lookup runs only when parked, on its
-  own short-lived connection, never the one the recording rides on.
+  so drifting from it fails offline. The lookup runs only when parked - checked
+  before each request, not once at the start - on its own short-lived
+  connection, never the one the recording rides on. It reports done, more,
+  cancelled or failed, and only done takes a landing off the queue.
   **A landing's runway is known when a cached runway contains the touchdown**,
   not when a cached airport is near it: a heliport cached 2.5 nm from a
   landing once hid the airport it was really at from every later lookup.
