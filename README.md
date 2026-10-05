@@ -78,8 +78,8 @@ place in `places.json`. Hover over an airport code to see the airport's
 name. The search finds a flight by any airport or runway it used, including
 a stop in the middle. A helicopter's end is the heliport or airport whose
 helipad it was on, or whose parking, taxiways or runways it was on or near;
-a small field the sim maps none of is named within half a mile. Both
-distances are in Settings.
+failing those, an airport within half a mile. The distances are in
+Settings.
 
 **Writes a passenger's note.** A short paragraph, in the voice of someone
 sitting in the back, about what the flight felt like. Templates and a hash of

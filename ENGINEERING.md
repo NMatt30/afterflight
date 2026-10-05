@@ -637,11 +637,14 @@ arrival is the touchdown match itself.
   8,315 paths, the owner seeing no stutter, parked - so it is fetched only
   for airports with runways near a helicopter end on no pad and no runway,
   once each, ten a pass, into `sessions/runways/ground/`.
-- **The radius only where nothing is mapped.** An airport with runways
-  whose reference point is within `HELICOPTER_AIRPORT_RADIUS_NM` (0.5, the
-  owner's, a setting) names the end only if the sim gives it no parking
-  spots or taxi paths at all - a small field - or they have not been
-  fetched yet. An airport whose pavement is mapped is named only from it.
+- **The radius is the backup.** Off every pad and every airport's
+  pavement, an airport with runways whose reference point is within
+  `HELICOPTER_AIRPORT_RADIUS_NM` (0.5, the owner's, a setting) names the
+  end. It was first built only for airports the sim maps no pavement for;
+  the owner's "radius as a backup" meant every airport, and that is the
+  default. `RADIUS_WHERE_PAVEMENT_MAPPED`, off, restores the stricter
+  reading, under which a field beside a mapped airport keeps its
+  coordinates.
   Heliports are named only from their pads - in a city their towers are a
   few hundred feet apart - and an airplane never by any of this. Pads are
   kept in `sessions/runways/_helipads.json`, beside the names; the sortie

@@ -1624,11 +1624,20 @@ def test_a_helicopter_near_an_airport_with_runways_is_named_for_it():
         arr = _leg(t).get("arrival") or {}
         assert (arr.get("airport"), arr.get("how")) == ("KNEAR", "nearby"), arr
         assert arr.get("runway") is None, "a helicopter was given a runway"
-        # Its ground mapped, and the landing nowhere near it: the radius is
-        # only for an airport whose pavement is not mapped.
+        # Its ground mapped, and the landing nowhere near it: the radius
+        # still backs it up - the owner's reading - unless the stricter
+        # setting is on.
         _ground(t, "KNEAR", parkings=[(la + 0.4 / 60.0, lo, 60.0)])
-        assert _leg(t, force=False).get("arrival") is None, (
-            "an airport with mapped pavement was named for being near")
+        arr = _leg(t, force=False).get("arrival") or {}
+        assert (arr.get("airport"), arr.get("how")) == ("KNEAR", "nearby"), (
+            "the radius did not back up a mapped airport: %r" % arr)
+        keep = runways.RADIUS_WHERE_PAVEMENT_MAPPED
+        runways.RADIUS_WHERE_PAVEMENT_MAPPED = False
+        try:
+            assert _leg(t, force=False).get("arrival") is None, (
+                "with the strict setting, a mapped airport was named for being near")
+        finally:
+            runways.RADIUS_WHERE_PAVEMENT_MAPPED = keep
         os.remove(runways.cache_path(os.path.join(t.dir, "runways"), "KNEAR"))
         t.runway("KFARR", lat=la + 0.6 / 60.0, lon=lo)
         assert _leg(t).get("arrival") is None, "0.6 nm away was named"
@@ -1834,7 +1843,8 @@ def test_a_helipad_found_later_rebuilds_that_sortie():
             "the pad this sortie took off from was found and its signature did "
             "not move, so the cached sortie keeps its coordinates for ever")
         g = logbook_build.global_signature(False)
-        for attr, value in (("HELICOPTER_AIRPORT_RADIUS_NM", 1.0), ("PAVEMENT_MARGIN_FT", 50.0)):
+        for attr, value in (("HELICOPTER_AIRPORT_RADIUS_NM", 1.0), ("PAVEMENT_MARGIN_FT", 50.0),
+                            ("RADIUS_WHERE_PAVEMENT_MAPPED", False)):
             keep = getattr(runways, attr)
             setattr(runways, attr, value)
             try:

@@ -309,10 +309,15 @@ def helipads_doc(pads):
 # ft from anything mapped. 200 ft is about a stand's depth beside its
 # taxilane: a judgment, labelled as one, chosen by the owner.
 PAVEMENT_MARGIN_FT = 200.0
-# Only for an airport whose data has no parking spots or taxi paths at all -
-# a small field - an airport with runways whose reference point is within
-# this radius. The owner's choice.
+# Off every pad and every airport's pavement, an airport with runways whose
+# reference point is within this radius. The owner's choice: pavement first,
+# the radius as the backup.
 HELICOPTER_AIRPORT_RADIUS_NM = 0.5
+# Whether the radius backs up the pavement at every airport (True, the
+# owner's reading of "radius as a backup") or only at an airport the sim maps
+# no pavement for (False - stricter: a field beside an airport whose
+# pavement is mapped then keeps its coordinates).
+RADIUS_WHERE_PAVEMENT_MAPPED = True
 # Where the position point sits on a helicopter on a pad: an AS365 is 14 m
 # long. A judgment from the airframe, not fitted to flights.
 HELIPAD_MARGIN_FT = 30.0

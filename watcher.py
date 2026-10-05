@@ -1662,7 +1662,8 @@ def apply_settings(values):
     watched = ("tile_source", "map_style", "grade_float", "float_normal_s",
                "float_margin_ft", "float_beyond_ft", "grade_touchdown_point",
                "tdz_target_ft", "tdz_tolerance_ft", "tdz_end_ft", "tdz_beyond_ft",
-               "heli_pavement_margin_ft", "heli_airport_radius_nm")
+               "heli_pavement_margin_ft", "heli_airport_radius_nm",
+               "heli_radius_where_paved")
     changed = [k for k in watched if before.get(k) != after.get(k)]
     # Clip windows decide a clip's shape at commit, so they are staged rather
     # than applied when a clip is mid-capture; the buffer resize is held with

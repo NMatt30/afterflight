@@ -163,10 +163,16 @@ SPEC = [
              "taxiway - a judgment, not a published figure."},
     {"key": "heli_airport_radius_nm", "module": "runways", "attr": "HELICOPTER_AIRPORT_RADIUS_NM",
      "type": "float", "min": 0.0, "max": 3.0, "group": "Route names",
-     "label": "Helicopter: airport radius where no pavement is mapped (nm)", "live": True,
-     "note": "Only for an airport the sim gives no parking spots or taxiways "
-             "for - usually a small field: a helicopter's takeoff or landing "
-             "this close to the airport's reference point is named for it."},
+     "label": "Helicopter: airport radius, the backup (nm)", "live": True,
+     "note": "When a helicopter's takeoff or landing is on no helipad and no "
+             "airport's pavement, an airport with runways whose reference "
+             "point is this close names it."},
+    {"key": "heli_radius_where_paved", "module": "runways", "attr": "RADIUS_WHERE_PAVEMENT_MAPPED",
+     "type": "bool", "group": "Route names",
+     "label": "Helicopter: radius also at airports with mapped pavement", "live": True,
+     "note": "On: the radius backs up the pavement test at every airport. "
+             "Off: only at an airport the sim maps no parking or taxiways "
+             "for, so a field beside a mapped airport keeps its coordinates."},
     {"key": "tile_source", "module": "tiles", "attr": "TILE_SOURCE",
      "type": "choice", "choices": ["topo", "osm"], "group": "Maps",
      "label": "Basemap", "live": True,

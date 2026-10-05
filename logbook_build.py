@@ -1056,10 +1056,10 @@ def helicopter_end(event, aircraft=None, category=None, vs0_kt=None, track=None)
       1. the helipad it was on - the airport or heliport that lists it;
       2. the pavement it was on - an airport with runways whose parking
          spots or taxi paths it was within runways.PAVEMENT_MARGIN_FT of;
-      3. only for an airport whose ground is not known - none in the sim's
-         data, or not fetched yet - its reference point within
-         runways.HELICOPTER_AIRPORT_RADIUS_NM. An airport whose pavement is
-         mapped is named only from it.
+      3. the backup: an airport with runways whose reference point is
+         within runways.HELICOPTER_AIRPORT_RADIUS_NM - any such airport, or
+         with runways.RADIUS_WHERE_PAVEMENT_MAPPED off, only one whose
+         pavement is not mapped (none in the sim's data, or not fetched).
     Heliports are named only from their pads. None for an airplane, which is
     named from its runway, and for anywhere the sim lists nothing.
     """
@@ -1102,7 +1102,7 @@ def helicopter_end(event, aircraft=None, category=None, vs0_kt=None, track=None)
         if off is not None and off <= runways.PAVEMENT_MARGIN_FT:
             if paved is None or off < paved[0]:
                 paved = (off, ident)
-        elif on_ground is None:
+        elif on_ground is None or runways.RADIUS_WHERE_PAVEMENT_MAPPED:
             unmapped.append((d, ident))
     if paved:
         return {"airport": paved[1], "runway": None, "how": "pavement",
@@ -1436,8 +1436,9 @@ def global_signature(bake_maps):
         "places:" + file_sig(PLACES_JSON),
         "route:%d" % bool(ROUTE_PREFER_PLACE_NAMES),
         # Settings, so they change without the file changing.
-        "heli:%s/%s/%s" % (runways.HELIPAD_MARGIN_FT, runways.PAVEMENT_MARGIN_FT,
-                           runways.HELICOPTER_AIRPORT_RADIUS_NM),
+        "heli:%s/%s/%s/%s" % (runways.HELIPAD_MARGIN_FT, runways.PAVEMENT_MARGIN_FT,
+                              runways.HELICOPTER_AIRPORT_RADIUS_NM,
+                              bool(runways.RADIUS_WHERE_PAVEMENT_MAPPED)),
         # A cached sortie must not survive a change to what is hidden.
         "grading:" + grading_revision(),
         # The float and touchdown-point bands are settings, so they change
