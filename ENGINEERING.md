@@ -614,15 +614,39 @@ arrival is the touchdown match itself.
   (length and width in metres), two ints - with the name in the same
   request. On a private copy of the owner's data, the helicopter ends on a
   pad sat within 27 ft of its centre and the next-nearest end 370 ft from
-  any pad, so the margin decides nothing close. Off every pad, the owner
-  chose a radius: an airport **with runways** whose reference point is
-  within `HELICOPTER_AIRPORT_RADIUS_NM` (0.5) names the end, for big
-  airports that list no pads. Heliports are not named for being near - in a
-  city their towers are a few hundred feet apart - and an airplane never
-  is. The reference point is mid-field on a large airport, so a helicopter
-  at its edge can be further than the radius and keep its coordinates.
-  Pads are kept in `sessions/runways/_helipads.json`, beside the names,
-  and the sortie signature carries the pads of the airports near its ends.
+  any pad, so the margin decides nothing close.
+- **Off every pad, the pavement it was on.** The sim's data has no airport
+  boundary, but it maps an airport's parking spots (circles) and taxi
+  network (paths with widths), and every runway is a rectangle. An end on
+  any of those, or within `PAVEMENT_MARGIN_FT` (200) of one, is at that
+  airport, however far its reference point - which is mid-field, and was
+  0.6-1.9 nm from helicopter ends on a large airport's aprons. Aprons are
+  not mapped; ends parked on one sat 100-160 ft from anything that is, so
+  the margin is about a stand's depth beside its taxilane: a judgment, the
+  owner's choice, and a setting. Measured live before it was built: one
+  request per airport, the airport's record its reference (two doubles),
+  parking spots type 15 (20 bytes: type, then radius, heading, BIAS_X,
+  BIAS_Z as floats, metres east and north of the reference), taxi points
+  type 14 (12 bytes: type, BIAS_X, BIAS_Z), taxi paths type 16 (16 bytes:
+  type, width, start, end). Start and end index the taxi points in arrival
+  order - except that a path of **type 3 ends at a parking spot**: read as
+  a point, its median length was 2,600-7,600 ft at every airport tried;
+  as a parking spot, 55-258 ft. A first probe read it as a point, and
+  called three apron ends on a taxiway that were not. The ground of a large
+  airport is thousands of records - 37 s and about 850 KB for one with
+  8,315 paths, the owner seeing no stutter, parked - so it is fetched only
+  for airports with runways near a helicopter end on no pad and no runway,
+  once each, ten a pass, into `sessions/runways/ground/`.
+- **The radius only where nothing is mapped.** An airport with runways
+  whose reference point is within `HELICOPTER_AIRPORT_RADIUS_NM` (0.5, the
+  owner's, a setting) names the end only if the sim gives it no parking
+  spots or taxi paths at all - a small field - or they have not been
+  fetched yet. An airport whose pavement is mapped is named only from it.
+  Heliports are named only from their pads - in a city their towers are a
+  few hundred feet apart - and an airplane never by any of this. Pads are
+  kept in `sessions/runways/_helipads.json`, beside the names; the sortie
+  signature carries the pads and the ground files of the airports near its
+  ends, and the global one the margins and the radius.
 - **The watcher asks for both ends** at the next parked moment, takeoffs as
   well as landings, and the backfill reads takeoffs on record too - so flights
   recorded before this get their departures named at the first lookup.

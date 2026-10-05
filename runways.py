@@ -300,6 +300,107 @@ def helipads_doc(pads):
     return {"schema": HELIPADS_SCHEMA, "helipads": dict(sorted(pads.items()))}
 
 
+# A helicopter's end, off every pad. Both are owner's settings, applied over
+# these defaults (settings.py, "Route names").
+#
+# On an airport's pavement: within its parking circles, or within half a taxi
+# path's width of the path, plus PAVEMENT_MARGIN_FT - aprons are not in the
+# sim's data, and a helicopter parked on one between marked stands sat 100-160
+# ft from anything mapped. 200 ft is about a stand's depth beside its
+# taxilane: a judgment, labelled as one, chosen by the owner.
+PAVEMENT_MARGIN_FT = 200.0
+# Only for an airport whose data has no parking spots or taxi paths at all -
+# a small field - an airport with runways whose reference point is within
+# this radius. The owner's choice.
+HELICOPTER_AIRPORT_RADIUS_NM = 0.5
+# Where the position point sits on a helicopter on a pad: an AS365 is 14 m
+# long. A judgment from the airframe, not fitted to flights.
+HELIPAD_MARGIN_FT = 30.0
+
+# An airport's ground - parking circles and taxi paths - one file per airport
+# under ground/, since a large airport's is hundreds of kilobytes and the
+# airport index reads every file beside it. Fetched only for airports near a
+# helicopter's end that was on no pad. A file with nothing in it is an
+# airport the sim gave no ground for.
+GROUND_DIR = "ground"
+GROUND_SCHEMA = 1
+
+
+def ground_path(cache_dir, ident):
+    return cache_path(os.path.join(cache_dir, GROUND_DIR), ident)
+
+
+def ground_doc(ident, parkings, paths):
+    """parkings: [(lat, lon, radius_ft)]; paths: [(lat1, lon1, lat2, lon2,
+    width_ft)]."""
+    r = lambda v: round(float(v), 7)
+    return {"schema": GROUND_SCHEMA, "ident": ident,
+            "parkings": [[r(a), r(b), round(float(c), 1)] for a, b, c in parkings],
+            "paths": [[r(a), r(b), r(c), r(d), round(float(w), 1)] for a, b, c, d, w in paths]}
+
+
+def load_ground(cache_dir, ident):
+    """An airport's ground as saved, or None when it has not been asked."""
+    try:
+        with open(ground_path(cache_dir, ident), encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not (isinstance(doc, dict) and doc.get("schema") == GROUND_SCHEMA
+            and isinstance(doc.get("parkings"), list) and isinstance(doc.get("paths"), list)):
+        return None
+    return doc
+
+
+def _segment_ft(lat, lon, a_lat, a_lon, b_lat, b_lon):
+    ax, ay = _local_ft(lat, lon, a_lat, a_lon)
+    bx, by = _local_ft(lat, lon, b_lat, b_lon)
+    dx, dy = bx - ax, by - ay
+    length2 = dx * dx + dy * dy
+    t = 0.0 if length2 == 0 else max(0.0, min(1.0, -(ax * dx + ay * dy) / length2))
+    return math.hypot(ax + t * dx, ay + t * dy)
+
+
+def off_runways_ft(airport, lat, lon):
+    """Feet from this point to the nearest of an airport's runways - 0 on
+    one, its rectangle being its length by its width - or None without any."""
+    best = None
+    for rw in (airport or {}).get("runways") or []:
+        try:
+            e, n = _local_ft(rw["lat"], rw["lon"], lat, lon)
+            h = math.radians(float(rw["heading"]))
+            along = e * math.sin(h) + n * math.cos(h)
+            across = e * math.cos(h) - n * math.sin(h)
+            d = math.hypot(max(0.0, abs(along) - float(rw["length_ft"]) / 2.0),
+                           max(0.0, abs(across) - float(rw["width_ft"]) / 2.0))
+        except (KeyError, TypeError, ValueError):
+            continue
+        best = d if best is None else min(best, d)
+    return best
+
+
+def off_pavement_ft(ground, lat, lon):
+    """Feet from this point to the airport's mapped pavement - 0 inside a
+    parking circle or on a taxi path - or None when nothing is mapped."""
+    if not ground:
+        return None
+    best = None
+    near_deg = 0.05                         # about 3 nm: nothing further can matter
+    for p_lat, p_lon, radius in ground.get("parkings") or []:
+        if abs(p_lat - lat) > near_deg:
+            continue
+        d = max(0.0, nm_apart(lat, lon, p_lat, p_lon) * FT_PER_NM - radius)
+        best = d if best is None else min(best, d)
+    for a_lat, a_lon, b_lat, b_lon, width in ground.get("paths") or []:
+        if abs(a_lat - lat) > near_deg:
+            continue
+        d = max(0.0, _segment_ft(lat, lon, a_lat, a_lon, b_lat, b_lon) - width / 2.0)
+        best = d if best is None else min(best, d)
+    if best is None and (ground.get("parkings") or ground.get("paths")):
+        return float("inf")
+    return best
+
+
 def on_helipad(pads, lat, lon, margin_ft):
     """The pad this point is on, as (distance_ft, pad), or None.
 

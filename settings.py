@@ -152,6 +152,21 @@ SPEC = [
              "or described with no grades."},
 
     # ---- maps ----
+    # ---- route names ----
+    {"key": "heli_pavement_margin_ft", "module": "runways", "attr": "PAVEMENT_MARGIN_FT",
+     "type": "float", "min": 0.0, "max": 1000.0, "group": "Route names",
+     "label": "Helicopter: distance from an airport's pavement (feet)", "live": True,
+     "note": "A helicopter's takeoff or landing off a helipad is named for an "
+             "airport when it is this close to the airport's parking spots or "
+             "taxiways. Aprons are not in the sim's data, so this allows for "
+             "them; 200 ft is about a parking stand's depth beside its "
+             "taxiway - a judgment, not a published figure."},
+    {"key": "heli_airport_radius_nm", "module": "runways", "attr": "HELICOPTER_AIRPORT_RADIUS_NM",
+     "type": "float", "min": 0.0, "max": 3.0, "group": "Route names",
+     "label": "Helicopter: airport radius where no pavement is mapped (nm)", "live": True,
+     "note": "Only for an airport the sim gives no parking spots or taxiways "
+             "for - usually a small field: a helicopter's takeoff or landing "
+             "this close to the airport's reference point is named for it."},
     {"key": "tile_source", "module": "tiles", "attr": "TILE_SOURCE",
      "type": "choice", "choices": ["topo", "osm"], "group": "Maps",
      "label": "Basemap", "live": True,

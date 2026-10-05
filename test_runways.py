@@ -899,6 +899,8 @@ def test_saving_a_band_in_the_watcher_rebuilds_the_logbook():
     keep_s = (settings.SETTINGS_PATH, dict(settings._defaults),
               settings._values, dict(settings._registry))
     keep_g = grading.runway_tunables()
+    keep_r = {s["attr"]: getattr(runways, s["attr"]) for s in settings.SPEC
+              if s["module"] == "runways"}
     keep_w = (watcher.BASE, watcher.schedule_logbook_rebuild)
     asked = []
     try:
@@ -908,22 +910,26 @@ def test_saving_a_band_in_the_watcher_rebuilds_the_logbook():
         settings._defaults.clear()
         settings._values = {}
         watcher.load_settings_at_startup()        # registers what the watcher does
+        modules = {"grading": grading, "runways": runways}
+        seen = set()
         for spec in settings.SPEC:
-            if spec["module"] != "grading":
+            if spec["module"] not in modules:
                 continue
+            seen.add(spec["module"])
             new = (not settings._defaults[spec["key"]] if spec["type"] == "bool"
                    else spec["min"])
             del asked[:]
             ok, out = watcher.apply_settings({spec["key"]: new})
             assert ok, out
-            assert getattr(grading, spec["attr"]) == new, (
-                "saving %s did not reach grading.%s" % (spec["key"], spec["attr"]))
+            assert getattr(modules[spec["module"]], spec["attr"]) == new, (
+                "saving %s did not reach %s.%s" % (spec["key"], spec["module"], spec["attr"]))
             assert out["rebuild_scheduled"] and asked, (
                 "saving %s changed grades and scheduled no rebuild" % spec["key"])
             del asked[:]
             ok, out = watcher.apply_settings({spec["key"]: new})
             assert not out["rebuild_scheduled"] and not asked, (
                 "saving %s unchanged rebuilt the logbook anyway" % spec["key"])
+        assert seen == set(modules), "no settings found for %r" % (set(modules) - seen)
     finally:
         settings.SETTINGS_PATH, defaults, settings._values, registry = keep_s
         settings._defaults.clear()
@@ -932,6 +938,8 @@ def test_saving_a_band_in_the_watcher_rebuilds_the_logbook():
         settings._registry.update(registry)
         for name, value in keep_g.items():
             setattr(grading, name, value)
+        for name, value in keep_r.items():
+            setattr(runways, name, value)
         watcher.BASE, watcher.schedule_logbook_rebuild = keep_w
         shutil.rmtree(root, ignore_errors=True)
 
@@ -1023,6 +1031,9 @@ class Lookup(object):
         self.on_list = None
         self.named = []
         self.name_for = lambda ident: "Name of " + ident
+        self.pads_for = lambda ident: []
+        self.grounded = []
+        self.ground_for = lambda ident: runways.ground_doc(ident, [], [])
         # A list held from an earlier test's "connection" would answer for
         # this one.
         watcher.sim_session_changed()
@@ -1056,7 +1067,11 @@ class Lookup(object):
             def facility_details(self, ident, region):
                 look.named.append(ident)
                 name = look.name_for(ident)
-                return None if name is None else {"name": name, "helipads": []}
+                return None if name is None else {"name": name, "helipads": look.pads_for(ident)}
+
+            def facility_ground(self, ident, region):
+                look.grounded.append(ident)
+                return look.ground_for(ident)
 
             def facility_runways(self, ident, region):
                 look.asked.append(ident)
@@ -1252,6 +1267,9 @@ def _asked_for(touchdown, airport):
 
         def facility_details(self, ident, region):
             return {"name": "", "helipads": []}
+
+        def facility_ground(self, ident, region):
+            return runways.ground_doc(ident, [], [])
 
         def facility_runways(self, ident, region):
             asked.append(ident)
@@ -1601,14 +1619,18 @@ def test_a_helicopter_near_an_airport_with_runways_is_named_for_it():
         _flight(t, 1800.0)
         _helicopter(t)
         la, lo = _event_point(t, "landing")
-        near = _east_of(la, lo, 0.4 * runways.FT_PER_NM)
-        t.runway("KNEAR", lat=near[0], lon=near[1])
+        # North of the landing, so its east-west runway is not under it.
+        t.runway("KNEAR", lat=la + 0.4 / 60.0, lon=lo)
         arr = _leg(t).get("arrival") or {}
         assert (arr.get("airport"), arr.get("how")) == ("KNEAR", "nearby"), arr
         assert arr.get("runway") is None, "a helicopter was given a runway"
-        far = _east_of(la, lo, 0.6 * runways.FT_PER_NM)
+        # Its ground mapped, and the landing nowhere near it: the radius is
+        # only for an airport whose pavement is not mapped.
+        _ground(t, "KNEAR", parkings=[(la + 0.4 / 60.0, lo, 60.0)])
+        assert _leg(t, force=False).get("arrival") is None, (
+            "an airport with mapped pavement was named for being near")
         os.remove(runways.cache_path(os.path.join(t.dir, "runways"), "KNEAR"))
-        t.runway("KFARR", lat=far[0], lon=far[1])
+        t.runway("KFARR", lat=la + 0.6 / 60.0, lon=lo)
         assert _leg(t).get("arrival") is None, "0.6 nm away was named"
     finally:
         t.close()
@@ -1628,6 +1650,157 @@ def test_an_airplane_is_never_named_for_being_near():
         assert leg.get("departure") is None, leg.get("departure")
     finally:
         t.close()
+
+
+def _ground(tree, ident, parkings=(), paths=()):
+    d = os.path.join(tree.dir, "runways")
+    path = runways.ground_path(d, ident)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(runways.ground_doc(ident, list(parkings), list(paths)), f)
+
+
+def _ground_record(kind, fmt, *values):
+    return _facility(9, 1, kind, struct.pack(fmt, *values))
+
+
+def test_an_airports_ground_is_read_in_the_measured_layout():
+    """Parking spots and taxi points are metres east and north of the
+    airport's reference; a taxi path joins two points, except that a path of
+    type 3 ends at a parking spot - measured, read as a point its median
+    length was thousands of feet."""
+    m = 1.0 / runways.FT_PER_M                       # a foot, in metres
+    parts = [_facility(1, 0, 0, struct.pack("<dd", LAT0, LON0)),
+             _ground_record(15, "<iffff", 3, 30.0, 90.0, 1000.0 * m, 0.0),      # 1,000 ft east
+             _ground_record(14, "<iff", 4, 0.0, 500.0 * m),                    # 500 ft north
+             _ground_record(14, "<iff", 4, 0.0, 900.0 * m),                    # 900 ft north
+             _ground_record(16, "<ifii", 4, 25.0, 0, 1),                       # point to point
+             _ground_record(16, "<ifii", 3, 25.0, 0, 0),                       # point to PARKING 0
+             _ground_record(16, "<ifii", 4, 25.0, 0, 7)]                       # no such point
+    conn = _FakeConn(runway_parts=parts)
+    doc = conn.g.facility_ground("XAPT", "XX", timeout=1.0)
+    assert conn.added == list(watcher.GROUND_FIELDS)
+    (p_lat, p_lon, rad), = doc["parkings"]
+    assert abs(rad - 30.0 * runways.FT_PER_M) < 0.2, "a parking radius not read as metres"
+    assert abs(runways.nm_apart(LAT0, LON0, p_lat, p_lon) * runways.FT_PER_NM - 1000.0) < 2
+    assert abs(p_lat - LAT0) < 1e-6 and p_lon > LON0, "BIAS_X is not east"
+    assert len(doc["paths"]) == 2, "a path to a missing point was kept: %r" % doc["paths"]
+    to_point, to_parking = doc["paths"]
+    assert abs((to_point[2] - LAT0) * 60.0 * runways.FT_PER_NM - 900.0) < 2, "BIAS_Z is not north"
+    assert (to_parking[2], to_parking[3]) == (p_lat, p_lon), (
+        "a type 3 path did not end at its parking spot")
+    assert abs(to_point[4] - 25.0 * runways.FT_PER_M) < 0.2
+
+
+def test_off_the_pavement_is_measured_from_its_edges():
+    g = runways.ground_doc("X", [(LAT0, LON0, 50.0)],
+                           [(LAT0, LON0 + 0.01, LAT0 + 0.01, LON0 + 0.01, 80.0)])
+    assert runways.off_pavement_ft(g, LAT0, LON0) == 0.0
+    east = _east_of(LAT0, LON0, 150.0)
+    assert abs(runways.off_pavement_ft(g, *east) - 100.0) < 1, "a parking circle's edge"
+    path_side = _east_of(LAT0 + 0.005, LON0 + 0.01, 140.0)
+    assert abs(runways.off_pavement_ft(g, *path_side) - 100.0) < 1, "a path's edge"
+    assert runways.off_pavement_ft(runways.ground_doc("X", [], []), LAT0, LON0) is None
+    assert runways.off_pavement_ft(None, LAT0, LON0) is None
+    airport = {"runways": [{"lat": LAT0, "lon": LON0, "heading": 90.0,
+                            "length_ft": 1000.0, "width_ft": 100.0}]}
+    assert runways.off_runways_ft(airport, *_east_of(LAT0, LON0, 400.0)) == 0.0
+    assert abs(runways.off_runways_ft(airport, LAT0 + 150.0 / (60 * runways.FT_PER_NM), LON0) - 100.0) < 1
+
+
+def test_a_helicopter_on_an_airports_pavement_is_named_for_it():
+    """Off every pad: inside a parking circle, on a taxi path or a runway,
+    or within the pavement margin of one, a helicopter's end is at that
+    airport - however far its reference point."""
+    t = Tree()
+    try:
+        _flight(t, 1800.0)
+        _helicopter(t)
+        la, lo = _event_point(t, "landing")
+        t.runway("KBIG", lat=la + 2.0 / 60.0, lon=lo)            # 2 nm north
+        _ground(t, "KBIG", parkings=[(la, lo, 60.0)])
+        arr = _leg(t).get("arrival") or {}
+        assert (arr.get("airport"), arr.get("how")) == ("KBIG", "pavement"), arr
+
+        # 150 ft beyond the circle: inside the 200 ft margin, for aprons.
+        _ground(t, "KBIG", parkings=[(la + 210.0 / (60 * runways.FT_PER_NM), lo, 60.0)])
+        arr = _leg(t, force=False).get("arrival") or {}
+        assert arr.get("how") == "pavement" and abs(arr["distance_ft"] - 150) < 2, arr
+        # 260 ft beyond: not.
+        _ground(t, "KBIG", parkings=[(la + 320.0 / (60 * runways.FT_PER_NM), lo, 60.0)])
+        assert _leg(t, force=False).get("arrival") is None
+
+        # On its runway, with nothing else mapped near: pavement.
+        _ground(t, "KBIG", parkings=[(la + 2.0 / 60.0, lo, 60.0)])
+        t.runway("KBIG", lat=la, lon=lo)
+        arr = _leg(t).get("arrival") or {}
+        assert (arr.get("airport"), arr.get("how")) == ("KBIG", "pavement"), arr
+    finally:
+        t.close()
+
+
+def test_the_lookup_fetches_ground_only_for_a_helicopter_on_no_pad():
+    """The ground of a large airport takes half a minute, so it is asked
+    for only where it can name something: an airport with runways near an
+    end that no runway contains and no pad is under - and once."""
+    look = Lookup()
+    try:
+        look.run()
+        assert sorted(look.grounded) == ["KAAA", "KBBB"], look.grounded
+        assert runways.load_ground(look.dir, "KAAA") is not None
+        look.grounded[:] = []
+        watcher._runway_queue[:] = [look.TOUCHDOWN]
+        look.run()
+        assert look.grounded == [], "ground asked for twice: %r" % look.grounded
+
+        # The same end on a pad: no ground wanted.
+        for ident in ("KAAA", "KBBB"):
+            os.remove(runways.ground_path(look.dir, ident))
+        pads = runways.load_helipads(look.dir)
+        pads["KAAA"] = [{"lat": look.TOUCHDOWN[0], "lon": look.TOUCHDOWN[1],
+                         "heading": 0.0, "length_ft": 66.0, "width_ft": 66.0}]
+        with open(runways.helipads_path(look.dir), "w", encoding="utf-8") as f:
+            json.dump(runways.helipads_doc(pads), f)
+        watcher._runway_queue[:] = [look.TOUCHDOWN]
+        look.run()
+        assert look.grounded == [], "ground asked for an end on a pad"
+    finally:
+        look.close()
+
+
+def test_ground_that_fails_costs_nothing_and_is_asked_again():
+    look = Lookup()
+    try:
+        look.ground_for = lambda ident: None
+        look.run()
+        assert watcher._runway_queue == [] and watcher._runway_state["backfilled"]
+        assert runways.load_ground(look.dir, "KAAA") is None
+        def boom(ident):
+            raise RuntimeError("ground broke")
+        look.ground_for = boom
+        watcher._runway_queue[:] = [look.TOUCHDOWN]
+        look.run()
+        assert set(runways.load_index(look.dir)) == {"KAAA", "KBBB"}
+        look.ground_for = lambda ident: runways.ground_doc(ident, [], [])
+        look.grounded[:] = []
+        watcher._runway_queue[:] = [look.TOUCHDOWN]
+        look.run()
+        assert sorted(look.grounded) == ["KAAA", "KBBB"], look.grounded
+    finally:
+        look.close()
+
+
+def test_no_ground_is_asked_for_once_the_aircraft_moves():
+    look = Lookup()
+    try:
+        def then_move(ident):
+            look.parked(False)
+            return runways.ground_doc(ident, [], [])
+        look.ground_for = then_move
+        look.run()
+        assert len(look.grounded) == 1, "ground asked for after moving: %r" % look.grounded
+    finally:
+        look.close()
 
 
 def test_a_helipad_found_later_rebuilds_that_sortie():
@@ -1651,17 +1824,24 @@ def test_a_helipad_found_later_rebuilds_that_sortie():
         before = sig()
         _pads(t, "LEFAR", [(LAT0 + 3.0, LON0)])
         assert sig() == before, "a pad 180 nm away rebuilt this sortie"
+        before_ground = sig()
+        _ground(t, "LEFAR", parkings=[(LAT0 + 3.0, LON0, 50.0)])
+        assert sig() == before_ground, "ground 180 nm away rebuilt this sortie"
+        _ground(t, "LEPAD", parkings=[(la, lo, 50.0)])
+        assert sig() != before_ground, "ground found near this sortie did not rebuild it"
         _pads(t, "LEPAD", [(la, lo)])
         assert sig() != before, (
             "the pad this sortie took off from was found and its signature did "
             "not move, so the cached sortie keeps its coordinates for ever")
         g = logbook_build.global_signature(False)
-        keep = logbook_build.HELICOPTER_AIRPORT_RADIUS_NM
-        logbook_build.HELICOPTER_AIRPORT_RADIUS_NM = 1.0
-        try:
-            assert logbook_build.global_signature(False) != g, "the radius is not in the signature"
-        finally:
-            logbook_build.HELICOPTER_AIRPORT_RADIUS_NM = keep
+        for attr, value in (("HELICOPTER_AIRPORT_RADIUS_NM", 1.0), ("PAVEMENT_MARGIN_FT", 50.0)):
+            keep = getattr(runways, attr)
+            setattr(runways, attr, value)
+            try:
+                assert logbook_build.global_signature(False) != g, (
+                    "%s is not in the signature" % attr)
+            finally:
+                setattr(runways, attr, keep)
     finally:
         t.close()
 

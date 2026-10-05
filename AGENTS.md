@@ -329,6 +329,9 @@ Data lives in `sessions/` and is **not** in git: flight tracks, clips, maps,
   measured too:** `NAME64` is text ending at the first zero byte with
   leftover memory after it, so cut there (`airport_name_from`). They are
   kept in `sessions/runways/_names.json`, never in an airport file.
+  **And an airport's ground:** a taxi path of type 3 ends at a *parking
+  spot*, not a taxi point (`ground_from`). Read as a point it gave
+  plausible-looking nonsense that named the wrong ends.
   **A landing's runway is known when a cached runway contains the touchdown**,
   not when a cached airport is near it: a heliport cached 2.5 nm from a
   landing once hid the airport it was really at from every later lookup.

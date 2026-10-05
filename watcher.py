@@ -435,6 +435,73 @@ HELIPAD_RECORD_BYTES = 44
 AIRPORT_NAMES_MAX = 200
 
 
+# An airport's ground: parking spots and the taxi network, in one request.
+# Measured against a running sim on six airports, large and small:
+#   the airport's record (type 0) is its reference latitude and longitude,
+#     two doubles, 16 bytes;
+#   a parking spot is type 15, 20 bytes: type (int), radius, heading, BIAS_X,
+#     BIAS_Z (floats; metres, the biases east and north of the reference);
+#   a taxi point is type 14, 12 bytes: type (int), BIAS_X, BIAS_Z;
+#   a taxi path is type 16, 16 bytes: type (int), width (float, metres),
+#     start, end (ints) - indices into the taxi points in the order they
+#     arrived, except that a path of type 3 ends at a PARKING spot: read as
+#     a taxi point its median length was 2,600-7,600 ft, read as a parking
+#     spot 55-258 ft, at every airport tried.
+# A large airport sends thousands of each: 37 s for one with 8,315 paths,
+# 11 s and 7 s for two mid-sized ones, under 3 s for small ones; the owner
+# saw no stutter in the sim while the largest came in, parked.
+GROUND_DEFINE_ID = 7703
+GROUND_FIELDS = ("OPEN AIRPORT", "LATITUDE", "LONGITUDE",
+                 "OPEN TAXI_PARKING", "TYPE", "RADIUS", "HEADING", "BIAS_X", "BIAS_Z",
+                 "CLOSE TAXI_PARKING",
+                 "OPEN TAXI_POINT", "TYPE", "BIAS_X", "BIAS_Z", "CLOSE TAXI_POINT",
+                 "OPEN TAXI_PATH", "TYPE", "WIDTH", "START", "END", "CLOSE TAXI_PATH",
+                 "CLOSE AIRPORT")
+GROUND_PARKING, GROUND_POINT, GROUND_PATH = 15, 14, 16
+GROUND_PATH_TO_PARKING = 3
+GROUND_TIMEOUT = 120.0
+# Airports asked for their ground in one pass. Each can take half a minute.
+GROUND_MAX = 10
+
+
+def ground_from(records):
+    """(ref_lat, ref_lon, parkings, paths) from [(record type, data)], in
+    runways.ground_doc's shapes, or None without the airport's record."""
+    import runways as runways_mod
+    ref = None
+    spots, points, raw_paths = [], [], []
+    for kind, data in records:
+        if kind == 0 and len(data) >= 16:
+            ref = struct.unpack_from("<dd", data, 0)
+        elif kind == GROUND_PARKING and len(data) == 20:
+            spots.append(struct.unpack_from("<iffff", data, 0))
+        elif kind == GROUND_POINT and len(data) == 12:
+            points.append(struct.unpack_from("<iff", data, 0))
+        elif kind == GROUND_PATH and len(data) == 16:
+            raw_paths.append(struct.unpack_from("<ifii", data, 0))
+    if ref is None:
+        return None
+    lat0, lon0 = ref
+    per_deg_lon = 60.0 * math.cos(math.radians(lat0))
+
+    def at(bias_x, bias_z):
+        north_nm = bias_z * runways_mod.FT_PER_M / runways_mod.FT_PER_NM
+        east_nm = bias_x * runways_mod.FT_PER_M / runways_mod.FT_PER_NM
+        return lat0 + north_nm / 60.0, lon0 + east_nm / per_deg_lon
+
+    spot_at = [at(bx, bz) for _t, _r, _h, bx, bz in spots]
+    point_at = [at(bx, bz) for _t, bx, bz in points]
+    parkings = [(la, lo, r * runways_mod.FT_PER_M)
+                for (la, lo), (_t, r, _h, _bx, _bz) in zip(spot_at, spots)]
+    paths = []
+    for kind, width, start, end in raw_paths:
+        ends_at = spot_at if kind == GROUND_PATH_TO_PARKING else point_at
+        if 0 <= start < len(point_at) and 0 <= end < len(ends_at):
+            a, b = point_at[start], ends_at[end]
+            paths.append((a[0], a[1], b[0], b[1], width * runways_mod.FT_PER_M))
+    return lat0, lon0, parkings, paths
+
+
 def helipad_from(data):
     """A helipad record as a pad: {lat, lon, heading, length_ft, width_ft}."""
     import runways as runways_mod
@@ -1541,6 +1608,8 @@ def load_settings_at_startup():
         settings_mod.register("tiles", tiles)
         settings_mod.register("mapbake", mapbake)
         settings_mod.register("grading", grading)
+        import runways as runways_mod
+        settings_mod.register("runways", runways_mod)
         settings_mod.capture_defaults()
         saved = settings_mod.load()
         settings_mod.apply(on_buffer=resize_live_buffer)
@@ -1592,7 +1661,8 @@ def apply_settings(values):
     # touchdown-point bands, which change grades.
     watched = ("tile_source", "map_style", "grade_float", "float_normal_s",
                "float_margin_ft", "float_beyond_ft", "grade_touchdown_point",
-               "tdz_target_ft", "tdz_tolerance_ft", "tdz_end_ft", "tdz_beyond_ft")
+               "tdz_target_ft", "tdz_tolerance_ft", "tdz_end_ft", "tdz_beyond_ft",
+               "heli_pavement_margin_ft", "heli_airport_radius_nm")
     changed = [k for k in watched if before.get(k) != after.get(k)]
     # Clip windows decide a clip's shape at commit, so they are staged rather
     # than applied when a clip is mid-capture; the buffer resize is held with
@@ -4393,6 +4463,37 @@ class GameSimConnect:
                 out["helipads"].append(helipad_from(data))
         return out
 
+    def facility_ground(self, ident, region, timeout=GROUND_TIMEOUT):
+        """One airport's parking spots and taxi paths as a runways.ground_doc,
+        or None when it could not be asked or did not answer. Read-only."""
+        import runways as runways_mod
+        add = self.fns.get("SimConnect_AddToFacilityDefinition")
+        req = self.fns.get("SimConnect_RequestFacilityData")
+        if add is None or req is None:
+            return None
+        if not getattr(self, "_ground_defined", False):
+            for field in GROUND_FIELDS:
+                if not _is_hr(add(self._h(), GROUND_DEFINE_ID, field.encode()), 0):
+                    return None
+            self._ground_defined = True
+        rid = self.new_request_id()
+        with self._lock:
+            self._fac[rid] = {"parts": [], "done": False}
+        if not _is_hr(req(self._h(), GROUND_DEFINE_ID, rid,
+                          str(ident).encode("ascii", "replace"),
+                          str(region).encode("ascii", "replace")), 0):
+            with self._lock:
+                self._fac.pop(rid, None)
+            return None
+        ent = self._fac_wait(rid, lambda e: e["done"], timeout)
+        if ent is None:
+            return None
+        got = ground_from([(struct.unpack_from("<I", raw, 24)[0], raw[40:])
+                           for raw in ent["parts"] if len(raw) >= 40])
+        if got is None:
+            return None
+        return runways_mod.ground_doc(ident, got[2], got[3])
+
     def wait_object_id(self, request_id, timeout=4.0):
         t0 = time.time()
         while time.time() - t0 < timeout:
@@ -6322,6 +6423,71 @@ def _fill_airport_names_unguarded(connection, keep_going):
                     % (len(got), sum(ms), named, n_pads, why)}
 
 
+def _airports_wanting_ground(points):
+    """Airports with runways near points that were on no helipad, whose
+    ground has not been asked for - nearest first, once each.
+
+    The points are the takeoffs and landings no runway contains: an
+    airplane's end on its runway never asks, and a helicopter's on a pad
+    is named already."""
+    import runways as runways_mod
+    index = runways_mod.load_index(RUNWAYS_DIR)
+    pads = runways_mod.load_helipads(RUNWAYS_DIR)
+    out = {}
+    for lat, lon in points:
+        near = []
+        for ident, (la, lo, path) in index.items():
+            if abs(la - lat) > 0.1:
+                continue
+            d = runways_mod.nm_apart(lat, lon, la, lo)
+            if d <= RUNWAY_LOOKUP_RADIUS_NM:
+                near.append((d, ident, path))
+        if any(runways_mod.on_helipad(pads.get(i), lat, lon, runways_mod.HELIPAD_MARGIN_FT)
+               for _d, i, _p in near):
+            continue
+        for d, ident, path in near:
+            if ident in out or runways_mod.load_ground(RUNWAYS_DIR, ident) is not None:
+                continue
+            doc = runways_mod.load_airport(path) or {}
+            if doc.get("runways"):
+                out[ident] = (d, doc.get("region") or "")
+    return sorted(out.items(), key=lambda kv: kv[1][0])
+
+
+def _fill_ground(connection, keep_going, points):
+    """Fetch the ground of the airports _airports_wanting_ground names, up
+    to GROUND_MAX a pass. Never at the runways' expense: a failure is a note."""
+    try:
+        import runways as runways_mod
+        todo = _airports_wanting_ground(points)
+        if not todo:
+            return {"saved": 0, "note": "no airport ground wanted"}
+        saved, ms, why = 0, [], ""
+        for ident, (_d, region) in todo[:GROUND_MAX]:
+            if not keep_going():
+                why = ", stopped: the aircraft moved"
+                break
+            gsc = connection()
+            if gsc is None:
+                why = ", stopped: SimConnect open failed"
+                break
+            t = time.perf_counter()
+            doc = gsc.facility_ground(ident, region)
+            ms.append((time.perf_counter() - t) * 1000.0)
+            if doc is None:
+                why = ", %s did not answer" % ident
+                continue
+            path = runways_mod.ground_path(RUNWAYS_DIR, ident)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            persistence.atomic_json(path, doc)
+            saved += 1
+        return {"saved": saved,
+                "note": "%d airport ground(s) in %.0f ms, slowest %.0f ms%s"
+                        % (saved, sum(ms), max(ms) if ms else 0.0, why)}
+    except Exception as e:
+        return {"saved": 0, "note": "airport ground failed %r" % (e,)}
+
+
 def lookup_runways(points, backfill=False, keep_going=None):
     """Cache the runways of every airport near these points that is not cached.
 
@@ -6449,12 +6615,18 @@ def lookup_runways(points, backfill=False, keep_going=None):
         named = ({"named": 0, "note": "names not asked for"}
                  if status == "cancelled" else
                  _fill_airport_names(connection, keep_going))
-        log("runways: %d point(s), %d airport(s) nearby, %d cached, %s; %s; %s; %s"
+        # Last of all, the slow one: an airport's ground, for a helicopter's
+        # end that was on no pad. After the names, which bring the pads.
+        ground = ({"saved": 0, "note": "ground not asked for"}
+                  if status == "cancelled" else
+                  _fill_ground(connection, keep_going, want))
+        log("runways: %d point(s), %d airport(s) nearby, %d cached, %s; %s; %s; %s; %s"
             % (len(want), len(targets), saved, status, list_note,
                ("%d runway request(s) in %.0f ms, slowest %.0f ms"
                 % (len(asked_ms), sum(asked_ms), max(asked_ms)))
-               if asked_ms else "no runway requests", named["note"]))
-        return {"status": status, "saved": saved, "named": named["named"]}
+               if asked_ms else "no runway requests", named["note"], ground["note"]))
+        return {"status": status, "saved": saved,
+                "named": named["named"] + ground["saved"]}
     finally:
         if gsc is not None:
             gsc.close()
