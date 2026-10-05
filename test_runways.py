@@ -1040,17 +1040,239 @@ def test_the_watcher_asks_the_sim_about_airplane_runways_only():
             for fid, cat, vs0, lat in flights:
                 with open(os.path.join(root, fid + ".meta.json"), "w", encoding="utf-8") as f:
                     json.dump({"flight_id": fid, "category": cat, "vs0": vs0}, f)
+                ev.write(json.dumps({"kind": "takeoff", "flight_id": fid,
+                                     "lat": lat + 0.5, "lon": LON0}) + "\n")
                 ev.write(json.dumps({"kind": "landing", "flight_id": fid,
                                      "lat": lat, "lon": LON0}) + "\n")
             ev.write(json.dumps({"kind": "landing", "lat": LAT0 + 3.0,
                                  "lon": LON0}) + "\n")
-        assert watcher._landing_points_on_record() == [(LAT0, LON0)], (
+        # Takeoffs too, so flights recorded before departures were named get
+        # their departure airports; still airplanes only.
+        assert watcher._runway_points_on_record() == [(LAT0 + 0.5, LON0), (LAT0, LON0)], (
             "the backfill would ask the sim about %r"
-            % watcher._landing_points_on_record())
+            % watcher._runway_points_on_record())
     finally:
         watcher.RUNWAY_LOOKUP, watcher.SESSIONS, watcher.EVENTS_JSONL = keep
         watcher._runway_queue[:] = keep_q
         shutil.rmtree(root, ignore_errors=True)
+
+
+# --------------------------------------------------------------------------
+# the airport and runway at each end of a leg
+# --------------------------------------------------------------------------
+
+def _rows(tree):
+    path = os.path.join(tree.dir, FID + ".jsonl")
+    return path, [json.loads(l) for l in open(path, encoding="utf-8")]
+
+
+def _departure_runway(tree, ident="KDEP"):
+    """An east-west runway under the fixture's takeoff roll - the first 20
+    rows, on the ground, rolling east."""
+    _path, rows = _rows(tree)
+    tree.runway(ident, lat=rows[10]["lat"], lon=rows[10]["lon"])
+    return rows[10]["lat"], rows[10]["lon"]
+
+
+def _move_roll(tree, dlat):
+    """Shift the recorded takeoff roll north, off any runway under it."""
+    path, rows = _rows(tree)
+    for r in rows[:21]:
+        r["lat"] += dlat
+    with open(path, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+    return rows
+
+
+def _logbook(tree):
+    with open(logbook_build.LOGBOOK_JSON, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def test_a_leg_records_the_airport_and_runway_at_each_end():
+    """Recorded lat/lon only, before: the route said where in numbers. Now an
+    end on a runway the sim describes is that airport and runway, and an end
+    off one keeps its coordinates."""
+    t = Tree()
+    try:
+        _flight(t, 1800.0)
+        t.runway()                                   # the arrival, KTST
+        leg = _leg(t)
+        assert leg.get("arrival") == {"airport": "KTST", "runway": "09"}, leg.get("arrival")
+        assert leg.get("departure") is None, (
+            "a departure was named with no runway cached under it: %r" % leg.get("departure"))
+        r = leg["route"]
+        assert r["to"] == "KTST 09" and r["to_kind"] == "airport" and r["to_named"], r
+        assert r["from_kind"] == "coords" and not r["from_named"], r
+        assert r["from"] == logbook_build.coord_label(
+            leg["takeoff"]["lat"], leg["takeoff"]["lon"]), r
+
+        _departure_runway(t)
+        leg = _leg(t)
+        dep = leg.get("departure") or {}
+        assert (dep.get("airport"), dep.get("runway")) == ("KDEP", "09"), (
+            "rolled east down KDEP's runway and recorded %r" % dep)
+        assert dep.get("source") == "track" and abs(dep["lateral_ft"]) < 10, dep
+        assert leg["route"]["from"] == "KDEP 09", leg["route"]
+
+        doc = _logbook(t)
+        row = doc["find"][0]
+        assert row["f"] == "KDEP 09" and row["t"] == "KTST 09", row
+        assert set(row["p"]) == {"KDEP 09", "KTST 09"}, row
+    finally:
+        t.close()
+
+
+def test_a_takeoff_off_the_runway_is_not_given_one():
+    """An airport nearby is not the runway rolled down: a takeoff from a
+    field beside it keeps its coordinates."""
+    t = Tree()
+    try:
+        _flight(t, 1800.0)
+        _departure_runway(t)
+        _move_roll(t, 0.01)                          # about 3,600 ft north
+        leg = _leg(t)
+        assert leg.get("departure") is None, leg.get("departure")
+        assert leg["route"]["from_kind"] == "coords", leg["route"]
+    finally:
+        t.close()
+
+
+def test_a_roll_the_recording_missed_names_no_runway():
+    """The last sample on the ground has to be the roll's end, a moment
+    before lift-off. With the roll missing from the recording, the last
+    ground sample is from long before - here still on the runway, so the
+    guard is all that stops it naming one from stale evidence."""
+    t = Tree()
+    try:
+        _flight(t, 1800.0)
+        _departure_runway(t)
+        path, rows = _rows(t)
+        with open(path, "w", encoding="utf-8") as f:
+            for r in rows[:5] + rows[20:]:
+                f.write(json.dumps(r) + "\n")
+        assert _leg(t).get("departure") is None, _leg(t).get("departure")
+    finally:
+        t.close()
+
+
+def test_the_takeoff_clip_places_the_roll_before_the_track_does():
+    """The 10 Hz takeoff clip is the better record of the roll, as the
+    landing clip is of the touchdown. Here the track puts the roll off the
+    runway and the clip puts it on: the clip decides."""
+    t = Tree()
+    try:
+        _flight(t, 1800.0)
+        _departure_runway(t)
+        rows = _move_roll(t, 0.01)
+        pts = []
+        for r in rows[5:25]:
+            p = dict(r)
+            if p["on_ground"] or rows.index(r) <= 20:
+                p["lat"] -= 0.01
+            p["t"] = logbook_build.parse_ts(r["ts"])
+            pts.append(p)
+        with open(os.path.join(logbook_build.CLIPS_DIR, FID + "-leg1-takeoff.json"),
+                  "w", encoding="utf-8") as f:
+            json.dump({"id": FID + "-leg1-takeoff", "kind": "takeoff", "points": pts}, f)
+        dep = _leg(t).get("departure") or {}
+        assert (dep.get("airport"), dep.get("source")) == ("KDEP", "clip"), dep
+    finally:
+        t.close()
+
+
+def test_a_departure_runway_cached_later_rebuilds_that_sortie():
+    """The cache trap again, for the takeoff end: the departure's runways are
+    looked up after the flight, so the sortie must rebuild when they arrive."""
+    t = Tree()
+    try:
+        _flight(t, 1800.0)
+        t.runway()
+
+        def sig():
+            flights = logbook_build.scan_flights()
+            group = logbook_build.group_sorties(flights)[0]
+            events = {}
+            for line in open(logbook_build.EVENTS_JSONL, encoding="utf-8"):
+                e = json.loads(line)
+                events.setdefault(e["flight_id"], []).append(e)
+            return logbook_build.sortie_signature(group, "g", events, FID, None, {})
+
+        before = sig()
+        _departure_runway(t)
+        assert sig() != before, (
+            "the departure's runway was cached and the signature did not move, "
+            "so the cached sortie keeps its coordinates for ever")
+    finally:
+        t.close()
+
+
+def test_a_place_name_and_an_airport_at_the_same_end():
+    """A places.json name at an airport: the airport and runway by default,
+    the place's name with ROUTE_PREFER_PLACE_NAMES - and the other is kept,
+    so a search finds the sortie either way."""
+    t = Tree()
+    keep = (logbook_build.PLACES_JSON, logbook_build.ROUTE_PREFER_PLACE_NAMES)
+    try:
+        _flight(t, 1800.0)
+        lat, lon = _departure_runway(t)
+        logbook_build.PLACES_JSON = os.path.join(t.root, "places.json")
+        with open(logbook_build.PLACES_JSON, "w", encoding="utf-8") as f:
+            json.dump([{"name": "Home field", "lat": lat, "lon": lon, "radius_nm": 3}], f)
+        r = _leg(t)["route"]
+        assert (r["from"], r["from_kind"], r["from_place"]) == ("KDEP 09", "airport", "Home field"), r
+        assert {"KDEP 09", "Home field"} <= set(_logbook(t)["find"][0]["p"])
+
+        g_airport = logbook_build.global_signature(False)
+        logbook_build.ROUTE_PREFER_PLACE_NAMES = True
+        assert logbook_build.global_signature(False) != g_airport, (
+            "the flag does not reach the signature, so the cached routes keep "
+            "the old names")
+        r = _leg(t, force=False)["route"]
+        assert (r["from"], r["from_kind"]) == ("Home field", "place"), r
+        assert {"KDEP 09", "Home field"} <= set(_logbook(t)["find"][0]["p"])
+    finally:
+        logbook_build.PLACES_JSON, logbook_build.ROUTE_PREFER_PLACE_NAMES = keep
+        t.close()
+
+
+def test_a_helicopter_is_named_by_place_or_coordinates():
+    """No runway is asked for after a helicopter flies, and a heliport is
+    not a runway - so neither end is matched to one, even with runways
+    cached at both."""
+    t = Tree()
+    try:
+        _flight(t, 1800.0)
+        t.runway()
+        _departure_runway(t)
+        meta = os.path.join(t.dir, FID + ".meta.json")
+        doc = json.load(open(meta, encoding="utf-8"))
+        doc.update(aircraft="Test Helicopter", category="Helicopter", vs0=0.0)
+        json.dump(doc, open(meta, "w", encoding="utf-8"))
+        leg = _leg(t)
+        assert leg.get("departure") is None and leg.get("arrival") is None, leg
+        assert (leg["route"]["from_kind"], leg["route"]["to_kind"]) == ("coords", "coords")
+    finally:
+        t.close()
+
+
+def test_search_covers_every_stop_of_a_sortie():
+    """A sortie of three legs stops twice on the way. The search row carries
+    every named end - the middle ones too - once each, and no coordinates."""
+    def leg(f, fk, to, tk, fp=None, tp=None):
+        return {"route": {"from": f, "to": to, "from_kind": fk, "to_kind": tk,
+                          "from_named": fk in ("airport", "place"),
+                          "to_named": tk in ("airport", "place"),
+                          "from_place": fp, "to_place": tp}}
+    s = {"sortie_id": FID, "started_at": "1999-01-01T00:00:00",
+         "legs": [leg("KAAA 09", "airport", "KBBB 27", "airport"),
+                  leg("KBBB 27", "airport", "47.1000, -122.0000", "coords"),
+                  leg("47.1000, -122.0000", "coords", "KCCC 18", "airport", tp="Lakeside")]}
+    summary = logbook_build.summarize_sortie(s)
+    assert summary["route_from"] == "KAAA 09" and summary["route_to"] == "KCCC 18"
+    assert summary["places"] == ["KAAA 09", "KBBB 27", "KCCC 18", "Lakeside"], summary["places"]
+    assert logbook_build.find_rows([summary])[0]["p"] == summary["places"]
 
 
 def _graded(tree):

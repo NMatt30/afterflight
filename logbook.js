@@ -1009,7 +1009,16 @@
     route.appendChild(placeLink(r.to || "—", leg.landing));
     if (!r.from_named && !r.to_named) {
       route.classList.add("coords");
-      route.title = "Add places.json to name these points";
+      route.title = "Not on a runway the sim describes. Add places.json to name these points";
+    } else {
+      // Whichever of the airport and the places.json name did not win the
+      // label, on hover.
+      var other = function (kind, place, rwy) {
+        return kind === "airport" ? place : kind === "place" ? rwy : null;
+      };
+      var also = [other(r.from_kind, r.from_place, r.from_runway),
+                  other(r.to_kind, r.to_place, r.to_runway)];
+      if (also[0] || also[1]) route.title = (also[0] || "—") + " → " + (also[1] || "—");
     }
     head.appendChild(route);
     if (leg.derived) {
@@ -1373,7 +1382,10 @@
     ((state.index || {}).find || []).forEach(function (f) {
       if (state.airframe !== "all" && (f.a || "unknown") !== state.airframe) return;
       if (q) {
-        var hay = [f.a, f.f, f.t, f.d, f.i].filter(Boolean).join(" ").toLowerCase();
+        // f.p is every named stop - airports with runways, and places - so a
+        // stop in the middle of a sortie finds it too.
+        var hay = [f.a, f.f, f.t, f.d, f.i].concat(f.p || [])
+          .filter(Boolean).join(" ").toLowerCase();
         if (hay.indexOf(q) < 0) return;
       }
       if (f.m) want[f.m] = true;
@@ -1455,6 +1467,7 @@
     if (q) {
       out = out.filter(function (s) {
         return [s.aircraft, s.route_from, s.route_to, s.date, s.sortie_id]
+          .concat(s.places || [])
           .filter(Boolean).join(" ").toLowerCase().indexOf(q) >= 0;
       });
     }

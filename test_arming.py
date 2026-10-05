@@ -927,6 +927,27 @@ def test_a_landing_tells_the_tablet_how_it_felt_on_its_own_scale():
         c.close()
 
 
+def test_a_takeoff_and_a_landing_each_ask_for_their_runways():
+    """Both ends of a leg are named from the runway they were on, so both are
+    queued for the parked lookup - an airplane's, never a helicopter's."""
+    c = Clips()
+    keep = (watcher.RUNWAY_LOOKUP, list(watcher._runway_queue))
+    try:
+        watcher.RUNWAY_LOOKUP = True
+        del watcher._runway_queue[:]
+        _committed_clip("takeoff", 0, category="Airplane", vs0=40.0)
+        assert watcher._runway_queue == [(LAT0, LON0)], (
+            "a takeoff asked for no runway: %r" % watcher._runway_queue)
+        _committed_clip("landing", 1, category="Airplane", vs0=40.0)
+        assert len(watcher._runway_queue) == 2, watcher._runway_queue
+        _committed_clip("takeoff", 2, category="Helicopter", vs0=0.0)
+        assert len(watcher._runway_queue) == 2, "a helicopter takeoff asked for a runway"
+    finally:
+        watcher.RUNWAY_LOOKUP = keep[0]
+        watcher._runway_queue[:] = keep[1]
+        c.close()
+
+
 def test_a_new_recording_never_lands_in_an_existing_file():
     """Whatever the count says, a clip already on disk is never appended to.
     A miscount costs a leg number, not a recording."""

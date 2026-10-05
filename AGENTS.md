@@ -235,7 +235,7 @@ default, placed near the other tunables at the top of its module.
 | `build_release.py` | The release zip: tracked app files, python.org's embeddable Python and Pillow (pinned, SHA-256 checked), `VERSION` and a launcher. Never anything of a user's - an update is a zip unpacked over an install. `.github/workflows/release.yml` builds it on a `v*` tag. **`DATA` is the inventory of user and runtime files**: `.gitignore`, the release guard and `backup.ps1` are checked against it. Add a new data file there first. |
 | `persistence.py` | Shared document, maintenance and recording locks plus atomic JSON/JSONL helpers. |
 | `clipfile.py` | Where a clip lives on disk and how to read one. The only place that knows the layout. |
-| `runways.py` | Which runway a touchdown was on and how far past its threshold - geometry, and the per-airport runway cache under `sessions/runways/`. |
+| `runways.py` | Which runway a takeoff or touchdown was on and how far past its threshold - geometry, and the per-airport runway cache under `sessions/runways/`. The same match names a leg's ends (`logbook_build.takeoff_runway`, `route_end`). |
 | `test_integrity.py` | Disposable fixtures for cache, persistence, deletion and backup recovery. |
 | `test_replay.py` | Pose lookup during replay, against the scan it replaced; and who owns a replay when starts and stops overlap. |
 | `test_arming.py` | When a reported aircraft becomes a flight, and what a rebuild publishes. |
@@ -320,6 +320,8 @@ Data lives in `sessions/` and is **not** in git: flight tracks, clips, maps,
   before each request, not once at the start - on its own short-lived
   connection, never the one the recording rides on. It reports done, more,
   cancelled or failed, and only done takes a landing off the queue.
+  Takeoffs are queued as well as landings: the same match names both ends of
+  a leg, and the sortie signature folds in runway files near either.
   **A landing's runway is known when a cached runway contains the touchdown**,
   not when a cached airport is near it: a heliport cached 2.5 nm from a
   landing once hid the airport it was really at from every later lookup.

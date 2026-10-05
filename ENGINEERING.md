@@ -572,6 +572,44 @@ before the threshold is never used, so a runway on a mesa is not moved down
 by the drop off its end. The height over the threshold is shown as
 information and graded nowhere.
 
+### The airport and runway at each end of a leg
+
+A leg recorded only coordinates for where it began and ended. The runway
+match the touchdown spot uses names both ends: an end is that airport and
+runway ("KBFI 14R") when a runway the sim describes contains it, travelled
+along its length. The departure is the last sample on the ground before
+lift-off and the ground track over the second before it, from the 10 Hz
+takeoff clip when there is one; the runway end is the one whose direction
+matches the roll, which for a takeoff is the runway departed from. The
+arrival is the touchdown match itself.
+
+- **Off a runway, nothing is guessed.** An airport near is not the runway
+  used - the heliport trap above - so an end that no runway contains keeps
+  its places.json name or its coordinates. A last ground sample more than
+  `LIFTOFF_ROLL_MAX_SEC` before lift-off is a gap in the recording, not the
+  roll, and names nothing.
+- **Airplanes only**, as for the touchdown spot: no runway is asked for after
+  a helicopter flies, and a heliport is not a runway. Helipads are in the
+  sim's facility data but have not been measured.
+- **The watcher asks for both ends** at the next parked moment, takeoffs as
+  well as landings, and the backfill reads takeoffs on record too - so flights
+  recorded before this get their departures named at the first lookup.
+- **A place name and an airport at one end**: the airport and runway win by
+  default; `ROUTE_PREFER_PLACE_NAMES` makes the place win. The other is kept
+  on the route (`from_place`, `from_runway`), shown on hover, and searchable.
+- **Search covers every stop.** The compact find row carries `p`, every named
+  end of every leg, so a stop in the middle of a sortie finds it - not only
+  the first departure and the last arrival.
+- **Measured** on a private copy of the owner's data: every airplane takeoff
+  whose airport was already cached matched a runway centreline within 50 ft;
+  the rest were at airports never looked up, which the backfill fetches. A
+  quick turnaround kept the same runway end; a full stop that taxied back
+  departed the reciprocal. No grade, passenger line or touchdown measurement
+  moved.
+- **Not measured:** airport names ("Boeing Field") - the facility fields the
+  lookup reads carry the ident, not the name, and a name field would have to
+  be checked against a running sim first.
+
 ---
 
 ## Maps

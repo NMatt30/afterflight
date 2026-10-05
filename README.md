@@ -71,6 +71,12 @@ criterion), or a float well beyond a normal 7-second flare (a published
 figure, with an allowance AfterFlight sets), is marked down.
 Helicopters are never graded on either.
 
+**Names the airport and runway at each end.** A leg that departs from or
+lands on a runway the sim describes reads `KBFI 14R → KSEA 16L`; one that
+starts or ends anywhere else keeps its coordinates, or the name you gave the
+place in `places.json`. The search finds a flight by any airport or runway it
+used, including a stop in the middle. Airplanes only for now.
+
 **Writes a passenger's note.** A short paragraph, in the voice of someone
 sitting in the back, about what the flight felt like. Templates and a hash of
 the leg id - no language model, no network - so the same leg reads the same way
@@ -211,7 +217,7 @@ mutations, nine caught.
 | `mapbake.py` | Bakes the track-map PNGs. |
 | `tiles.py` | OSM basemap tiles, cached on disk. Never fetched during a flight. |
 | `grading.py` | Splits a leg into phases and scores each one. Owns every threshold. |
-| `runways.py` | Which runway a touchdown was on and how far past its threshold, and the per-airport runway cache the sim fills. |
+| `runways.py` | Which runway a takeoff or touchdown was on and how far past its threshold, and the per-airport runway cache the sim fills. |
 | `flightprefs.py` | The per-flight rating and passenger-note switches. |
 | `trackexport.py` | KML and GPX of a track, built on demand. |
 | `passenger.py` | Template passenger assessment and the A–F landing grade. |
@@ -303,7 +309,7 @@ The browse view is built on that:
   out again: eight tiles on a repeating header is a wall of numbers, and those
   three are the ones nobody was reading.
 - **Airframe chips** filter to one aircraft, with a flight count on each.
-- **Month selector** and a **search** across aircraft, route, date and flight id.
+- **Month selector** and a **search** across aircraft, airports and runways (every stop), date and flight id.
 - **Flights are collapsed** to one row - time, aircraft, route, airborne,
   distance, landing grades, and whether clips exist - and open on click.
 - **Expand all** for when you want everything at once.

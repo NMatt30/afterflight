@@ -3333,7 +3333,9 @@ class ClipTracker:
             append_jsonl(EVENTS_JSONL, ev_line)
         except Exception as e:
             log("events.jsonl write failed %s" % repr(e))
-        if kind == "landing":
+        # Both ends of a leg: the landing's runway grades it, and both name
+        # the route. Looked up later, parked - never here, in the air.
+        if kind in ("landing", "takeoff"):
             queue_runway_lookup(ev_line.get("lat"), ev_line.get("lon"),
                                 self.flight.category, self.flight.vs0,
                                 self.flight.aircraft)
@@ -5993,14 +5995,14 @@ def _keep_existing_flight(flight, tracker, s, why):
 
 
 RUNWAYS_DIR = os.path.join(SESSIONS, "runways")
-_runway_queue = []                 # (lat, lon) of landings not yet looked up
+_runway_queue = []                 # (lat, lon) of takeoffs and landings not yet looked up
 _runway_state = {"thread": None, "backfilled": False, "retry_after": 0.0}
 _runway_lock = threading.Lock()
 
 
 def queue_runway_lookup(lat, lon, category=None, vs0=None, aircraft=None):
-    """Ask for this landing's runways at the next parked moment - for an
-    airplane. A helicopter landing asks the sim for nothing."""
+    """Ask for the runways at this takeoff or landing at the next parked
+    moment - for an airplane. A helicopter asks the sim for nothing."""
     if not RUNWAY_LOOKUP or not (finite(lat) and finite(lon)):
         return
     if not measures_runway(category, vs0, aircraft):
@@ -6031,10 +6033,12 @@ def runway_lookup_wanted():
         return bool(_runway_queue) or not _runway_state["backfilled"]
 
 
-def _landing_points_on_record():
-    """Every airplane landing in events.jsonl, as (lat, lon).
+def _runway_points_on_record():
+    """Every airplane takeoff and landing in events.jsonl, as (lat, lon).
 
-    The aircraft class comes from each flight's meta, read once per flight.
+    Takeoffs as well as landings, so the flights recorded before departures
+    were named get their departure airports too. The aircraft class comes
+    from each flight's meta, read once per flight.
     """
     out = []
     kinds = {}
@@ -6045,7 +6049,7 @@ def _landing_points_on_record():
                     e = json.loads(line)
                 except ValueError:
                     continue
-                if not (e.get("kind") == "landing" and finite(e.get("lat"))
+                if not (e.get("kind") in ("landing", "takeoff") and finite(e.get("lat"))
                         and finite(e.get("lon"))):
                     continue
                 fid = e.get("flight_id")
@@ -6097,8 +6101,8 @@ def lookup_runways(points, backfill=False, keep_going=None):
     """Cache the runways of every airport near these points that is not cached.
 
     Runs on its own thread and its own SimConnect connection. With backfill,
-    landings already on record whose airports have no runways cached are
-    added. Returns {"status", "saved"} - the outcome, not just a count, since
+    takeoffs and landings already on record whose airports have no runways
+    cached are added. Returns {"status", "saved"} - the outcome, not just a count, since
     nothing saved can mean every one of these (SME review R5):
       done       every point was searched; saved may be 0 - off airport, or
                  everything near was already cached
@@ -6128,7 +6132,7 @@ def lookup_runways(points, backfill=False, keep_going=None):
 
     want = uncovered(points)
     if backfill:
-        want += uncovered(_landing_points_on_record())
+        want += uncovered(_runway_points_on_record())
     if not want:
         return {"status": "done", "saved": 0}
     if not keep_going():
