@@ -91,22 +91,32 @@ once graded on one profile built from FSF and GPWS numbers, and a Cessna scored
 VS0 61 kt, the 14 CFR 23.49 boundary. Saturation is the symptom to watch for:
 a metric returning the same answer for every flight is measuring nothing.
 
-**The landing letter is two things, and only one of them can lift it.**
-Touchdown vertical speed sets it; touchdown *alignment* - peak bank through
-the rollout, and sideways acceleration after contact - can only hold it down.
-Alignment caps the Descent *phase* on the same terms, which is how it reaches
-the leg grade. It is listed with the Descent metrics at weight 0: giving it a
-weight moves `w x (alignment - touchdown)` into every descent, which pays most
-where the touchdown was worst - measured, it upgraded a hard landing by a
-whole band. Four splits were tried against real legs and every one of them
-raised most of the sample.
+**The landing has one grade, its phase, and the touchdown is a word.** There
+used to be a second A-F letter for the touchdown alone, which alignment, the
+float and the touchdown spot could lower, beside the landing phase's grade -
+a firm arrival on the aim point read "Landing B" and "C" at once. Now the
+landing phase is the landing's grade, and the touchdown is described:
+`grading.touchdown_word`, on the type's own scale - Butter, Smooth, Firm,
+Hard, Very hard; for a transport Soft, On target, Firm, Hard, Very hard,
+named for the published 100-250 fpm target band - and its rate. A leg too
+short to grade in phases falls back to `touchdown_letter`, the letter of the
+touchdown's score. The EFB tablet still shows its own letter until it is
+changed and checked in the sim.
+
+**Alignment can only hold the landing down.** Peak bank through the rollout,
+and sideways acceleration after contact, cap the landing phase, which is how
+they reach the leg grade. Alignment is listed with the landing metrics at
+weight 0: giving it a weight moves `w x (alignment - touchdown)` into every
+landing, which pays most where the touchdown was worst - measured, it
+upgraded a hard landing by a whole band. Four splits were tried against real
+legs and every one of them raised most of the sample.
 That asymmetry is deliberate: a landing that arrives gently while sliding
 sideways is not a good landing, but a perfectly square arrival at 600 fpm is
 still an arrival. `ROTARY` scores no alignment at all, because every
 helicopter track may carry no lateral accelerations, and a missing
 reading would grade as a flawless one.
 
-**The float is the second thing that can hold it down, and it is off.** Time
+**The float counts only when switched on** (`GRADE_FLOAT`, off by default). Time
 from 50 ft above the runway to main-gear touchdown - the certification air
 distance, AC 25-32 - measured from the 10 Hz landing clip on airplane
 profiles. **The clock starts at the later of 50 ft and the threshold**: the
@@ -124,15 +134,14 @@ heading - the departure and a downwind leg are past it too. It is scored on the 
 flare, 50 at the end of the touchdown zone (AC 91-79A), 0 a further 1,000 ft
 on. A first version sloped linearly to zero at the end of the zone and
 failed a jet touching down inside it, which the AC calls typical. It is
-measured and shown everywhere but caps nothing until `GRADE_FLOAT` is
-turned on - the owner reviews the bands against real landings first.
-**The touchdown point is the third, and also off** (`GRADE_TOUCHDOWN_POINT`):
+measured and shown everywhere but counts for nothing until `GRADE_FLOAT` is
+turned on.
+**The touchdown point likewise** (`GRADE_TOUCHDOWN_POINT`, off by default):
 distance past the landing threshold, 100 within 1,400 ft, 50 at the end of the
 touchdown zone (3,000 ft or the runway's first third), 0 a further 1,000 ft on.
 It needs the runway, which only the sim knows - see the facility-data trap.
-**Both switches and their bands are settings, the ladder is not.** The
-ladder's letters and the touchdown curve are separate constants a setting
-could part; the float and touchdown-point score, band and letter cap all read
+**Both switches and their bands are settings; the touchdown curve and its
+words are not.** The float and touchdown-point score, band and cap all read
 the same values when called, so a setting moves them together. The defaults
 are the published figures, kept in `grading.PUBLISHED`, and the grading panel
 says when the bands in use are the owner's own instead. The build signature
@@ -146,29 +155,29 @@ descent's weight is split by the touchdown's share of it, so the averages
 are what they were with the touchdown inside the descent, and only the
 weakest-phase cap sees more. Measured when it went on, that moved grades
 down and never up: an approach no longer hides behind a good touchdown.
-Off, the touchdown is 45% of the descent as well as the landing letter, and
-the Grading tab listed it twice.
+Off, the touchdown is 45% of the descent, and the landing grade falls back
+to the touchdown alone.
 
-**The landing phase is a blend; the landing letter is not.** The A-F letter is
-how the touchdown felt: the rate sets it, and alignment, the float and the
-touchdown spot can only lower it. The landing PHASE is how the landing was
-flown: touchdown, touchdown spot and float blended (`LANDING_WEIGHTS`, a
+**The landing phase is a blend.** It is how the landing was flown:
+touchdown, touchdown spot and float blended (`LANDING_WEIGHTS`, a
 judgment and labelled one), each only when its Settings switch is on. Two
 limits keep the blend honest: it never sits more than a band above the
 touchdown alone, so precision cannot rescue a hard landing; and a spot or
 float past the touchdown zone caps it as well as weighing in, because a
 soft touchdown otherwise averaged a landing far down the runway up to a C.
 
-**The touchdown letter is judged on the aircraft type's own criteria** -
-`grading.touchdown_letter`, the same curve the touchdown is scored on - so
-a letter and its score never disagree. It was one rate ladder for every
-aircraft, which called a jet's 200 fpm, inside the airline target, Firm.
-**So the light curve must cross each letter boundary at the ladder's rate.**
-Its full-marks plateau to 60 fpm has no A/B anchor, and reading the letter
-off it moved A to 105 fpm without anyone choosing it; the curve now steps
-to 89 just past 60. A test that the letter matches the score cannot see
-that - both come from the curve - so `test_grading` checks the letter
-against `passenger.GRADE_TABLE` at every rate. Change a curve, run it.
+**The light touchdown curve steps at 60 fpm**, from 100 to 89. It was added
+when the touchdown had a letter of its own, read off the curve, whose A had
+drifted to 105 fpm; it still keeps a helicopter's landing grade - the
+touchdown alone - at A only up to 60 fpm, where "Butter" ends.
+`test_grading` checks `touchdown_letter` against `passenger.GRADE_TABLE` at
+every rate. Change a curve, run it.
+**The passenger's landing sentence is about how the arrival felt**
+(`touchdown_feel`), and when the landing grade came out worse than that, it
+says why - it slid, it floated, it landed long - read from the landing
+phase's own record of which limit held it (`landing_marked_down_by`). A
+second reconstruction, in a different order from the one the caps ran in,
+named the wrong measure whenever two of them bit.
 **And the ride is everything flown except the landing**, the approach
 included: the passenger paragraph once called a ride smooth beside an F
 approach. Check the prose against the pills when grading changes - an

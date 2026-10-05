@@ -622,6 +622,14 @@
     sec.appendChild(head);
   }
 
+  // The touchdown is described, not graded: a word on the aircraft type's
+  // own scale and the rate. The landing has one grade, its phase.
+  function touchdownWords(leg) {
+    var rate = leg.landing_rate_fpm != null ? fmtRate(leg.landing_rate_fpm) : "";
+    if (!leg.touchdown_word) return rate;
+    return leg.touchdown_word + " touchdown" + (rate ? ", " + rate : "");
+  }
+
   function landingSection(leg, pg) {
     if (!leg.landing_grade && leg.landing_rate_fpm == null) return null;
     // A phase of its own when grading.LANDING_PHASE is on; otherwise its
@@ -634,20 +642,17 @@
     });
     var sec = el("section", "gt-phase");
     sec.dataset.phase = "landing";
-    // Two grades live here and must not be confused. The landing score is
-    // how the landing was flown, a blend; the A-F letter beside it is how
-    // the touchdown felt, the rate's alone.
-    var feel = (leg.landing_grade_name || "") + (leg.landing_grade
-      ? " touchdown (" + leg.landing_grade + ")" : "");
-    if (own) gtHead(sec, "Landing", own.letter, own.score, feel);
-    else gtHead(sec, "Landing", leg.landing_grade, null, leg.landing_grade_name || "");
+    // One grade: the landing's. The touchdown beside it is in words - a
+    // second letter there read as a contradiction of the first.
+    if (own) gtHead(sec, "Landing", own.letter, own.score, touchdownWords(leg));
+    else gtHead(sec, "Landing", leg.landing_grade, leg.landing_score, touchdownWords(leg));
     sec.appendChild(el("div", "gt-note", landingIntro(own, byKey, leg)));
     if (own && own.note) sec.appendChild(el("div", "gt-held", own.note));
     var t = gtTable();
     var td = byKey.touchdown;
     t.row(["Touchdown", fmtRate(leg.landing_rate_fpm), scoreText(td && td.score),
-           own ? (td && td.weight_pct ? td.weight_pct + "%, sets the letter" : "sets the letter")
-               : "sets the grade",
+           own ? (td && td.weight_pct ? td.weight_pct + "%" : "the grade")
+               : "the grade",
            (td && td.band) || ""]);
     var tp = leg.touchdown_point;
     if (tp && tp.threshold_height_ft != null) {
@@ -658,15 +663,6 @@
       if (byKey[k]) t.part(byKey[k]);
     });
     sec.appendChild(t.table);
-    // What held the letter down, in the order it was applied.
-    [["Alignment", leg.landing_alignment], ["The float", leg.landing_float],
-     ["The touchdown spot", leg.touchdown_point]].forEach(function (pair) {
-      var m = pair[1];
-      if (m && m.held_from) {
-        sec.appendChild(el("div", "gt-held", pair[0] + " lowered the touchdown letter from "
-                           + m.held_from + " to " + (leg.landing_grade || "?") + "."));
-      }
-    });
     if (own) {
       (own.parts || []).forEach(function (p) {
         if (p.held) {
@@ -689,19 +685,9 @@
   // counted nowhere, and the sentence must not claim otherwise.
   function landingIntro(own, byKey, leg) {
     var on = function (k) { return !!(byKey[k] && byKey[k].counted); };
-    var lowers = [];
-    if (byKey.alignment) lowers.push("alignment");
-    if (on("float")) lowers.push("the float");
-    if (on("touchdown_point")) lowers.push("the touchdown spot");
-    var letter = leg.landing_grade
-      ? "The touchdown letter (" + leg.landing_grade + ") is how it felt: the "
-        + "rate sets it" + (lowers.length
-          ? ", and " + lowers.join(lowers.length > 2 ? ", " : " and ")
-            .replace(/, (?=[^,]*$)/, " or ") + " can only lower it."
-          : ".")
-      : "";
-    if (!own) return "Your touchdown rate sets the landing grade."
-      + (lowers.length ? " " + lowers.join(", ") + " can only lower it." : "");
+    var crooked = byKey.alignment
+      ? " Arriving crooked - a dropped wing, a slide - can only lower it." : "";
+    if (!own) return "Your touchdown rate sets the landing grade." + crooked;
     var blended = [];
     if (on("touchdown_point")) blended.push("where on the runway");
     if (on("float")) blended.push("how long you floated");
@@ -716,7 +702,7 @@
     } else {
       score = "The landing score is the touchdown.";
     }
-    return score + (letter ? " " + letter : "");
+    return score + crooked;
   }
 
   function phaseSection(key, title, ph) {
@@ -1118,10 +1104,12 @@
     row("Landing", leg.landing ? fmtTime(leg.landing.at) : "—");
     row("Airborne", fmtDuration(leg.airborne_s));
     row("Distance", fmtNm(leg.distance_nm));
-    row("Touchdown", fmtRate(leg.landing_rate_fpm) +
-        (leg.landing_grade ? "  " + leg.landing_grade : ""),
-        "Vertical speed at the wheels. The letter beside it can be held down "
-        + "by how square the aircraft arrived - see Alignment.");
+    row("Touchdown", leg.touchdown_word
+          ? leg.touchdown_word + ", " + fmtRate(leg.landing_rate_fpm)
+          : fmtRate(leg.landing_rate_fpm),
+        "Vertical speed at the wheels, and how that feels on this type's own "
+        + "scale. The landing's grade, which also weighs where and how long, "
+        + "is in the Grading tab.");
     // Absent when the track carries no lateral accelerations, and
     // for helicopters, which are not scored on it. No row at all rather than
     // a dash: a dash would read as "measured, and it was nothing".
@@ -1135,12 +1123,9 @@
       if (al.scrub_g != null) bits.push(al.scrub_g.toFixed(2) + " g slide");
       // The bands and the arithmetic are in the Grading tab.
       var why = "How straight it arrived: " + Math.round(al.score) + " out of 100. "
-        + (al.held_from ? "It held this landing down from " + al.held_from + ". "
-                        : "It held nothing down. ")
-        + "Bands in the Grading tab.";
-      row("Alignment", bits.join(", ")
-          + (al.held_from ? "  — held " + al.held_from + " to "
-             + (leg.landing_grade || "?") : ""), why);
+        + "It can only lower the landing grade; the Grading tab says whether "
+        + "it did, and the bands.";
+      row("Alignment", bits.join(", "), why);
     }
     // Information, not a grade: the float and the touchdown point already say
     // what a high or low crossing cost. No row when there is no runway.

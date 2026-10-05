@@ -74,7 +74,10 @@ def test_off_by_default():
     assert grading.GRADE_TOUCHDOWN_POINT is False, (
         "the touchdown point caps landings by default; it was to stay off "
         "until reviewed against real landings")
-    assert grading.touchdown_point_ceiling_letter({"score": 0.0}) is None
+    part, score = grading._touchdown_point_part(
+        {"score": 0.0, "distance_ft": 5000.0}, 80.0)
+    assert part["counted"] is False and score == 80.0, (
+        "switched off, a touchdown spot past the zone still lowered the landing")
 
 
 # --------------------------------------------------------------------------
@@ -460,20 +463,22 @@ HARSHEST = {"grade_float": True, "float_normal_s": 3.0, "float_margin_ft": 500.0
             "tdz_beyond_ft": 100.0}
 
 
-def test_the_built_letter_is_the_types_own_verdict():
-    """Through the builder: a jet's touchdown is lettered on the transport
-    curve, not the light-aircraft ladder."""
+def test_one_grade_for_the_landing_and_the_touchdown_in_words():
+    """Through the builder. The landing's grade is its phase's; the touchdown
+    has no letter of its own - a second one beside the first read as a
+    contradiction - only a word on its type's scale: a jet's 150 fpm is in
+    the airline target band, where the light ladder would say "Smooth"."""
     t = Tree()
     try:
         _flight(t, 1800.0)
         leg = _leg(t)
-        want = grading.touchdown_letter(leg["landing_rate_fpm"], grading.FIXED_WING)
-        assert leg["landing_grade"] == want, (
-            "a jet at %s fpm was lettered %s; its own criteria say %s"
-            % (leg["landing_rate_fpm"], leg["landing_grade"], want))
-        import passenger
-        assert passenger.grade_for_rate(leg["landing_rate_fpm"])[0] != want, (
-            "the fixture cannot tell the type's letter from the fixed ladder")
+        land = leg["phase_grade"]["phases"]["landing"]
+        assert (leg["landing_grade"], leg["landing_score"]) == (land["letter"], land["score"]), (
+            "the landing grade is not the landing phase's")
+        assert leg["touchdown_word"] == "On target", leg["touchdown_word"]
+        assert grading.touchdown_word(leg["landing_rate_fpm"], grading.LIGHT_GA) != "On target", (
+            "the fixture cannot tell the type's word from the light ladder's")
+        assert "landing_grade_name" not in leg, "the touchdown still carries a letter's name"
     finally:
         t.close()
 
@@ -490,7 +495,8 @@ def test_the_passenger_is_told_why_a_soft_landing_was_lowered():
         leg = _with(t, {"grade_touchdown_point": True})
         on = leg["passenger"]["graded_on"]
         assert on["landing_held_by"] == "touchdown_point", on
-        assert on["landing_held_from"] and on["landing_held_from"] != leg["landing_grade"], on
+        assert "ABCDF".index(leg["landing_grade"]) > "ABCDF".index(on["landing"]), (
+            "the landing was not graded below how its touchdown felt: %r" % on)
         rate = passenger._fmt_rate(leg["landing_rate_fpm"])
         assert leg["passenger"]["landing"] in [
             l.format(rate=rate) for l in passenger.LANDING["held_long"]], (
@@ -498,6 +504,56 @@ def test_the_passenger_is_told_why_a_soft_landing_was_lowered():
             % leg["passenger"]["landing"])
     finally:
         t.close()
+
+
+def _blend(spot_score, float_score, profile=grading.LIGHT_GA):
+    td = grading.score_for_touchdown_fpm(50.0, profile)
+    keep = (grading.GRADE_FLOAT, grading.GRADE_TOUCHDOWN_POINT)
+    grading.GRADE_FLOAT = grading.GRADE_TOUCHDOWN_POINT = True
+    try:
+        tp = {"score": spot_score, "distance_ft": 4000.0, "runway": "09"}
+        fl = {"score": float_score, "seconds": 20.0, "from": "threshold",
+              "zone_end_s": 16.0, "zero_s": 21.0, "speed_kt": 100.0}
+        score, parts, _ = grading._landing_blend(
+            td, 50.0, profile, landing_float=fl, touchdown_point=tp)
+    finally:
+        grading.GRADE_FLOAT, grading.GRADE_TOUCHDOWN_POINT = keep
+    return {"letter": grading.letter_for_score(score), "score": score, "parts": parts}
+
+
+def test_two_limits_name_the_one_that_set_the_grade():
+    """SME review R7. The caps ran in one order and the explanation was
+    rebuilt afterwards in another, so with two of them biting the passenger
+    was told the wrong cause. The cause is now read from the landing phase's
+    own record: whichever limit set the final score, either way round."""
+    import logbook_build
+    import passenger
+    float_last = _blend(spot_score=20.0, float_score=10.0)      # both bite
+    spot_only = _blend(spot_score=10.0, float_score=20.0)       # float's cap is above
+    held = [p["key"] for p in float_last["parts"] if p.get("held")]
+    assert held == ["touchdown_point", "float"], (
+        "fixture: both limits should bite here, got %r" % held)
+    assert logbook_build.landing_marked_down_by(float_last, "A") == "float"
+    assert [p["key"] for p in spot_only["parts"] if p.get("held")] == ["touchdown_point"]
+    assert logbook_build.landing_marked_down_by(spot_only, "A") == "touchdown_point"
+    for land, pool in ((float_last, "held_float"), (spot_only, "held_long")):
+        by = logbook_build.landing_marked_down_by(land, "A")
+        got = passenger.assess("f", 1, aircraft="Test", grade="A", rate_fpm=50.0,
+                               duration_s=600, held_by=by)
+        assert got["landing"] in [l.format(rate=passenger._fmt_rate(50.0))
+                                  for l in passenger.LANDING[pool]], (
+            "marked down by %s, described from the wrong pool" % by)
+    # Not marked down - the landing graded no worse than the touchdown felt.
+    assert logbook_build.landing_marked_down_by(
+        {"letter": "A", "score": 95.0, "parts": []}, "A") is None
+    # A helicopter's landing has no float or touchdown spot to be marked down
+    # by - neither is measured for one (test_no_setting_reaches_a_helicopter)
+    # - so a soft helicopter touchdown is never described as long or floaty.
+    td = grading.score_for_touchdown_fpm(50.0, grading.ROTARY)
+    score, parts, _ = grading._landing_blend(td, 50.0, grading.ROTARY)
+    heli = {"letter": grading.letter_for_score(score), "score": score, "parts": parts}
+    assert logbook_build.landing_marked_down_by(
+        heli, grading.touchdown_feel(50.0, grading.ROTARY)) is None
 
 
 def test_every_band_is_a_setting_whose_default_is_the_published_figure():

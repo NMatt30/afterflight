@@ -162,54 +162,49 @@ The private calibration record holds the original comparison. A contact more tha
 lifts is a touch-and-go, and stays two events.
 
 
-**The letter is judged on the aircraft type's own criteria.** It is the
-touchdown's score on its type's curve, read through the phase letters (A 90,
-B 80, C 70, D 60) - `grading.touchdown_letter` - so a letter and the score
-beside it are one verdict. On touchdown vertical speed, local, no cloud:
+**The touchdown is described, not graded.** The landing has one grade, its
+phase (see Leg grading). There used to be a second A-F letter for the
+touchdown alone, beside it, which alignment, the float and the touchdown spot
+could lower - and a firm arrival right on the aim point read "Landing B" and
+"C" at once. So the touchdown is a word, on the aircraft type's own scale
+(`grading.touchdown_word`), and its rate:
 
 | Rate, fpm | Light airplane, helicopter, other | Jet / transport |
 |---|---|---|
-| up to 33 | A | B - held off; a jet aims at a firm arrival |
-| 33 - 60 | A | A |
-| 60 - 150 | B | A |
-| 150 - 300 | C | A - the airline target is 100 to 250 |
-| 300 - 367 | D | B |
-| 367 - 433 | D | C |
-| 433 - 500 | D | D |
-| over 500 | F | F |
+| up to 60 | Butter | Soft (under 100: held off) |
+| 60 - 150 | Smooth | On target (100 - 250, the published airline band) |
+| 150 - 300 | Firm | Firm (250 - 300) |
+| 300 - 500 | Hard | Hard |
+| over 500 | Very hard | Very hard |
 
-The names go with the letter - Butter, Smooth, Firm, Hard, Arrival - from
-`passenger.GRADE_TABLE`, which was once the ladder for every aircraft and now
-only names the letters and pins the light curve's boundaries. That one ladder
-showed a jet's 200 fpm, the middle of the airline target, as a touchdown
-score of 100 beside "Firm (C)".
+Over 500 fpm approaches the 600 fpm (10 ft/s) that both 14 CFR 23.473 and
+25.473 build for. The passenger's landing sentence is chosen by the same band
+(`touchdown_feel`), since it is written about how the arrival felt.
 
-**The light curve has to cross each boundary at the ladder's rate,** because
-the letter is read off it. Its full-marks plateau to 60 fpm had taken the A/B
-anchor, which cost nothing while the letter came from the ladder; reading the
-letter off the curve then moved A to 105 fpm unnoticed, since a ramp from 100
-at 60 fpm to 80 at 150 passes 90 at 105. The curve now steps to 89 just past
-60 - not a hair under 90, because the page rounds a score to a whole number -
-and `test_off_the_curve_the_letter_is_still_the_ladder` checks the letter
-against the ladder at every rate from 0 to 700 fpm.
+**The light touchdown curve steps at 60 fpm,** from 100 to 89. It was added
+while the touchdown had a letter of its own, read off the curve: the
+full-marks plateau to 60 fpm had taken the curve's A/B anchor, and a ramp
+from 100 at 60 fpm to 80 at 150 passes 90 at 105, so A had drifted to 105 fpm
+unnoticed. With no touchdown letter it still keeps a helicopter's landing
+grade - which is the touchdown alone - at A only up to 60 fpm, where
+"Butter" ends; `test_off_the_curve_the_letter_is_still_the_ladder` checks
+it at every rate from 0 to 700 fpm. 89 rather than a hair under 90, because
+the page rounds a score to a whole number.
 
 There is no E. Most grading scales people have seen do not have one, and a
 five-band scale spent two of its bands on landings nobody walks away from
 describing differently.
 
-**The EFB tablet has its own copy of the light ladder** - `gradeFpm()`, since
-it cannot call back into the watcher - and applies it to every aircraft. For
-a light airplane or a helicopter it agrees with the logbook. For a jet it does
-not: the tablet calls a 200 fpm landing C and the logbook calls it A. Teaching
-the tablet the aircraft type is a change to verify in the sim, and has not
-been made. The copies have drifted before, too: they were once 450 in one and
-500 in the other. The score-to-letter ladder for phase grades
+**The EFB tablet still shows its own letter** - `gradeFpm()`, the light
+ladder for every aircraft, since it cannot call back into the watcher. It is
+to show the watcher's word for the aircraft type instead, which needs
+checking in the sim. The score-to-letter ladder for phase grades
 (`grading.LETTER_TABLE`) is served over `/grading`, so the logbook UI has no
 copy of that one.
 
 ### Leg grading
 
-The landing grade above judges one moment. A leg is also graded as a whole, in
+A leg is graded as a whole, in
 `grading.py`, which owns every threshold in the system.
 
 A leg is split into five phases by its altitude profile, each scored out of 100
@@ -245,8 +240,8 @@ averages were unchanged, no landing letter or ride grade moved, and a
 minority of legs dropped a letter and none rose - an approach no longer hides
 behind a good touchdown.
 
-**The landing phase is a blend; the landing letter is not.** The letter is
-how the touchdown felt. The phase is how the landing was flown, and the pilot
+**The landing phase is a blend, and it is the landing's grade.** It is how
+the landing was flown, and the pilot
 standards treat touching down near the aim point with little float as a main
 criterion beside a smooth arrival - something a cap, which can only punish,
 could never credit. So the phase blends the touchdown (50), the touchdown spot
@@ -324,11 +319,10 @@ to every flight in the logbook. Those flights had simply never banked hard
 enough to test it, and the narrow band marked down a correct pattern turn; it
 is wide again.
 
-**The landing letter is not vertical speed alone any more.** A light airplane
-arrived at the gentlest vertical speed of its set while rolling onto one main
-and sliding for several seconds after it was down. It scored a B, and the
-pilot said so. Touchdown vertical speed still sets the letter; alignment
-can now hold it down, and can never lift it. That asymmetry is the point: a
+**The landing is not vertical speed alone.** A light airplane arrived at
+the gentlest vertical speed of its set while rolling onto one main and
+sliding for several seconds after it was down. It scored a B, and the pilot
+said so. Alignment can hold the landing grade down, and can never lift it. That asymmetry is the point: a
 gentle arrival that is still sliding sideways is not a good landing, while a
 perfectly square arrival at 600 fpm is still an arrival.
 
@@ -339,11 +333,10 @@ Two measures, both already in the track and neither previously read:
   still *growing* after the wheels are down — a dropped wing, not a held slip.
 - **scrub** — mean peak-to-peak lateral acceleration per rollout second.
 
-The letter may then sit **one band above the alignment score**, the same
-allowance the leg rollup gives its weakest phase. Alignment caps the
-**landing phase score** on the same terms (the descent's, with
-`LANDING_PHASE` off), which is how it reaches the leg grade. The float and the
-touchdown spot can hold the letter down the same way, when switched on.
+The landing may then sit **one band above the alignment score**, the same
+allowance the leg rollup gives its weakest phase - it caps the landing phase
+(the descent, with `LANDING_PHASE` off), which is how it reaches the leg
+grade.
 
 **Alignment is listed with the landing metrics but carries no weight, and
 that was measured rather than assumed.** Weighting it was the obvious design
@@ -375,12 +368,12 @@ lateral accelerations being recorded. Scoring them would award a flawless
 alignment to landings nobody measured. A missing reading must never pass for
 a good one.
 
-**What moved.** One landing letter, and no other.
+**What moved, when alignment arrived.** One landing letter, and no other.
 
 **The tablet does not know about this.** The in-sim EFB grades from
 `PLANE TOUCHDOWN NORMAL VELOCITY` alone, so it will still show B for a landing
 the logbook holds at C - and it uses the light ladder for every aircraft (see
-Landing grade). That is a real divergence and it is here rather than
+Landing grade). It is to show the watcher's word instead. That is a real divergence and it is here rather than
 hidden: the tablet is a live instrument reading one simvar at the moment of
 contact, and the logbook is the record, which can look at the five seconds
 afterwards. Making them agree means teaching the EFB to sample the rollout.
@@ -482,12 +475,14 @@ Details that matter more than pool size:
   draws the same line for two legs in a row now and then - and they sit next
   to each other on screen, which is where a repeat is most obvious. Each leg
   is passed the picks of the last six legs, per slot, and steps off them.
-- **The landing line says why a letter was lowered.** The word for the letter
-  comes from the letter, not the rate, so a gentle touchdown held down for
-  something else is not described in the words of the grade it was pulled to.
-  Three pools exist for exactly that - `held` (it slid), `held_float` and
-  `held_long` - chosen by what last lowered it, and none of them may call the
-  touchdown firm. The self-test enforces both.
+- **The landing line describes the touchdown, and says why the landing was
+  marked down.** It is chosen by how the arrival felt (`touchdown_feel`), and
+  when the landing grade came out worse than that, by why: `held` (it slid),
+  `held_float` and `held_long`, none of which may call the touchdown firm. The
+  cause is read from the landing phase's own record - the last limit that held
+  it, else the counted measure furthest below the touchdown
+  (`landing_marked_down_by`). It was rebuilt afterwards in a different order
+  from the one the caps ran in, and named the wrong measure whenever two bit.
 - **The ride is the flown phases except the landing** (see Leg grading), so it
   cannot call a ride smooth beside a weak approach.
 - **`a` vs `an`.** Eight, eleven and eighteen start with a vowel sound, so
@@ -520,10 +515,11 @@ either, and the watcher asks the sim for no runway after one lands.
   runway too.
 
 Both bands are settings, defaulting to the published figures
-(`grading.PUBLISHED`). The score, the band text and the letter cap read the
+(`grading.PUBLISHED`). The score, the band text and the cap read the
 same values when called, so a setting moves all three together, and the
 build signs the values (`runway_tunables`) because a setting changes them
-without changing `grading.py`. The letter ladder is not a setting.
+without changing `grading.py`. The touchdown curve and its words are not
+settings.
 
 **The runway comes from the sim,** the only authority on its own scenery, and
 nothing about what it sends was taken from the SDK on trust: the message

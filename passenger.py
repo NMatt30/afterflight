@@ -30,17 +30,19 @@ def _fix_articles(text):
         return art + m.group(2)
     return _AN_RE.sub(repl, text)
 
-# Landing grade rules on touchdown VS (section 8). Local, no cloud.
-# A, B, C, D, F. There is no E: most scales dropped it because it reads as a
-# typo for F, and this one is meant to be legible at a glance. The old D and
-# E bands are merged, so the boundary that was 450 is now 500.
+# The light-airplane touchdown bands, A softest to F hardest: the keys of the
+# landing pools, and what the landing line falls back to when the builder
+# passes no band - the builder passes grading.touchdown_feel, on the aircraft
+# type's own scale. Not a grade: the landing is graded once, as its phase, and
+# the touchdown is described in words (grading.touchdown_word, whose light
+# ladder these limits and names match). No E: it reads as a typo for F.
 GRADE_TABLE = (
     (60.0, "A", "Butter"),
     (150.0, "B", "Smooth"),
     (300.0, "C", "Firm"),
     (500.0, "D", "Hard"),
 )
-GRADE_WORST = ("F", "Arrival")
+GRADE_WORST = ("F", "Very hard")
 
 
 def grade_for_rate(rate_fpm):
@@ -57,20 +59,6 @@ def grade_for_rate(rate_fpm):
         if mag <= limit:
             return (letter, name)
     return GRADE_WORST
-
-
-def name_for_grade(letter):
-    """The word that goes with a letter.
-
-    grade_for_rate() answers for a rate. A letter that has been held down by
-    something other than the rate - touchdown alignment - needs the same word
-    without going back through the ladder, or the prose says "Butter" over a
-    landing that has just been marked down.
-    """
-    for _limit, ltr, name in GRADE_TABLE:
-        if ltr == letter:
-            return name
-    return GRADE_WORST[1] if letter == GRADE_WORST[0] else None
 
 
 def _variant(flight_id, leg, slot, count):
@@ -304,26 +292,24 @@ HELD_POOLS = {"alignment": "held", "float": "held_float",
 
 def assess(flight_id, leg, aircraft=None, grade=None, rate_fpm=None,
            duration_s=None, peak_vs_fpm=None, max_bank_deg=None, avoid=None,
-           ride_grade=None, overall_grade=None, held_from=None, held_by=None):
+           ride_grade=None, overall_grade=None, held_by=None):
     """Build the four-slot passenger paragraph for one leg.
 
     Three different grades feed three different sentences, which is the
-    point: `grade` is the touchdown and colors only the landing line,
-    `ride_grade` is the flying and colors the ride line, `overall_grade`
-    is the leg and sets the closing tone. Passing one grade for all three
-    is what let the prose disagree with the pills beside it.
+    point: `grade` is how the touchdown felt - its band, A softest to F
+    hardest, on the aircraft type's own scale (grading.touchdown_feel) - and
+    colors only the landing line; `ride_grade` is the flying and colors the
+    ride line; `overall_grade` is the leg and sets the closing tone. Passing
+    one grade for all three is what let the prose disagree with the pills
+    beside it.
 
-    `held_from` is the letter the touchdown rate alone would have earned, when
-    something has since pulled it down, and `held_by` says what: "alignment"
-    (the default), "float" or "touchdown_point". The float and the touchdown
-    spot lower the letter for floating a long way or landing far down the
-    runway, and a soft touchdown lowered for that is no firmer than one
-    lowered for sliding - each has its own pool. It matters because every landing line
-    is written about how HARD the arrival was, and a letter held down for
-    sliding sideways is not describing hardness: a gentle 105 fpm touchdown
-    marked to C came out as "business-like", which is a sentence about a firm
-    landing that this one never was. When it is set, the landing line comes
-    from a pool about arriving softly and crookedly instead.
+    `held_by` is set when the landing grade came out worse than the
+    touchdown felt, and says why: "alignment" (it slid), "float" or
+    "touchdown_point" (it landed long). Every landing line is written about
+    how HARD the arrival was, and a landing marked down for something else is
+    not describing hardness: a gentle touchdown marked down for sliding came
+    out as "business-like", a sentence about a firm landing that it never
+    was. When it is set the landing line comes from that cause's own pool.
 
     Pass the previous leg's `picks` as `avoid` and no slot will repeat the line
     the leg above it used. Returns a dict with the slots and the joined text.
@@ -362,7 +348,7 @@ def assess(flight_id, leg, aircraft=None, grade=None, rate_fpm=None,
     # Held down by something other than the rate: describe what the passenger
     # actually felt - a soft touch, then a slide, or a long float, or a lot of
     # runway gone by.
-    held = bool(held_from) and held_from != grade and grade is not None
+    held = bool(held_by) and grade is not None
     if held:
         pool_key = HELD_POOLS.get(held_by or "alignment", "held")
         slot = "landing." + pool_key
@@ -415,8 +401,7 @@ def assess(flight_id, leg, aircraft=None, grade=None, rate_fpm=None,
         "swing": swing,
         "graded_on": {"landing": grade, "ride": ride_grade,
                       "overall": overall_grade,
-                      "landing_held_from": held_from if held else None,
-                      "landing_held_by": (held_by or "alignment") if held else None},
+                      "landing_held_by": held_by if held else None},
         "source": "template",
         "picks": picks,
     }
@@ -551,19 +536,20 @@ def self_test(path=None):
     assert "E" not in pools["landing"], (
         "grade E cannot be produced by the ladder; a pool for it is dead text")
 
-    # A held landing must not be described in the words of the grade it was
-    # pulled down to.
+    # A landing marked down for something other than its firmness must not
+    # be described as firm.
     held = assess("f", 1, aircraft="C172", rate_fpm=105.0, duration_s=700,
-                  grade="C", held_from="B")
+                  grade="B", held_by="alignment")
     plain = assess("f", 1, aircraft="C172", rate_fpm=105.0, duration_s=700,
-                   grade="C")
+                   grade="B")
     assert held["landing"] != plain["landing"], (
-        "a held-down landing read the same as a genuinely firm one")
-    assert held["graded_on"]["landing_held_from"] == "B"
-    # Lowered for a long float or a long landing: each its own words.
+        "a landing marked down for sliding read the same as an unmarked one")
+    assert held["graded_on"]["landing_held_by"] == "alignment"
+    assert plain["graded_on"]["landing_held_by"] is None
+    # Marked down for a long float or a long landing: each its own words.
     for by, pool in (("float", "held_float"), ("touchdown_point", "held_long")):
         got = assess("f", 1, aircraft="C172", rate_fpm=60.0, duration_s=700,
-                     grade="D", held_from="A", held_by=by)
+                     grade="A", held_by=by)
         assert got["landing"] in [l.format(rate=_fmt_rate(60.0))
                                   for l in LANDING[pool]], (
             "a landing lowered by the %s was described from the wrong pool: %r"

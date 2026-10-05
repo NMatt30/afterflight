@@ -52,13 +52,15 @@ the sim reports about the airframe, not from its name. The split between light
 and transport is at a 61 kt stall speed because that is where 14 CFR 23.49
 draws it.
 
-**Gives the landing its own letter.** Touchdown vertical speed sets an A-F
-letter, judged on the aircraft type's own criteria - 200 fpm is a C in a
-light airplane and an A in an airliner. How *square* the arrival was - bank
-through the rollout, and sideways acceleration after the wheels are down - can
-hold that letter down but never lift it. A gentle arrival that is still sliding
-sideways is not a good landing; a perfectly square arrival at 600 fpm is still
-an arrival.
+**Grades the landing once, and describes the touchdown.** The landing is a
+phase with one grade: how firmly you touched down, blended with where on the
+runway and how long you floated when those are switched on. The touchdown
+itself gets a word on the aircraft type's own scale and its rate - "Firm,
+200 fpm" in a light airplane is "On target" in an airliner. How *square* the
+arrival was - bank through the rollout, and sideways acceleration after the
+wheels are down - can hold the landing down but never lift it. A gentle
+arrival that is still sliding sideways is not a good landing; a perfectly
+square arrival at 600 fpm is still a very hard one.
 
 **Knows where on the runway you landed.** For an airplane landing on a
 runway, it asks the sim which runway that was, and measures how far past the
@@ -513,10 +515,10 @@ other ride scores still use derived speed changes. Changing those inputs
 requires explicit recalibration and a grade comparison. The measured axis
 convention is X lateral, Y vertical, Z longitudinal.
 
-The in-sim tablet grades every aircraft on the light-airplane scale, so for a
-jet it can show a different letter from the logbook - a 200 fpm jet landing
-is C on the tablet and A in the logbook. Fixing that is a change to check in
-the sim.
+The in-sim tablet still shows a letter of its own for each touchdown, on the
+light-airplane scale for every aircraft, where the logbook now grades the
+landing once and describes the touchdown in words. Changing the tablet is a
+change to check in the sim.
 
 The release zip has been run in the sim from a fresh folder, and with Python
 hidden from the PATH, but not yet on a machine that has never had Python.

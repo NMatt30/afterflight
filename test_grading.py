@@ -331,27 +331,41 @@ def _roll(bank, spread, n=5, t0=100.0, contact_spread=None):
     return out
 
 
+def _landing_with(rate_fpm, alignment):
+    """The landing phase for a touchdown rate and an alignment, nothing else."""
+    td = grading.score_for_touchdown_fpm(rate_fpm, grading.LIGHT_GA)
+    score, parts, _note = grading._landing_blend(
+        td, rate_fpm, grading.LIGHT_GA, alignment=alignment)
+    return td, score, parts
+
+
 def test_alignment_never_lifts_a_landing():
-    """A square arrival at 600 fpm is still an arrival.
+    """A square arrival at a very hard rate is still a very hard landing.
 
     The cap is a ceiling, not a score to average in. If it could lift, a
     perfect rollout would launder a hard touchdown into a good grade.
     """
     perfect = grading.touchdown_alignment(_roll(0.0, 0.0))
     assert perfect and perfect["score"] == 100.0
-    ceiling = grading.alignment_ceiling_letter(perfect)
-    assert grading.worse_letter("F", ceiling) == "F", (
-        "a flawless rollout lifted an F; alignment must only hold down")
-    assert grading.worse_letter("B", ceiling) == "B"
+    for rate in (550.0, 200.0, 40.0):
+        td, score, _ = _landing_with(rate, perfect)
+        assert score <= td + 1e-9, (
+            "a flawless rollout lifted the landing at %s fpm from %.1f to %.1f"
+            % (rate, td, score))
 
 
 def test_alignment_holds_a_gentle_but_crooked_landing_down():
-    """The landing this was built for: 105 fpm, 7.5 deg of bank, still sliding."""
+    """The landing this was built for: soft, 7.5 deg of bank, still sliding.
+    It holds the landing grade down, and says so in the phase's record."""
     bad = grading.touchdown_alignment(_roll(7.54, 0.31 * grading.G_FT_S2))
     assert bad and bad["score"] < 70, (
         "a 7.5 degree wing drop with a scrubbing rollout scored %s" % (bad or {}).get("score"))
-    held = grading.worse_letter("B", grading.alignment_ceiling_letter(bad))
-    assert held == "C", "expected B to be held to C, got %r" % held
+    td, score, parts = _landing_with(50.0, bad)
+    assert score < td and grading.letter_for_score(score) == "C", (
+        "a butter touchdown that slid should be held to C, got %.1f (%s)"
+        % (score, grading.letter_for_score(score)))
+    part = next(p for p in parts if p["key"] == "alignment")
+    assert part["held"], "the alignment that held the landing down does not say so"
 
 
 def test_the_contact_impulse_is_not_the_measurement():
@@ -378,9 +392,9 @@ def test_a_track_without_the_accelerations_is_not_a_good_landing():
     """
     old = [{"t": 100.0, "on_ground": False}, {"t": 101.0, "on_ground": True}]
     assert grading.touchdown_alignment(old) is None
-    assert grading.alignment_ceiling_letter(None) is None
-    assert grading.worse_letter("B", None) == "B", (
-        "an unmeasured landing must keep the letter its rate gave it")
+    td, score, parts = _landing_with(120.0, None)
+    assert score == td and not [p for p in parts if p["key"] == "alignment"], (
+        "an unmeasured alignment changed the landing")
 
 
 def test_rotary_is_not_scored_on_alignment():
@@ -1343,7 +1357,7 @@ def _graded(float_s, flag):
         f = grading.landing_float(_arrival(float_s, kt=105.0))
         g = grading.grade_leg(track, 80.0, "Test Jet", category="Airplane",
                               vs0_kt=90.0, landing_float=f)
-        return f, g, grading.float_ceiling_letter(f)
+        return f, g
     finally:
         grading.GRADE_FLOAT = keep
 
@@ -1352,8 +1366,7 @@ def test_off_by_default_and_shown_but_not_counted():
     assert grading.GRADE_FLOAT is False, (
         "the float caps landings by default; it was to stay off until its "
         "bands had been reviewed against real landings")
-    f, g, ceiling = _graded(30.0, False)
-    assert ceiling is None, "with the flag off the float still capped the letter"
+    f, g = _graded(30.0, False)
     part = next(p for p in _landing_of(g)["parts"] if p["key"] == "float")
     assert part["counted"] is False and part["held"] is False, (
         "the float part claims to count while the flag is off")
@@ -1361,10 +1374,12 @@ def test_off_by_default_and_shown_but_not_counted():
 
 
 def test_a_long_float_holds_the_landing_down():
-    f_short, g_short, c_short = _graded(7.0, True)
-    f_long, g_long, c_long = _graded(30.0, True)
-    assert c_short is None or c_short == "A", "a normal flare was capped"
-    assert c_long == "F", "a float far past the touchdown zone kept %r" % c_long
+    f_short, g_short = _graded(7.0, True)
+    f_long, g_long = _graded(30.0, True)
+    short_part = next(p for p in _landing_of(g_short)["parts"] if p["key"] == "float")
+    long_part = next(p for p in _landing_of(g_long)["parts"] if p["key"] == "float")
+    assert not short_part["held"], "a normal flare held the landing down"
+    assert long_part["held"], "a float far past the touchdown zone held nothing down"
     d_short = _landing_of(g_short)["score"]
     d_long = _landing_of(g_long)["score"]
     assert d_long < d_short, (
@@ -1464,11 +1479,6 @@ def test_precision_cannot_rescue_a_hard_landing():
     assert land["score"] <= td + grading.LANDING_LEAD_POINTS + 0.05, (
         "a hard landing on the aim point scored %.1f over a touchdown of %.1f"
         % (land["score"], td))
-    # The letter is the touchdown's: no measure can lift it.
-    f = grading.landing_float(_arrival(7.0, kt=105.0))
-    for ceiling in (grading.float_ceiling_letter(f),
-                    grading.touchdown_point_ceiling_letter(_spot(1000.0))):
-        assert grading.worse_letter("F", ceiling) == "F"
 
 
 def test_a_firm_landing_on_the_spot_scores_above_its_touchdown():

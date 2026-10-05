@@ -56,9 +56,9 @@ SCHEMA = 2
 # style, tiles or supersample. Those have their own signature entries; drawing
 # logic has none, so this is what stops a stale PNG being served as current.
 # Bumped for: markers at the leg events, jump-splitting, stop markers, and
-# not splitting a jump the aircraft plainly flew across, the landing float, and
-# the touchdown point.
-BUILDER_VERSION = 37
+# not splitting a jump the aircraft plainly flew across, the landing float, the
+# touchdown point, and one landing grade with the touchdown as a word.
+BUILDER_VERSION = 38
 EXCLUDED_JSON = os.path.join(BASE, "excluded.json")
 DETAIL_DIR = os.path.join(SESSIONS, "detail")
 
@@ -952,17 +952,40 @@ def landing_touchdown_point(clip_id, track, t_land, aircraft=None,
     return None
 
 
-def _held(alignment, landing_float, touchdown_point):
-    """(letter the touchdown rate alone earned, what last lowered it), or
-    (None, None). The measures lower the letter in this order, each from the
-    letter the one before left; the last one to bite set what was printed."""
-    held_from = held_by = None
-    for key, m in (("alignment", alignment), ("float", landing_float),
-                   ("touchdown_point", touchdown_point)):
-        if m and m.get("held_from"):
-            held_from = held_from or m["held_from"]
-            held_by = key
-    return held_from, held_by
+def landing_marked_down_by(landing, feel):
+    """What made the landing grade worse than the touchdown felt, or None.
+
+    landing is the landing phase as graded; feel is the touchdown's own band
+    letter (grading.touchdown_feel). The passenger's landing sentence is
+    written about how the arrival felt, so a landing marked down for
+    something else needs its own words - it slid, it floated, it landed long.
+
+    Read from the phase's own record, in the order its limits were applied:
+    the last limit that held the score down set it. Failing a limit, the
+    counted measure that scored furthest below the touchdown pulled the blend
+    down. This replaced a second reconstruction, in a different order from
+    the one the caps ran in, which named the wrong measure whenever two of
+    them bit (SME review R7).
+    """
+    if not landing or feel is None or landing.get("letter") is None:
+        return None
+    if _letter_rank(landing["letter"]) <= _letter_rank(feel):
+        return None
+    parts = landing.get("parts") or []
+    held = [p for p in parts if p.get("held")]
+    if held:
+        return held[-1]["key"]
+    td = next((p.get("score") for p in parts if p.get("key") == "touchdown"), None)
+    below = [p for p in parts
+             if p.get("key") in ("touchdown_point", "float") and p.get("counted")
+             and p.get("score") is not None and td is not None and p["score"] < td]
+    if below:
+        return min(below, key=lambda p: p["score"])["key"]
+    return None
+
+
+def _letter_rank(letter):
+    return "ABCDF".find(letter or "") if letter else -1
 
 
 def landing_surface(clip_id, track, t_land, hit):
@@ -1606,18 +1629,19 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
                     rate_recovered = True
                 else:
                     rate = None
-            # The letter is the touchdown judged on this type's own criteria -
-            # rotary, light airplane, transport - the curve it is scored on.
+            # The touchdown is described, not graded: a word on this type's
+            # own scale - rotary, light airplane, transport - and its rate.
+            # The landing's one grade is its phase, below.
             letter_profile = grading.profile_for(
                 aircraft, category=category or grading.infer_category(track),
                 vs0_kt=vs0_kt)
-            grade = grading.touchdown_letter(rate, letter_profile)
-            grade_name = passenger.name_for_grade(grade)
+            touchdown_word = grading.touchdown_word(rate, letter_profile)
+            feel = grading.touchdown_feel(rate, letter_profile)
             # A gentle arrival that is still sliding sideways is not a good
-            # landing. Alignment can only hold the letter DOWN, never lift it,
-            # and is None for any track without the lateral accelerations -
-            # those keep the letter the rate alone gave them, because
-            # "not measured" must not read as "arrived square".
+            # landing. Alignment can only hold the landing grade DOWN, never
+            # lift it, and is None for any track without the lateral
+            # accelerations, because "not measured" must not read as
+            # "arrived square".
             alignment = None
             try:
                 # The whole track, not seg: seg stops at touchdown and the
@@ -1626,15 +1650,9 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
                 alignment = grading.landing_alignment_for(
                     track, aircraft, category=category, vs0_kt=vs0_kt,
                     t_land=t1)
-                held = grading.worse_letter(
-                    grade, grading.alignment_ceiling_letter(alignment))
-                if alignment and held and held != grade:
-                    alignment["held_from"] = grade
-                    grade = held
-                    grade_name = passenger.name_for_grade(held) or grade_name
             except Exception as e:
                 # Same rule as phase grading: a bug here must not cost the
-                # whole logbook, and the landing keeps its rate-only letter.
+                # whole logbook.
                 say("%s leg %d: alignment failed %r" % (sortie_id, i, e))
                 alignment = None
             # Where on the runway it touched, when the runway is known. None
@@ -1645,12 +1663,6 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
             try:
                 touchdown_point = landing_touchdown_point(
                     ld_clip, track, t1, aircraft, category, vs0_kt)
-                held = grading.worse_letter(
-                    grade, grading.touchdown_point_ceiling_letter(touchdown_point))
-                if touchdown_point and held and held != grade:
-                    touchdown_point["held_from"] = grade
-                    grade = held
-                    grade_name = passenger.name_for_grade(held) or grade_name
             except Exception as e:
                 say("%s leg %d: touchdown point failed %r" % (sortie_id, i, e))
                 touchdown_point = None
@@ -1660,9 +1672,9 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
             # where the runway began would count the approach. From the
             # landing clip when there is one - at 10 Hz it places the crossing
             # and the contact to a tenth of a second, where the 1 Hz track is
-            # a second either way - and from the track when there is not. Like
-            # alignment it can only hold the letter down, and only once
-            # grading.GRADE_FLOAT is on.
+            # a second either way - and from the track when there is not. It
+            # counts toward the landing grade only once grading.GRADE_FLOAT is
+            # on.
             landing_float = None
             try:
                 if touchdown_point:
@@ -1680,12 +1692,6 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
                             track, aircraft, category=category, vs0_kt=vs0_kt,
                             t_land=t1, source="track", past=past,
                             surface=surface)
-                held = grading.worse_letter(
-                    grade, grading.float_ceiling_letter(landing_float))
-                if landing_float and held and held != grade:
-                    landing_float["held_from"] = grade
-                    grade = held
-                    grade_name = passenger.name_for_grade(held) or grade_name
             except Exception as e:
                 say("%s leg %d: float failed %r" % (sortie_id, i, e))
                 landing_float = None
@@ -1707,6 +1713,20 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
                 say("%s leg %d: phase grading failed %r" % (sortie_id, i, e))
                 phase_grade = None
 
+            # The landing's one grade: its phase - the touchdown blended with
+            # where and how long, held down by alignment and the landing
+            # limits. A leg too short to grade in phases has no phase, and its
+            # landing is the touchdown alone, scored on the same curve.
+            landing_phase = ((phase_grade or {}).get("phases") or {}).get("landing")
+            if landing_phase and landing_phase.get("score") is not None:
+                grade = landing_phase.get("letter")
+                landing_score = landing_phase.get("score")
+            else:
+                grade = grading.touchdown_letter(rate, letter_profile)
+                landing_score = grading.score_for_touchdown_fpm(rate, letter_profile)
+                landing_score = round(landing_score, 1) if landing_score is not None else None
+            marked_down_by = landing_marked_down_by(landing_phase, feel)
+
             if t0 is not None and t1 is not None and t1 > t0:
                 airborne_s = round(t1 - t0, 1)
             else:
@@ -1727,8 +1747,11 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
                 "max_gs_kt": stats["max_gs_kt"],
                 "peak_vs_fpm": stats["peak_vs_fpm"],
                 "landing_rate_fpm": round(rate, 1) if rate is not None else None,
+                # One grade for the landing, the phase's; the touchdown on its
+                # own is a word and the rate above.
                 "landing_grade": grade,
-                "landing_grade_name": grade_name,
+                "landing_score": landing_score,
+                "touchdown_word": touchdown_word,
                 # None means the track carries no lateral accelerations,
                 # not that the aircraft arrived square.
                 "landing_alignment": alignment,
@@ -1763,9 +1786,9 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
             # stays - that is a measurement, not an opinion, and the UI still
             # shows the fpm it touched down at.
             if not prefs["rating"]:
-                for k in ("landing_grade", "landing_grade_name", "phase_grade",
-                          "grade", "score", "ride_grade", "profile",
-                          "profile_label"):
+                for k in ("landing_grade", "landing_score", "touchdown_word",
+                          "phase_grade", "grade", "score", "ride_grade",
+                          "profile", "profile_label"):
                     leg[k] = None
             if to_e:
                 to_ok = usable_fix(to_e.get("lat"), to_e.get("lon"))
@@ -1820,7 +1843,9 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
             leg["passenger"] = None if not prefs["passenger"] else passenger.assess(
                 sortie_id, i,
                 aircraft=aircraft,
-                grade=grade,
+                # The landing sentence is about how the arrival felt, so it
+                # takes the touchdown's band, not the landing grade.
+                grade=feel,
                 rate_fpm=rate,
                 duration_s=airborne_s,
                 peak_vs_fpm=stats["peak_vs_fpm"],
@@ -1830,12 +1855,10 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
                 # what let the prose contradict the pills beside it.
                 ride_grade=(phase_grade or {}).get("ride_letter"),
                 overall_grade=(phase_grade or {}).get("letter") or grade,
-                # So the landing line describes what lowered the letter - a
-                # slide, a long float, a long landing - rather than a firmness
-                # the touchdown never had. held_from is the letter the rate
-                # alone earned: the first one any measure lowered.
-                held_from=_held(alignment, landing_float, touchdown_point)[0],
-                held_by=_held(alignment, landing_float, touchdown_point)[1],
+                # So the landing line says what marked the landing down - a
+                # slide, a long float, a long landing - rather than inventing
+                # a firmness the touchdown never had.
+                held_by=marked_down_by,
                 avoid=recent_picks,
             )
 
