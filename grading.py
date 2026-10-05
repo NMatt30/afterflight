@@ -86,8 +86,8 @@ LETTER_TABLE = (
 LETTER_WORST = "F"
 
 # Touchdown rate on the same 0-100 scale so the landing combines with the rest.
-# It is NOT the letter: the letter comes from the rate ladder in passenger.py,
-# and the two are deliberately allowed to differ at the top - see below.
+# The touchdown LETTER is read off this curve too (touchdown_letter), so the
+# curve has to cross each letter boundary at the ladder's rate - see the end.
 #
 # Both ends of this curve come from published numbers rather than from feel.
 #
@@ -117,16 +117,23 @@ LETTER_WORST = "F"
 # uncomfortable band it wants to look at. 600 fpm is therefore the edge of the
 # design envelope, and past the edge there is nothing left to grade: zero.
 #
-# Giving the plateau the whole A band costs the curve its A/B anchor - the
-# ramp from 100 now runs to the B/C boundary instead. B/C, C/D and D/F are
-# unchanged. The LETTER is unaffected either way: it comes from the rate
-# ladder in passenger.py and never from this curve.
+# THE A/B STEP. Giving the plateau the whole A band took the curve's A/B
+# anchor away, and while the letter came from the ladder in passenger.py that
+# cost nothing. Once the letter was read off the curve it cost the A limit:
+# a ramp from 100 at 60 fpm to 80 at 150 passes 90 at 105, so A ran to 105
+# fpm while the ladder, the EFB and the passenger prose all said 60. So the
+# curve steps: full marks to 60, then the top of the B band, falling to 80 at
+# 150. 89 rather than a hair under 90, because the page rounds a score to a
+# whole number and 89.9 would read 90 beside a B. B/C, C/D and D/F were
+# always on their boundaries.
 TOUCHDOWN_PLATEAU_FPM = 60.0
 TOUCHDOWN_ZERO_FPM = 600.0
+TOUCHDOWN_B_TOP = 89.0
 
 TOUCHDOWN_CURVE = (
     (0.0, 100.0),
     (TOUCHDOWN_PLATEAU_FPM, 100.0),   # butter / A limit
+    (TOUCHDOWN_PLATEAU_FPM, TOUCHDOWN_B_TOP),   # just past it, a B
     (150.0, 80.0),     # B / C
     (300.0, 70.0),     # C / D
     (500.0, 60.0),     # D / F
@@ -214,14 +221,67 @@ def letter_for_score(score):
 
 
 def touchdown_letter(rate_fpm, profile=None):
-    """The touchdown's A-F letter, on this aircraft type's own criteria.
+    """The letter the touchdown's score alone would get, on this type's curve.
 
-    The same curve the touchdown is scored on, so the letter and the score
-    are one verdict. It was a fixed rate ladder for every aircraft - A under
-    60 fpm, C under 300 - which called a jet's 200 fpm, the middle of the
-    airline target, "Firm", beside a touchdown score of 100.
+    Not shown as a touchdown grade any more - the landing is graded once, as
+    its phase, and the touchdown is described in words (touchdown_word). This
+    is what a leg too short to grade in phases falls back to: its landing
+    phase would be the touchdown alone.
     """
     return letter_for_score(score_for_touchdown_fpm(rate_fpm, profile))
+
+
+# How the touchdown felt, in a word, on the aircraft type's own scale. The
+# landing has one grade - its phase, which blends the touchdown with where and
+# how long - and a second A-F letter for the touchdown beside it read as a
+# contradiction: a firm arrival on the aim point was "Landing B" and "C" at
+# once. So the touchdown is described, not graded: a word and its rate.
+#
+# Light airplanes, helicopters and the unclassified share the light ladder:
+# under 60 fpm is what pilots call butter, the average is about 150. Over
+# 500 fpm approaches the 600 fpm (10 ft/s) that 14 CFR 23.473 builds a light
+# airplane for. A transport is flown to a target band, published at 100 to 250
+# fpm, so its words name that band: under it the aircraft was held off, above
+# it the steps follow its curve, and the same 600 fpm is the 25.473 limit.
+# (upper bound, word, bound inclusive)
+TOUCHDOWN_WORDS = ((TOUCHDOWN_PLATEAU_FPM, "Butter", True), (150.0, "Smooth", True),
+                   (300.0, "Firm", True), (500.0, "Hard", True))
+TOUCHDOWN_WORDS_TRANSPORT = ((100.0, "Soft", False), (250.0, "On target", True),
+                             (300.0, "Firm", True), (500.0, "Hard", True))
+TOUCHDOWN_WORST_WORD = "Very hard"
+
+
+def _touchdown_band(rate_fpm, profile=None):
+    """(index 0-4, word) for a touchdown rate on its type's scale, or None."""
+    if rate_fpm is None:
+        return None
+    try:
+        mag = abs(float(rate_fpm))
+    except (TypeError, ValueError):
+        return None
+    if mag != mag:
+        return None
+    table = (TOUCHDOWN_WORDS_TRANSPORT
+             if touchdown_curve_for(profile) is TOUCHDOWN_CURVE_TRANSPORT
+             else TOUCHDOWN_WORDS)
+    for i, (upper, word, inclusive) in enumerate(table):
+        if mag < upper or (inclusive and mag == upper):
+            return i, word
+    return len(table), TOUCHDOWN_WORST_WORD
+
+
+def touchdown_word(rate_fpm, profile=None):
+    """How the touchdown felt - "Firm", "On target" - or None with no rate."""
+    band = _touchdown_band(rate_fpm, profile)
+    return band[1] if band else None
+
+
+def touchdown_feel(rate_fpm, profile=None):
+    """The touchdown's band as A, B, C, D or F - softest to hardest - for
+    choosing the passenger's landing sentence, which is written about how the
+    arrival felt. Not shown anywhere as a grade."""
+    band = _touchdown_band(rate_fpm, profile)
+    return "ABCDF"[band[0]] if band else None
 
 
 def score_for_touchdown_fpm(rate_fpm, profile=None):
@@ -267,7 +327,7 @@ ALIGNMENT_SCRUB_G = (0.15, 0.55)
 ALIGNMENT_WEIGHTS = (("bank", 0.6), ("scrub", 0.4))
 # Rollout seconds after the contact sample that scrub is averaged over.
 ALIGNMENT_ROLLOUT_S = 5.0
-# How far above the alignment score the landing letter may sit. One band -
+# How far above the alignment score the landing grade may sit. One band -
 # the same allowance the phase rollup gives the weakest phase.
 ALIGNMENT_CAP_POINTS = 10.0
 
@@ -279,20 +339,25 @@ ALIGNMENT_CAP_POINTS = 10.0
 # 25-32, 8.2.1) - and scored on the time it took, so one rule serves a 60 kt
 # trainer and a 120 kt jet.
 #
-# The standards describe zones, not a slope, and the score follows them:
+# The shape is AfterFlight's, built from one published figure and two
+# judgments - not a published grading scale (SME review: the float's half
+# marks were called the end of the touchdown zone, which they are not):
 #
-#   100 at 7 s. AC 25-32 8.2.4 gives "a flare time of 7 seconds" as the air
-#     distance of "an average pilot who is flying in normal operations".
-#   50 at the end of the touchdown zone. AC 91-79A puts the target touchdown
-#     point "approximately 1,000 ft down the runway", the touchdown zone at
-#     "500-3,000 ft beyond the runway threshold", and the certified distances
-#     on the gear being "at a height of 50 ft over the runway threshold". From
-#     a standard crossing, 2,000 ft of float beyond a normal flare puts the
-#     wheels at the far end of the zone - still acceptable, and the last point
-#     that is. With the cap allowance that is a D.
-#   0 a further 1,000 ft on. This one is a judgment, not a published figure:
-#     past the zone the approach should have been abandoned, and the score
-#     should reach the bottom quickly rather than at once.
+#   100 at 7 s. AC 25-32 8.2.4 uses "a flare time of 7 seconds" for the air
+#     distance of "an average pilot who is flying in normal operations" - a
+#     transport-airplane performance figure, used here for every airplane as
+#     what a normal flare looks like.
+#   50 after a further FLOAT_MARGIN_FT of floating, turned into seconds at the
+#     speed flown: an excess-float allowance, and a judgment. 2,000 ft is the
+#     gap AC 91-79A leaves between its target touchdown point (about 1,000 ft
+#     down) and the end of the touchdown zone (3,000 ft), so a normal flare
+#     plus the allowance reaches about the end of that zone - but only for a
+#     flare that ends near 1,000 ft, which from a 50 ft crossing at constant
+#     speed is about 85 kt. At 60 kt it is about 2,700 ft down, at 160 kt
+#     about 3,900, and it knows nothing of a short runway's first third. Where
+#     the wheels met the real runway is the touchdown spot's to measure.
+#   0 a further FLOAT_BEYOND_FT on - also a judgment: the score should reach
+#     the bottom quickly rather than at once.
 #
 # A first version ran linearly from 7 s to zero at the end of the zone. Built
 # against real landings it called a jet touching down 2,300 ft past the
@@ -312,13 +377,13 @@ ALIGNMENT_CAP_POINTS = 10.0
 # zero lands at 27 s.
 FLOAT_HEIGHT_FT = 50.0
 FLOAT_NORMAL_S = 7.0
-FLOAT_MARGIN_FT = 2000.0          # normal flare -> end of the touchdown zone
+FLOAT_MARGIN_FT = 2000.0          # excess-float allowance past a normal flare
 FLOAT_ZONE_END_SCORE = 50.0
-FLOAT_BEYOND_FT = 1000.0          # end of the zone -> zero (a judgment)
+FLOAT_BEYOND_FT = 1000.0          # half marks -> zero (a judgment)
 FLOAT_CAP_POINTS = ALIGNMENT_CAP_POINTS
 # Off until the owner has seen what it does to existing landings. The float is
 # measured and shown on every airplane leg either way; this decides only
-# whether it may hold the landing letter and the descent phase down. It is a
+# whether it counts toward the landing grade and may cap it. It is a
 # setting (grade_float), and the build signature carries it - see
 # runway_tunables - so every sortie rebuilds when it changes.
 GRADE_FLOAT = False
@@ -387,13 +452,6 @@ G_FT_S2 = 32.174
 LETTER_ORDER = ("A", "B", "C", "D", "F")
 
 
-def worse_letter(a, b):
-    """The lower of two letters, ignoring either if it is missing."""
-    if a not in LETTER_ORDER:
-        return b if b in LETTER_ORDER else None
-    if b not in LETTER_ORDER:
-        return a
-    return a if LETTER_ORDER.index(a) >= LETTER_ORDER.index(b) else b
 
 
 def _band_score(value, band):
@@ -556,11 +614,6 @@ def landing_alignment_for(track, aircraft=None, category=None, vs0_kt=None,
     return touchdown_alignment(track, t_land=t_land)
 
 
-def alignment_ceiling_letter(alignment):
-    """Highest letter the landing may keep, given how square it arrived."""
-    if not alignment or alignment.get("score") is None:
-        return None
-    return letter_for_score(alignment["score"] + ALIGNMENT_CAP_POINTS)
 
 
 def scores_alignment(profile):
@@ -898,11 +951,6 @@ def float_band_text(flt):
                round(flt["speed_kt"])))
 
 
-def float_ceiling_letter(flt):
-    """Highest letter the landing may keep, or None while the float is not graded."""
-    if not GRADE_FLOAT or not flt or flt.get("score") is None:
-        return None
-    return letter_for_score(flt["score"] + FLOAT_CAP_POINTS)
 
 
 def _cap_part(key, label, value, measured, band, counted, cap_points, score):
@@ -993,11 +1041,6 @@ def touchdown_point_band_text(tp):
             % (ft(full), ft(end), third, ft(end + TDZ_BEYOND_FT)))
 
 
-def touchdown_point_ceiling_letter(tp):
-    """Highest letter the landing may keep, or None while this is not graded."""
-    if not GRADE_TOUCHDOWN_POINT or not tp or tp.get("score") is None:
-        return None
-    return letter_for_score(tp["score"] + TDZ_CAP_POINTS)
 
 
 def _touchdown_point_part(tp, score):
@@ -1421,7 +1464,7 @@ FIXED_WING = {
 FIXED_WING.update(WING_WORDS)
 FIXED_WING["phase_sources"] = WING_SOURCES_TRANSPORT
 # Same bands as the light profile, which is a placeholder and is labelled one:
-# no transport landing has ever been recorded here, and a jet has far
+# no transport-category source has been found for them, and a jet has far
 # less bank available before a pod or a tip touches. Narrowing it without a
 # source would be inventing a number.
 FIXED_WING["alignment"] = True
@@ -1441,16 +1484,17 @@ PHASE_ORDER = ("liftoff", "climb", "cruise", "descent")
 # touchdown's own share of it (landing_phase_weights), so a leg with every
 # measure present averages exactly as before. What moves is the cap: a leg is
 # never more than one band above its weakest phase, and approach and landing
-# are now judged separately. Off until the owner has seen which legs move.
+# are now judged separately. On since the owner reviewed which legs moved:
+# grades moved down and never up.
 LANDING_PHASE = True
 
-# How the landing phase scores. The A-F landing letter is how the touchdown
-# felt, and stays the touchdown rate's, with alignment, the float and the
-# touchdown spot able only to lower it. The landing PHASE is how the landing
-# was flown, and the pilot standards treat touching down near the aim point
-# with little float as a main criterion beside a smooth arrival - not merely
-# a thing not to get wrong. So the phase blends them, each counted only when
-# its Settings switch is on.
+# How the landing phase scores - and the landing's one grade, since a second
+# A-F letter for the touchdown beside it read as a contradiction (the
+# touchdown is described in words now: touchdown_word). The pilot standards
+# treat touching down near the aim point with little float as a main
+# criterion beside a smooth arrival - not merely a thing not to get wrong - so
+# the phase blends them, each counted only when its Settings switch is on, and
+# alignment can only lower it.
 #
 # The weights are a judgment: nothing published weights these against each
 # other. The touchdown carries half. The touchdown spot carries most of the
@@ -1460,9 +1504,10 @@ LANDING_WEIGHTS = {"touchdown": 0.50, "touchdown_point": 0.35, "float": 0.15}
 # The phase never sits more than one band above the touchdown's own score:
 # precision can lift a firm landing a little, and cannot rescue a hard one.
 LANDING_LEAD_POINTS = 10.0
-# And the mirror of that: past the end of the touchdown zone - where the
-# touchdown spot or float scores below this - landing long is a fault the
-# standards say to go around for, not a matter of degree. There it also caps
+# And the mirror of that: where the touchdown spot or float scores below
+# this - a spot past the end of the touchdown zone, or a float past its
+# half-marks allowance - landing long is a fault the standards say to go
+# around for, not a matter of degree. There it also caps
 # the landing at its own score plus one band, so a soft touchdown cannot
 # average away a landing a third of the way down the runway. Inside the zone
 # it is weighed, not capped. Measured, the blend without this let a soft
@@ -1527,7 +1572,8 @@ def _unclassified():
 #   bank - FAA Airplane Flying Handbook calls a turn shallow below about 20
 #     degrees and medium from 20 to 45, and says the turn to final should not
 #     exceed a medium bank. Full marks for an unhurried shallow turn, zero at
-#     30, which is the steepest a light airplane should see in a pattern.
+#     45, the top of a medium bank. (Zero was once at 30, which marked down
+#     a correct pattern turn.)
 #   gate - GA stabilized approach guidance puts a normal descent at 500 to
 #     1000 fpm with sink not to exceed 1000, stabilized by 500 ft AGL in VMC.
 #     A three degree path at 70 kt is about 370 fpm, so full marks at 400 and
@@ -2538,18 +2584,20 @@ def describe_profile(p):
                         "the wheels touched. The clock starts 50 ft above the "
                         "runway - or at the start of the runway, if you were "
                         "already lower than that, so time spent low over the "
-                        "approach doesn't count. The FAA treats about 7 "
-                        "seconds as normal (AC 25-32). Floating longer still "
-                        "passes while there is runway left in the touchdown "
-                        "zone (AC 91-79A); beyond that, going around was the "
-                        "better choice. How many seconds that is depends on "
-                        "how fast you were going. Only measured where the sim "
-                        "has described the runway."
+                        "approach doesn't count. A 7-second flare counts as "
+                        "normal - the figure an FAA advisory circular (AC "
+                        "25-32) uses for an average pilot. Half marks "
+                        "come after about 2,000 ft more floating and zero "
+                        "1,000 ft after that, turned into seconds at the speed "
+                        "you flew: an allowance AfterFlight sets, not an FAA "
+                        "standard. Where on the runway you touched down is "
+                        "measured separately, as the touchdown spot. Only "
+                        "measured where the sim has described the runway."
                         + (" These limits are your own settings, not the "
-                           "FAA's figures." if own_bands(FLOAT_BANDS) else "")
-                        + (" It counts toward the landing score - a short "
-                           "float helps, a long one costs - and a long float "
-                           "can also lower the landing letter." if GRADE_FLOAT else
+                           "defaults." if own_bands(FLOAT_BANDS) else "")
+                        + (" It counts toward the landing grade - a short "
+                           "float helps, a long one costs - and a float past "
+                           "half marks also caps it." if GRADE_FLOAT else
                            " Shown only for now: it doesn't change any grade "
                            "(you can switch that on in Settings).")),
                 "weight_pct": 0,
@@ -2583,9 +2631,9 @@ def describe_profile(p):
                         "described the runway, which it does after you park."
                         + (" These limits are your own settings, not the "
                            "FAA's figures." if own_bands(TDZ_BANDS) else "")
-                        + (" It counts toward the landing score - near the "
+                        + (" It counts toward the landing grade - near the "
                            "aim point helps, far down the runway costs - and "
-                           "landing long can also lower the landing letter."
+                           "landing past the touchdown zone also caps it."
                            if GRADE_TOUCHDOWN_POINT else
                            " Shown only for now: it doesn't change any grade "
                            "(you can switch that on in Settings).")),
@@ -2629,7 +2677,7 @@ def describe_profile(p):
         "label": p["label"],
         "notes": notes,
         "phases": phases,
-        # Whether the A-F landing letter on THIS profile can be held down by
+        # Whether the landing grade on THIS profile can be held down by
         # touchdown alignment. False for rotary, and the tab says why.
         "alignment": scores_alignment(p),
     }
@@ -2715,18 +2763,16 @@ def describe():
             "instead: a helicopter hovers and an airplane cannot."),
         "g_note": G_BAND_NOTE,
         "alignment_note": (
-            "The A-F landing letter comes from how fast the aircraft was "
-            "descending when the wheels touched. How straight it arrived can "
-            "then hold that letter down, and the %s phase with it, but "
-            "can never lift either: a landing that touches gently and then "
-            "slides sideways is not a good landing, while arriving straight "
-            "is simply what a landing is supposed to do. Bank counts for "
-            "%.0f%% and sideways slide for %.0f%%; full marks at %.0f "
+            "How straight the aircraft arrived can hold the %s grade "
+            "down, but can never lift it: a landing that touches gently and "
+            "then slides sideways is not a good landing, while arriving "
+            "straight is simply what a landing is supposed to do. Bank counts "
+            "for %.0f%% and sideways slide for %.0f%%; full marks at %.0f "
             "degrees and %.2f g, nothing at %.0f degrees or %.2f g. The "
-            "letter is allowed to sit one grade above the alignment score "
-            "rather than falling to it. These thresholds have not been "
-            "checked against measured flights yet, so treat a held-down "
-            "letter as an indication rather than a verdict. Helicopters are "
+            "landing may sit one band above the alignment score rather than "
+            "falling to it. These thresholds have not been checked against "
+            "measured flights yet, so treat a held-down landing as an "
+            "indication rather than a verdict. Helicopters are "
             "not scored on this at all, because the sideways measurement is "
             "not available for them, and a missing reading must never pass "
             "for a good one."
@@ -2739,18 +2785,21 @@ def describe():
             "scores, then held to no more than one band - ten points - above "
             "the weakest phase score. So a leg whose descent scored 60 has an "
             "overall grade of at most 70 however good the rest was: a lovely "
-            "cruise does not cancel an alarming approach. The phase grades "
-            "themselves are never capped - only the overall. Most legs are "
-            "not affected, and a leg's Grading tab says when that leg was "
+            "cruise does not cancel an alarming approach. The other phase "
+            "grades are never capped by this - only the overall. The landing "
+            "has limits of its own, listed in its card. Most legs are not "
+            "affected, and a leg's Grading tab says when that leg was "
             "capped."),
         "limits": [
-            "The grades are worked out from the flight track, which is "
+            "Most grades are worked out from the flight track, which is "
             "recorded once a second, so anything briefer than that is "
             "smoothed away - vibration and the texture of turbulence are not "
             "captured. These grades describe the shape of the flying rather "
             "than how each second of it felt. The hardest g and acceleration "
-            "within each second are recorded as well, but the grading does "
-            "not read those yet.",
+            "within each second are recorded as well, and two measures read "
+            "them: the rotation at lift-off, and the sideways slide after "
+            "touchdown. The float is timed from the landing recording, which "
+            "runs ten times a second.",
             "Bank angle and height above the terrain are read from the sim "
             "where it reports them. Where it does not, bank is worked out "
             "from how quickly the heading changes and how fast the aircraft "

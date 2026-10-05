@@ -40,21 +40,22 @@ HTTP_HOST = "127.0.0.1"
 # Bump on a release. describe_version() refines this from git when the repo is
 # there, so a working copy reports exactly which commit is running rather than
 # just the last version someone remembered to edit.
-APP_VERSION = "0.7.0"
+APP_VERSION = "0.8.0"
 HTTP_PORT = 8742
-# How the detect loop gets its data.
+# How the detect loop gets its data on the older python-simconnect connection
+# (SIM_CONNECTION below). The native connection, the default, has no legacy
+# path: the push sampler is the connection, and a tick with no fresh push
+# holds the last reading (native_sample).
 #   legacy - one blocking python-SimConnect get() per variable. ~2.8 Hz.
 #   shadow - legacy still drives recording, the push sampler runs alongside and
 #            its values are compared and logged. Costs the same as legacy and
-#            cannot affect what is recorded. This is the default until a live
-#            flight confirms the two agree.
+#            cannot affect what is recorded.
 #   fast   - the push sampler drives recording, with an automatic fall back to
 #            legacy for any tick where no fresh push has arrived.
 # Validated against a live sim on 31 Aug 2026: every field matched the legacy
 # path to four decimals (heading 359.59 confirming degrees, not radians), the
 # title decoded, and the push rate measured 42.4 Hz against a legacy ceiling of
-# 1.67 Hz. "fast" still falls back to a legacy read for any tick where no fresh
-# push has arrived.
+# 1.67 Hz.
 SAMPLER_MODE = "fast"
 SAMPLER_COMPARE_SEC = 20.0
 
@@ -191,6 +192,10 @@ RUNWAY_LOOKUP_TIMEOUT = 10.0
 # The first lookup of a session also fills in airports for landings recorded
 # before their runways were cached, at most this many airports per pass.
 RUNWAY_BACKFILL_MAX = 60
+# After a lookup that could not ask the sim at all, wait this long before
+# asking again - not every time the aircraft has been parked ten seconds,
+# which an unavailable sim would answer the same way each time.
+RUNWAY_RETRY_SEC = 120.0
 # 60 s per clip either way: a takeoff is mostly what happens after it, a
 # landing mostly what happens before it.
 TAKEOFF_BEFORE = 5.0
@@ -213,8 +218,10 @@ CAMERA_MASK_ALL_TARGETED = (
     CAMERA_MASK_POSITION | CAMERA_MASK_TARGETED | CAMERA_MASK_FOV | CAMERA_MASK_REFERENTIAL
 )
 # Camera modes.
-#   place  - put the camera at the event once, then do not touch it again, so
-#            the sim's own camera controls (your control pad) drive it.
+#   place  - put the camera at the event and leave it there; only the aim
+#            follows the ghost. (It was meant to hand the camera to the sim's
+#            own controls - a control pad - but the sim does not allow that:
+#            see CAMERA_ENABLE_INTERACTION.)
 #   follow - re-aim every frame, a locked chase. Smooth, but it overwrites any
 #            input you give 20 times a second.
 CHASE_MODE_PLACE = "place"
@@ -369,6 +376,9 @@ SIMCONNECT_EVENT_FLAG_GROUPID_IS_PRIORITY = 16
 NATIVE_DIR = os.path.join(BASE, "native")
 GAME_DLL_FILENAME = "SimConnect_internal.dll"
 NATIVE_DLL = os.path.join(NATIVE_DIR, GAME_DLL_FILENAME)
+# A refreshed copy waiting for the one in use to be let go: see
+# refresh_game_simconnect_dll.
+NATIVE_DLL_STAGED = NATIVE_DLL + ".new"
 CAMERA_CLIENT_NAME = b"msfs-logger-chase"
 SIMCONNECT_UNUSED = 0xFFFFFFFF
 SIMCONNECT_DATATYPE_INITPOSITION = 12
@@ -397,6 +407,123 @@ FACILITY_FIELDS = (
     "OPEN PRIMARY_THRESHOLD", "LENGTH", "CLOSE PRIMARY_THRESHOLD",
     "OPEN SECONDARY_THRESHOLD", "LENGTH", "CLOSE SECONDARY_THRESHOLD",
     "CLOSE RUNWAY", "CLOSE AIRPORT")
+
+# An airport's name and helipads, in a definition of their own so that a
+# failure costs those and never the runways. Measured against a running sim,
+# not taken from the SDK:
+#   NAME64 arrives as the airport's record (type 0), 64 bytes of UTF-8 text
+#     ending at the first zero byte; the bytes after that zero are whatever
+#     was in memory - "Zurich" came back as b"Zurich\0A\0..." - so the text
+#     is cut there. NAME, 32 bytes, cut a hospital's name in half. Names are
+#     short: "Vance Brand", "Pensacola Intl".
+#   Each helipad is a record of type 4, 44 bytes: latitude, longitude and
+#     altitude (doubles), then heading, length and width (floats; length and
+#     width in METRES, as for runways), then surface and type (ints) - checked
+#     on airports and heliports in more than one country: tower-top and
+#     hospital pads at 12-21 m, an airport's helicopter stands at 6-9 m.
+AIRPORT_NAME_DEFINE_ID = 7702
+AIRPORT_NAME_FIELDS = ("OPEN AIRPORT", "NAME64",
+                       "OPEN HELIPAD", "LATITUDE", "LONGITUDE", "ALTITUDE",
+                       "HEADING", "LENGTH", "WIDTH", "SURFACE", "TYPE",
+                       "CLOSE HELIPAD", "CLOSE AIRPORT")
+AIRPORT_NAME_BYTES = 64
+HELIPAD_RECORD_TYPE = 4
+HELIPAD_RECORD_BYTES = 44
+# Airports asked about in one pass. Measured at about 37 ms each, so 200 is
+# some seconds of parked time; the runway limit (60) left a backlog for the
+# next session.
+AIRPORT_NAMES_MAX = 200
+
+
+# An airport's ground: parking spots and the taxi network, in one request.
+# Measured against a running sim on six airports, large and small:
+#   the airport's record (type 0) is its reference latitude and longitude,
+#     two doubles, 16 bytes;
+#   a parking spot is type 15, 20 bytes: type (int), radius, heading, BIAS_X,
+#     BIAS_Z (floats; metres, the biases east and north of the reference);
+#   a taxi point is type 14, 12 bytes: type (int), BIAS_X, BIAS_Z;
+#   a taxi path is type 16, 16 bytes: type (int), width (float, metres),
+#     start, end (ints) - indices into the taxi points in the order they
+#     arrived, except that a path of type 3 ends at a PARKING spot: read as
+#     a taxi point its median length was 2,600-7,600 ft, read as a parking
+#     spot 55-258 ft, at every airport tried.
+# A large airport sends thousands of each: 37 s for one with 8,315 paths,
+# 11 s and 7 s for two mid-sized ones, under 3 s for small ones; the owner
+# saw no stutter in the sim while the largest came in, parked.
+GROUND_DEFINE_ID = 7703
+GROUND_FIELDS = ("OPEN AIRPORT", "LATITUDE", "LONGITUDE",
+                 "OPEN TAXI_PARKING", "TYPE", "RADIUS", "HEADING", "BIAS_X", "BIAS_Z",
+                 "CLOSE TAXI_PARKING",
+                 "OPEN TAXI_POINT", "TYPE", "BIAS_X", "BIAS_Z", "CLOSE TAXI_POINT",
+                 "OPEN TAXI_PATH", "TYPE", "WIDTH", "START", "END", "CLOSE TAXI_PATH",
+                 "CLOSE AIRPORT")
+GROUND_PARKING, GROUND_POINT, GROUND_PATH = 15, 14, 16
+GROUND_PATH_TO_PARKING = 3
+GROUND_TIMEOUT = 120.0
+# Airports asked for their ground in one pass. Each can take half a minute.
+GROUND_MAX = 10
+
+
+def ground_from(records):
+    """(ref_lat, ref_lon, parkings, paths) from [(record type, data)], in
+    runways.ground_doc's shapes, or None without the airport's record."""
+    import runways as runways_mod
+    ref = None
+    spots, points, raw_paths = [], [], []
+    for kind, data in records:
+        if kind == 0 and len(data) >= 16:
+            ref = struct.unpack_from("<dd", data, 0)
+        elif kind == GROUND_PARKING and len(data) == 20:
+            spots.append(struct.unpack_from("<iffff", data, 0))
+        elif kind == GROUND_POINT and len(data) == 12:
+            points.append(struct.unpack_from("<iff", data, 0))
+        elif kind == GROUND_PATH and len(data) == 16:
+            raw_paths.append(struct.unpack_from("<ifii", data, 0))
+    if ref is None:
+        return None
+    lat0, lon0 = ref
+    per_deg_lon = 60.0 * math.cos(math.radians(lat0))
+
+    def at(bias_x, bias_z):
+        north_nm = bias_z * runways_mod.FT_PER_M / runways_mod.FT_PER_NM
+        east_nm = bias_x * runways_mod.FT_PER_M / runways_mod.FT_PER_NM
+        return lat0 + north_nm / 60.0, lon0 + east_nm / per_deg_lon
+
+    spot_at = [at(bx, bz) for _t, _r, _h, bx, bz in spots]
+    point_at = [at(bx, bz) for _t, bx, bz in points]
+    parkings = [(la, lo, r * runways_mod.FT_PER_M)
+                for (la, lo), (_t, r, _h, _bx, _bz) in zip(spot_at, spots)]
+    paths = []
+    for kind, width, start, end in raw_paths:
+        ends_at = spot_at if kind == GROUND_PATH_TO_PARKING else point_at
+        if 0 <= start < len(point_at) and 0 <= end < len(ends_at):
+            a, b = point_at[start], ends_at[end]
+            paths.append((a[0], a[1], b[0], b[1], width * runways_mod.FT_PER_M))
+    return lat0, lon0, parkings, paths
+
+
+def helipad_from(data):
+    """A helipad record as a pad: {lat, lon, heading, length_ft, width_ft}."""
+    import runways as runways_mod
+    la, lo, _alt, hdg, length_m, width_m, _surface, _kind = struct.unpack_from(
+        "<dddfffii", data, 0)
+    return {"lat": la, "lon": lo, "heading": round(float(hdg), 1),
+            "length_ft": round(float(length_m) * runways_mod.FT_PER_M, 1),
+            "width_ft": round(float(width_m) * runways_mod.FT_PER_M, 1)}
+
+
+def airport_name_from(data):
+    """The name in a NAME64 record, or "" for none.
+
+    A localisation key ("TT:...") is not a name a person can read; it has not
+    been seen, and is refused rather than shown if it ever is."""
+    import runways as runways_mod
+    text = bytes(data[:AIRPORT_NAME_BYTES]).split(b"\0")[0]
+    name = runways_mod.clean_name(text.decode("utf-8", "replace"))
+    if name.startswith("TT:"):
+        return ""
+    return name
+
 
 # The real camera struct is 84 bytes. CameraSet's packet is 0x68 = 104 = a
 # 16-byte header + an 84-byte struct + a 4-byte mask, and CameraGet replies with
@@ -452,10 +579,11 @@ CAMERA_MASK_TARGET_ONLY = 0x04
 
 # CameraEnableFlag / CameraDisableFlag bits. Sweeping 0-7 against a live sim,
 # 1 and 2 are accepted and 0 and 4 are refused with exception 46, which matches
-# the two documented flags. INTERACTION is the one that lets a control pad move
+# the two documented flags. INTERACTION was expected to let a control pad move
 # the camera we placed; ABOVE_GROUND keeps it from sinking through terrain.
-# Off: enabling interaction snaps the camera back to the aircraft (see
-# camera_acquire). Left here so the finding is not lost.
+# Tested in the sim, interaction gives a control pad nothing and snaps the
+# camera back to the aircraft (see camera_acquire), so it is off; neither flag
+# is enabled. Left here so the finding is not lost.
 CAMERA_ENABLE_INTERACTION = False
 CAMERA_FLAG_INTERACTION = 0x01
 CAMERA_FLAG_ABOVE_GROUND = 0x02
@@ -1480,6 +1608,8 @@ def load_settings_at_startup():
         settings_mod.register("tiles", tiles)
         settings_mod.register("mapbake", mapbake)
         settings_mod.register("grading", grading)
+        import runways as runways_mod
+        settings_mod.register("runways", runways_mod)
         settings_mod.capture_defaults()
         saved = settings_mod.load()
         settings_mod.apply(on_buffer=resize_live_buffer)
@@ -1531,7 +1661,9 @@ def apply_settings(values):
     # touchdown-point bands, which change grades.
     watched = ("tile_source", "map_style", "grade_float", "float_normal_s",
                "float_margin_ft", "float_beyond_ft", "grade_touchdown_point",
-               "tdz_target_ft", "tdz_tolerance_ft", "tdz_end_ft", "tdz_beyond_ft")
+               "tdz_target_ft", "tdz_tolerance_ft", "tdz_end_ft", "tdz_beyond_ft",
+               "heli_pavement_margin_ft", "heli_airport_radius_nm",
+               "heli_radius_where_paved")
     changed = [k for k in watched if before.get(k) != after.get(k)]
     # Clip windows decide a clip's shape at commit, so they are staged rather
     # than applied when a clip is mid-capture; the buffer resize is held with
@@ -1891,12 +2023,13 @@ def purge_hidden(scope, sortie_id, key=None, dry_run=True):
                 "aircraft": entry.get("aircraft"), "date": entry.get("date"),
                 "distance_nm": entry.get("distance_nm"), "grade": entry.get("grade")}}
         res = logbook_build.purge(entry, log=log)
-        # Rebuild either way. A partial delete still moved events, tracks and
-        # the caches, so the logbook on disk is stale whether or not every
-        # file went - and the flight stays hidden, which is what the retained
-        # exclusion says. Returning early here left the page describing a
-        # world that no longer existed.
-        rebuild = rebuild_logbook_now(force=True, reprocess=True)
+        # Rebuild either way. A partial delete still moved events and tracks,
+        # so the logbook on disk is stale whether or not every file went - and
+        # the flight stays hidden, which is what the retained exclusion says.
+        # Returning early here left the page describing a world that no longer
+        # existed. Not a reprocess: what a delete changes is in the sortie
+        # signatures, so only what it touched is rebuilt (test_cache).
+        rebuild = rebuild_logbook_now(force=True)
         out = dict(res)
         out["rebuild"] = rebuild
         return out
@@ -2123,17 +2256,96 @@ def json_response(handler, code, obj):
     handler.end_headers()
     handler.wfile.write(body)
 
+# Who may ask the watcher for what (SME review R1). Binding to loopback says
+# where a request comes from, not who sent it: a web page open in any browser
+# tab can address 127.0.0.1, and every response used to grant any origin
+# everything, so a page could hide, delete, change settings or start a replay.
+# The rules, checked before a request is dispatched:
+#   - Host must name this server, 127.0.0.1 or localhost at HTTP_PORT. That is
+#     the DNS-rebinding guard, and it covers reads as well as commands.
+#   - A command (any POST) must carry no Origin - a non-browser client such as
+#     the tray - or the page's own origin, and must be JSON. A browser cannot
+#     send a cross-site JSON POST without a preflight, and no preflight is
+#     granted any more.
+# This keeps browser pages out. It does not identify the tray: anything local
+# that sends no Origin is let in the same way, and telling local programs
+# apart would need authentication, which this is not.
+# One read stays open to every origin: GET /state, which the EFB tablet polls
+# from inside the sim under an origin not known here. It carries the current
+# flight - position, ids, recent events, replay state - so it is not private
+# from other web pages. That is an interim choice, kept deliberately.
+OPEN_READ_PATHS = ("/state",)
+_refusals_logged = {}
+
+
+def _allowed_hosts():
+    return ("127.0.0.1:%d" % HTTP_PORT, "localhost:%d" % HTTP_PORT)
+
+
+def caller_refusal(headers, command):
+    """Why a request must be refused, or None. command: it is a POST."""
+    host = (headers.get("Host") or "").strip().lower()
+    if host not in _allowed_hosts():
+        return "unexpected Host %r" % host[:80]
+    if not command:
+        return None
+    origin = headers.get("Origin")
+    if origin is not None and origin.strip().lower() != "http://" + host:
+        return "a command from another origin %r" % origin.strip()[:80]
+    ctype = (headers.get("Content-Type") or "").split(";")[0].strip().lower()
+    if ctype != "application/json":
+        return "a command that is not JSON (%r)" % ctype[:40]
+    return None
+
+
+def _log_refusal(why):
+    """Say so once a minute per reason, not once per request: a page that
+    keeps trying would otherwise fill the log."""
+    now = time.time()
+    if now - _refusals_logged.get(why, 0.0) >= 60.0:
+        _refusals_logged[why] = now
+        log("http refused: %s" % why)
+
+
 class StateHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         return
 
     def _cors(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "*")
+        """Headers every response carries. Named for what it used to do,
+        which was grant every origin everything."""
         self.send_header("Cache-Control", "no-store")
+        if (self.command == "GET"
+                and unquote(self.path.split("?", 1)[0]) in OPEN_READ_PATHS):
+            self.send_header("Access-Control-Allow-Origin", "*")
+
+    def _refused(self, command):
+        """Refuse the request if the caller is not allowed; True if refused."""
+        why = caller_refusal(self.headers, command)
+        if why is None:
+            return False
+        _log_refusal(why)
+        # Read the body before answering. Closing a socket with unread data
+        # in it makes Windows send a reset, and the caller sees the
+        # connection aborted instead of the 403 - measured, intermittently.
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except Exception:
+            n = 0
+        if 0 < n <= 1000000:
+            try:
+                self.rfile.read(n)
+            except Exception:
+                pass
+        self.close_connection = True
+        json_response(self, 403, {"ok": False, "error": "refused", "detail": why})
+        return True
 
     def do_OPTIONS(self):
+        # A preflight is answered and granted nothing: no Allow-Origin, no
+        # Allow-Methods, so a browser will not send the command it asked about.
+        if self._refused(False):
+            return
         self.send_response(204)
         self._cors()
         self.end_headers()
@@ -2155,6 +2367,8 @@ class StateHandler(BaseHTTPRequestHandler):
         return obj if isinstance(obj, dict) else None
 
     def do_GET(self):
+        if self._refused(False):
+            return
         path = unquote(self.path.split("?", 1)[0])
         # /state keeps its full shape: the EFB tablet polls it.
         if path == "/state":
@@ -2245,6 +2459,10 @@ class StateHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
+        # Before anything: every command, including the bodyless ones - Stop,
+        # Rebuild - that never reach _read_json_body.
+        if self._refused(True):
+            return
         path = unquote(self.path.split("?", 1)[0])
         if path == "/replay":
             body = self._read_json_body()
@@ -3201,6 +3419,18 @@ class ClipTracker:
             ]
             firmest = [r for r in rates if r is not None]
             extra["firmest_fpm"] = max(firmest) if firmest else None
+            # How the touchdown felt, on this aircraft type's own scale, for
+            # the EFB tablet: it reads /state and cannot work the type out
+            # itself without a second copy of the thresholds. Never allowed to
+            # cost the event - a word missing is only a word missing.
+            try:
+                import grading as grading_mod
+                extra["touchdown_word"] = grading_mod.touchdown_word(
+                    rate_fpm, grading_mod.profile_for(
+                        self.flight.aircraft, category=self.flight.category,
+                        vs0_kt=self.flight.vs0))
+            except Exception as e:
+                log("touchdown word failed %r" % (e,))
         write_event(kind, self.flight.flight_id,
                     extra.get("aircraft") or self.flight.aircraft, extra=extra,
                     sortie_id=getattr(self.flight, "sortie_id", None))
@@ -3224,7 +3454,9 @@ class ClipTracker:
             append_jsonl(EVENTS_JSONL, ev_line)
         except Exception as e:
             log("events.jsonl write failed %s" % repr(e))
-        if kind == "landing":
+        # Both ends of a leg: the landing's runway grades it, and both name
+        # the route. Looked up later, parked - never here, in the air.
+        if kind in ("landing", "takeoff"):
             queue_runway_lookup(ev_line.get("lat"), ev_line.get("lon"),
                                 self.flight.category, self.flight.vs0,
                                 self.flight.aircraft)
@@ -3654,7 +3886,115 @@ _CAMERA_EXPORTS = (
 )
 
 
+def _sim_dll_sources():
+    """The sim's own copies of the DLL: the running sim's folder first, then
+    the installed package. Never native/, which is the copy."""
+    out = []
+    for d in _process_image_dirs(("FlightSimulator2024.exe", "FlightSimulator.exe")):
+        p = os.path.join(d, GAME_DLL_FILENAME)
+        if os.path.isfile(p):
+            out.append(p)
+    out.extend(_windowsapps_dlls())
+    seen, unique = set(), []
+    for p in out:
+        a = os.path.abspath(p)
+        if a in seen or a == os.path.abspath(NATIVE_DLL):
+            continue
+        seen.add(a)
+        unique.append(p)
+    return unique
+
+
+def _file_sha256(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _install_dll(staged):
+    """Put a checked copy in place of native/'s. Raises OSError while the old
+    one is loaded by a process - Windows will not replace a DLL in use."""
+    os.replace(staged, NATIVE_DLL)
+
+
+def refresh_game_simconnect_dll():
+    """Take a fresh copy of the sim's DLL into native/, as install.ps1
+    -ResolveDll asks (SME review R4).
+
+    Startup keeps using the copy in native/ while it has the exports needed,
+    and that is right for every start. But -ResolveDll, the documented step
+    after a sim update, went through the same resolver and reported RESOLVED
+    on the old copy without looking at the sim's. This always compares
+    against the sim and says what happened:
+      updated    native/ now holds the sim's copy
+      unchanged  native/ already held the same bytes
+      staged     the copy in native/ is loaded by a running watcher, which
+                 Windows will not let be replaced: the new one waits beside
+                 it, checked, and takes over when the watcher next starts
+      no source  no copy of the sim's was found: start the sim and re-run
+      failed     copying or checking failed; native/ is untouched
+    """
+    sources = _sim_dll_sources()
+    for src in sources:
+        ok, missing = _dll_has_exports(src, _CAMERA_EXPORTS)
+        if not ok:
+            log("dll refresh: skip %s missing=%s" % (src, ",".join(missing)))
+            continue
+        try:
+            want = _file_sha256(src)
+            if os.path.isfile(NATIVE_DLL) and _file_sha256(NATIVE_DLL) == want:
+                return {"status": "unchanged", "source": src, "path": NATIVE_DLL}
+            os.makedirs(NATIVE_DIR, exist_ok=True)
+            shutil.copy2(src, NATIVE_DLL_STAGED)
+            good = (_file_sha256(NATIVE_DLL_STAGED) == want
+                    and _dll_has_exports(NATIVE_DLL_STAGED, _CAMERA_EXPORTS)[0])
+        except OSError as e:
+            return {"status": "failed", "source": src, "detail": repr(e)}
+        if not good:
+            try:
+                os.remove(NATIVE_DLL_STAGED)
+            except OSError:
+                pass
+            return {"status": "failed", "source": src,
+                    "detail": "the copy did not match its source"}
+        try:
+            _install_dll(NATIVE_DLL_STAGED)
+        except OSError as e:
+            log("dll refresh: native copy in use (%r); staged for the next start" % (e,))
+            return {"status": "staged", "source": src, "path": NATIVE_DLL_STAGED}
+        log("dll refresh: native copy updated from %s" % src)
+        return {"status": "updated", "source": src, "path": NATIVE_DLL}
+    return {"status": "no source", "looked_in": sources}
+
+
+def promote_staged_dll():
+    """At startup, before anything loads native/: a refresh that could not
+    replace a DLL in use left its copy beside it. Checked again first; a
+    staged file that fails is discarded and the working copy kept."""
+    if not os.path.isfile(NATIVE_DLL_STAGED):
+        return None
+    ok, missing = _dll_has_exports(NATIVE_DLL_STAGED, _CAMERA_EXPORTS)
+    if not ok:
+        log("dll refresh: staged copy rejected, missing=%s" % ",".join(missing))
+        try:
+            os.remove(NATIVE_DLL_STAGED)
+        except OSError:
+            pass
+        return "rejected"
+    try:
+        _install_dll(NATIVE_DLL_STAGED)
+    except OSError as e:
+        log("dll refresh: staged copy could not be promoted %r" % (e,))
+        return "failed"
+    log("dll refresh: staged copy promoted into native/")
+    return "promoted"
+
+
 def resolve_game_simconnect_dll():
+    promote_staged_dll()
     ordered = []
     if os.path.isfile(NATIVE_DLL):
         ordered.append(NATIVE_DLL)
@@ -4084,6 +4424,76 @@ class GameSimConnect:
             disp = (thresholds.get(uniq, []) + [0.0, 0.0])[:2]
             recs.append(tuple(rws[uniq]) + (disp[0], disp[1]))
         return runways_mod.from_facility(ident, region, airport, recs)
+
+    def facility_details(self, ident, region, timeout=RUNWAY_LOOKUP_TIMEOUT):
+        """One airport's name and helipads: {"name", "helipads"} - the name
+        "" when the sim has none, helipads [] when it lists none - or None
+        when it could not be asked or did not answer. Read-only."""
+        add = self.fns.get("SimConnect_AddToFacilityDefinition")
+        req = self.fns.get("SimConnect_RequestFacilityData")
+        if add is None or req is None:
+            return None
+        if not getattr(self, "_name_defined", False):
+            for field in AIRPORT_NAME_FIELDS:
+                if not _is_hr(add(self._h(), AIRPORT_NAME_DEFINE_ID, field.encode()), 0):
+                    return None
+            self._name_defined = True
+        rid = self.new_request_id()
+        with self._lock:
+            self._fac[rid] = {"parts": [], "done": False}
+        if not _is_hr(req(self._h(), AIRPORT_NAME_DEFINE_ID, rid,
+                          str(ident).encode("ascii", "replace"),
+                          str(region).encode("ascii", "replace")), 0):
+            with self._lock:
+                self._fac.pop(rid, None)
+            return None
+        ent = self._fac_wait(rid, lambda e: e["done"], timeout)
+        if ent is None:
+            return None
+        out = {"name": "", "helipads": []}
+        for raw in ent["parts"]:
+            if len(raw) < 40:
+                continue
+            # The same record header facility_runways reads: type at 24,
+            # 0 for the airport itself; the data from 40.
+            kind = struct.unpack_from("<I", raw, 24)[0]
+            data = raw[40:]
+            if kind == 0 and len(data) >= AIRPORT_NAME_BYTES:
+                out["name"] = airport_name_from(data)
+            elif kind == HELIPAD_RECORD_TYPE and len(data) == HELIPAD_RECORD_BYTES:
+                out["helipads"].append(helipad_from(data))
+        return out
+
+    def facility_ground(self, ident, region, timeout=GROUND_TIMEOUT):
+        """One airport's parking spots and taxi paths as a runways.ground_doc,
+        or None when it could not be asked or did not answer. Read-only."""
+        import runways as runways_mod
+        add = self.fns.get("SimConnect_AddToFacilityDefinition")
+        req = self.fns.get("SimConnect_RequestFacilityData")
+        if add is None or req is None:
+            return None
+        if not getattr(self, "_ground_defined", False):
+            for field in GROUND_FIELDS:
+                if not _is_hr(add(self._h(), GROUND_DEFINE_ID, field.encode()), 0):
+                    return None
+            self._ground_defined = True
+        rid = self.new_request_id()
+        with self._lock:
+            self._fac[rid] = {"parts": [], "done": False}
+        if not _is_hr(req(self._h(), GROUND_DEFINE_ID, rid,
+                          str(ident).encode("ascii", "replace"),
+                          str(region).encode("ascii", "replace")), 0):
+            with self._lock:
+                self._fac.pop(rid, None)
+            return None
+        ent = self._fac_wait(rid, lambda e: e["done"], timeout)
+        if ent is None:
+            return None
+        got = ground_from([(struct.unpack_from("<I", raw, 24)[0], raw[40:])
+                           for raw in ent["parts"] if len(raw) >= 40])
+        if got is None:
+            return None
+        return runways_mod.ground_doc(ident, got[2], got[3])
 
     def wait_object_id(self, request_id, timeout=4.0):
         t0 = time.time()
@@ -5165,7 +5575,7 @@ def _clip_ground_alt(points):
     return min(alts) if alts else None
 
 
-def _replay_loop(gsc, object_id, points, stop_ev, clip_id, ts=None):
+def _replay_loop(gsc, object_id, points, stop_ev, clip_id, ts=None, gen=None):
     # One index for the whole run, built from the list this loop was handed.
     # points is immutable for the life of a replay - see clip_timestamps.
     if ts is None:
@@ -5209,7 +5619,10 @@ def _replay_loop(gsc, object_id, points, stop_ev, clip_id, ts=None):
                 log("replay abort: user object id")
                 break
             with RUNTIME_LOCK:
+                current = _replay_is(gen)
                 paused = bool(RUNTIME["replay"].get("paused"))
+            if not current:
+                break
             if paused:
                 # Hold the clip where it is so the knobs can be worked in peace.
                 #
@@ -5288,9 +5701,10 @@ def _replay_loop(gsc, object_id, points, stop_ev, clip_id, ts=None):
             last_pt = pt
             span = max(t_end - t_base, 1e-6)
             with RUNTIME_LOCK:
-                RUNTIME["replay"]["last_pose"] = pt
-                RUNTIME["replay"]["elapsed_s"] = max(0.0, min(t - t_base, span))
-                RUNTIME["replay"]["duration_s"] = span
+                if _replay_is(gen):
+                    RUNTIME["replay"]["last_pose"] = pt
+                    RUNTIME["replay"]["elapsed_s"] = max(0.0, min(t - t_base, span))
+                    RUNTIME["replay"]["duration_s"] = span
             # Ghost writes stay at REPLAY_HZ even when the camera runs
             # faster. The pose is still interpolated for this instant, so
             # the camera aims at where the ghost actually is.
@@ -5359,13 +5773,15 @@ def _replay_loop(gsc, object_id, points, stop_ev, clip_id, ts=None):
                         log("CameraSet failed during replay; retrying")
                     if cam_fails >= CHASE_FAIL_TOLERANCE:
                         with RUNTIME_LOCK:
-                            still = bool(RUNTIME["replay"]["chase"]["camera_acquired"])
+                            still = (_replay_is(gen)
+                                     and bool(RUNTIME["replay"]["chase"]["camera_acquired"]))
                         if still:
                             log("CameraSet failed %d times running; chase "
                                 "stopped, ghost continues" % cam_fails)
                             gsc.camera_release()
                             with RUNTIME_LOCK:
-                                RUNTIME["replay"]["chase"]["camera_acquired"] = False
+                                if _replay_is(gen):
+                                    RUNTIME["replay"]["chase"]["camera_acquired"] = False
                         chase_live = False
             tick += step
             nxt = wall0 + tick
@@ -5394,12 +5810,18 @@ def _replay_loop(gsc, object_id, points, stop_ev, clip_id, ts=None):
                     break
                 time.sleep(min(left, REPLAY_SLEEP_SLICE))
     finally:
-        if stop_ev.is_set():
-            # Stop was pressed: hand the camera back and clean up the ghost.
-            try:
-                gsc.camera_release()
-            except Exception:
-                pass
+        with RUNTIME_LOCK:
+            current = _replay_is(gen)
+        if stop_ev.is_set() or not current:
+            # Stop was pressed: clean up this replay's own ghost and
+            # connection. The camera is handed back only while this replay
+            # still owns it - a worker that outlived its stop must not
+            # release a camera a newer replay has since acquired.
+            if current:
+                try:
+                    gsc.camera_release()
+                except Exception:
+                    pass
             try:
                 gsc.remove_object(object_id)
             except Exception:
@@ -5409,20 +5831,20 @@ def _replay_loop(gsc, object_id, points, stop_ev, clip_id, ts=None):
             except Exception:
                 pass
             with RUNTIME_LOCK:
-                if RUNTIME["replay"].get("clip_id") == clip_id:
+                if _replay_is(gen):
                     RUNTIME["replay"]["active"] = False
                     RUNTIME["replay"]["object_id"] = None
+                    RUNTIME["replay"]["chase"]["camera_acquired"] = False
+                    RUNTIME["replay"]["holding"] = False
                 if RUNTIME["replay"].get("gsc") is gsc:
                     RUNTIME["replay"]["gsc"] = None
-                RUNTIME["replay"]["chase"]["camera_acquired"] = False
-                RUNTIME["replay"]["holding"] = False
             log("replay stopped clip=%s" % clip_id)
         else:
             # The clip simply ran out. Leave the camera where it is and the
             # ghost where it finished, until Stop. stop_replay() does the
             # teardown, and starting another replay calls it first.
             with RUNTIME_LOCK:
-                if RUNTIME["replay"].get("clip_id") == clip_id:
+                if _replay_is(gen):
                     RUNTIME["replay"]["active"] = False
                     RUNTIME["replay"]["holding"] = True
                     RUNTIME["replay"]["paused"] = False
@@ -5436,7 +5858,7 @@ def _replay_loop(gsc, object_id, points, stop_ev, clip_id, ts=None):
             while chase_live and hold_pose is not None and not stop_ev.is_set():
                 with RUNTIME_LOCK:
                     hold_mode = RUNTIME["replay"]["chase"].get("mode") or CHASE_MODE_DEFAULT
-                    if not RUNTIME["replay"].get("holding"):
+                    if not _replay_is(gen) or not RUNTIME["replay"].get("holding"):
                         break
                 try:
                     if not gsc.camera_set(object_id, pose=hold_pose,
@@ -5449,8 +5871,34 @@ def _replay_loop(gsc, object_id, points, stop_ev, clip_id, ts=None):
                     break
 
 
+# A replay's start and its stop are each one operation (SME review R3). The
+# runtime lock guards each state update, not the whole of a start - stop,
+# load, open, spawn, acquire, publish - so two requests at once both got past
+# the stop before either published, both spawned, and the second overwrote
+# the only record of the first: Stop then left a ghost, a connection and a
+# worker running. Start and stop are serialized by this lock. start_replay
+# calls _stop_replay_locked, never stop_replay, so nothing takes it twice; the
+# worker never takes it, so stop can join the worker while holding it.
+_replay_lifecycle = threading.Lock()
+
+
+def _replay_is(gen):
+    """Whether replay generation gen is still the current one. Caller holds
+    RUNTIME_LOCK. Every start and every stop moves the generation on, so a
+    worker that outlived its stop - stop's join gives up after 2 s - writes
+    nothing shared and moves no camera once a newer replay owns them. It
+    used to compare clip ids, which a second replay of the same clip shares."""
+    return gen is None or RUNTIME["replay"].get("gen") == gen
+
+
 def stop_replay():
+    with _replay_lifecycle:
+        return _stop_replay_locked()
+
+
+def _stop_replay_locked():
     with RUNTIME_LOCK:
+        RUNTIME["replay"]["gen"] = RUNTIME["replay"].get("gen", 0) + 1
         stop_ev = RUNTIME["replay"].get("stop")
         th = RUNTIME["replay"].get("thread")
         gsc = RUNTIME["replay"].get("gsc")
@@ -5475,6 +5923,11 @@ def stop_replay():
 
 
 def start_replay(body):
+    with _replay_lifecycle:
+        return _start_replay_locked(body)
+
+
+def _start_replay_locked(body):
     clip_id = (body or {}).get("clip_id")
     path = (body or {}).get("path")
     with RUNTIME_LOCK:
@@ -5509,7 +5962,7 @@ def start_replay(body):
     if not points:
         return {"ok": False, "error": "clip not found"}
     cid = doc.get("id") or clip_id or "clip"
-    stop_replay()
+    _stop_replay_locked()
     info = game_dll_status()
     if not info.get("ok"):
         log("chase unavailable: game dll not bound path=%s" % info.get("path"))
@@ -5608,13 +6061,17 @@ def start_replay(body):
         if not chase_ok:
             log("chase unavailable clip=%s object_id=%s (ghost still playing)" % (cid, oid))
     stop_ev = threading.Event()
+    with RUNTIME_LOCK:
+        gen = RUNTIME["replay"].get("gen", 0) + 1
     th = threading.Thread(
         target=_replay_loop,
         args=(gsc, int(oid), points, stop_ev, cid),
+        kwargs={"gen": gen},
         daemon=True,
         name="ghost-replay",
     )
     with RUNTIME_LOCK:
+        RUNTIME["replay"]["gen"] = gen
         RUNTIME["replay"]["active"] = True
         RUNTIME["replay"]["holding"] = False
         RUNTIME["replay"]["paused"] = bool(REPLAY_START_PAUSED)
@@ -5729,46 +6186,120 @@ def _keep_existing_flight(flight, tracker, s, why):
 
 
 RUNWAYS_DIR = os.path.join(SESSIONS, "runways")
-_runway_queue = []                 # (lat, lon) of landings not yet looked up
-_runway_state = {"thread": None, "backfilled": False}
+_runway_queue = []                 # (lat, lon) of takeoffs and landings not yet looked up
+_runway_state = {"thread": None, "backfilled": False, "retry_after": 0.0}
 _runway_lock = threading.Lock()
 
 
+# The sim's airport list - every airport in the world, 84,000 of them - is
+# what says which airports are near a takeoff or landing; no request answers
+# "airports near here" for anywhere but around the aircraft now. It was
+# requested afresh by every lookup that had anything to find. It is now held
+# for the connection it came from: requested the first time a lookup needs it,
+# dropped when the sim connection ends, so a sim restarted with different
+# scenery is asked again. Not kept on disk - when to refresh a file copy is
+# a question nobody has measured an answer to yet. Each connection to the sim,
+# and each loss of one, moves _airport_list["session"] on, so a lookup that
+# started under the old connection cannot leave its list for the new one.
+_airport_list = {"session": 0, "held": None}
+
+
+class AirportList(object):
+    """The airport list, packed. As tuples it held 21.5 MB for the whole
+    connection (measured, 84,354 synthetic entries); the lookup needs only
+    each airport's ident, region and position, so those are kept as fixed-
+    width bytes and two arrays of doubles - about 2.5 MB."""
+
+    def __init__(self, rows):
+        import array
+        self.lat = array.array("d")
+        self.lon = array.array("d")
+        ids, regions = [], []
+        for ident, region, la, lo, _alt in rows:
+            ids.append(str(ident).encode("ascii", "replace")[:9].ljust(9, b"\0"))
+            regions.append(str(region).encode("ascii", "replace")[:3].ljust(3, b"\0"))
+            self.lat.append(float(la))
+            self.lon.append(float(lo))
+        self.ids = b"".join(ids)
+        self.regions = b"".join(regions)
+
+    def __len__(self):
+        return len(self.lat)
+
+    def ident(self, k):
+        return self.ids[k * 9:k * 9 + 9].split(b"\0")[0].decode("ascii", "replace")
+
+    def region(self, k):
+        return self.regions[k * 3:k * 3 + 3].split(b"\0")[0].decode("ascii", "replace")
+
+    def __iter__(self):
+        """(ident, region, lat, lon), as facility_airports gave them."""
+        for k in range(len(self.lat)):
+            yield self.ident(k), self.region(k), self.lat[k], self.lon[k]
+
+
+def sim_session_changed():
+    """The sim connection began or ended: the held airport list is dropped."""
+    with _runway_lock:
+        _airport_list["session"] += 1
+        _airport_list["held"] = None
+
+
+def held_airport_list():
+    """(session, the list held for it or None). A held list is always the
+    current connection's: every change drops it, and hold_airport_list keeps
+    one only for the connection it was fetched under."""
+    with _runway_lock:
+        return _airport_list["session"], _airport_list["held"]
+
+
+def hold_airport_list(session, airports):
+    """Keep a fetched list - only if the connection it was fetched under is
+    still the current one."""
+    with _runway_lock:
+        if _airport_list["session"] == session:
+            _airport_list["held"] = airports
+            return True
+        return False
+
+
 def queue_runway_lookup(lat, lon, category=None, vs0=None, aircraft=None):
-    """Ask for this landing's runways at the next parked moment - for an
-    airplane. A helicopter landing asks the sim for nothing."""
+    """Ask about the airports at this takeoff or landing at the next parked
+    moment: their runways, names and helipads."""
     if not RUNWAY_LOOKUP or not (finite(lat) and finite(lon)):
         return
-    if not measures_runway(category, vs0, aircraft):
+    if not asks_about_airports(category, vs0, aircraft):
         return
     with _runway_lock:
         _runway_queue.append((float(lat), float(lon)))
 
 
-def measures_runway(category, vs0=None, aircraft=None):
-    """Whether a landing in this aircraft is measured against a runway.
+def asks_about_airports(category, vs0=None, aircraft=None):
+    """Whether a takeoff or landing in this aircraft asks the sim about the
+    airports near it.
 
-    The same profile test the builder uses, so a helicopter landing - at a
-    heliport, a pad or a field - asks the sim for nothing. Without a category
-    the answer is no: profile_for files an unknown as rotary.
+    An airplane's ends are named from the runway it was on, and its landing
+    measured against it; a helicopter's from the helipad it was on, or an
+    airport near it - so both ask. It once was airplanes only, when the
+    lookup's one use was grading, which still never reaches a helicopter.
+    Without a category the answer is no: nothing says what it was.
     """
-    try:
-        import grading as grading_mod
-        return grading_mod.scores_float(grading_mod.profile_for(
-            aircraft, category=category, vs0_kt=vs0))
-    except Exception:
-        return False
+    return bool(category)
 
 
 def runway_lookup_wanted():
     with _runway_lock:
+        if time.time() < _runway_state.get("retry_after", 0.0):
+            return False
         return bool(_runway_queue) or not _runway_state["backfilled"]
 
 
-def _landing_points_on_record():
-    """Every airplane landing in events.jsonl, as (lat, lon).
+def _runway_points_on_record():
+    """Every airplane takeoff and landing in events.jsonl, as (lat, lon).
 
-    The aircraft class comes from each flight's meta, read once per flight.
+    Takeoffs as well as landings, so the flights recorded before departures
+    were named get their departure airports too. The aircraft class comes
+    from each flight's meta, read once per flight.
     """
     out = []
     kinds = {}
@@ -5779,14 +6310,14 @@ def _landing_points_on_record():
                     e = json.loads(line)
                 except ValueError:
                     continue
-                if not (e.get("kind") == "landing" and finite(e.get("lat"))
+                if not (e.get("kind") in ("landing", "takeoff") and finite(e.get("lat"))
                         and finite(e.get("lon"))):
                     continue
                 fid = e.get("flight_id")
                 if fid not in kinds:
                     meta = (read_json(os.path.join(SESSIONS, fid + ".meta.json"))
                             if isinstance(fid, str) else None) or {}
-                    kinds[fid] = measures_runway(
+                    kinds[fid] = asks_about_airports(
                         meta.get("category"), meta.get("vs0"),
                         meta.get("aircraft") or e.get("aircraft"))
                 if kinds[fid]:
@@ -5796,13 +6327,190 @@ def _landing_points_on_record():
     return out
 
 
-def lookup_runways(points, backfill=False):
+# The prefilter's grid: 0.1 degree cells, so 84,000 airports are not each
+# measured against every landing - only the cells near an airport are looked
+# in, and the exact distance decides. It looked one cell either way, which is
+# 6 nm of latitude anywhere but 6 nm x cos(latitude) of longitude: under the
+# 3 nm radius beyond about 60 degrees, so Iceland, most of Alaska and northern
+# Scandinavia could miss an airport inside the radius (SME review R6). And
+# int() rounds toward zero, which made the cells either side of 0 degrees one
+# double-width cell; floor() keeps every cell the same size.
+RUNWAY_CELLS_PER_DEG = 10
+_LON_CELLS = 360 * RUNWAY_CELLS_PER_DEG
+
+
+def _runway_cell(lat, lon):
+    """(row, column) of the cell a point is in; columns wrap at 180 degrees."""
+    return (int(math.floor(lat * RUNWAY_CELLS_PER_DEG)),
+            int(math.floor((lon + 180.0) * RUNWAY_CELLS_PER_DEG)) % _LON_CELLS)
+
+
+def _runway_cell_reach(lat, radius_nm):
+    """How many columns either side can hold a point within radius_nm.
+
+    Measured where a degree of longitude is shortest: the airport's latitude
+    plus a row and the radius, toward the pole. Near the pole that is every
+    column, which is also the bound - half the circle either way."""
+    edge = min(90.0, abs(lat) + 1.0 / RUNWAY_CELLS_PER_DEG + radius_nm / 60.0)
+    nm_per_column = 60.0 / RUNWAY_CELLS_PER_DEG * math.cos(math.radians(edge))
+    if nm_per_column * (_LON_CELLS // 2) <= radius_nm:
+        return _LON_CELLS // 2
+    return min(_LON_CELLS // 2, max(1, int(math.ceil(radius_nm / nm_per_column))))
+
+
+def _airports_unnamed():
+    """Idents of cached airports the sim has not yet been asked to name, or
+    for their helipads."""
+    import runways as runways_mod
+    named = runways_mod.load_names(RUNWAYS_DIR, asked=True)
+    padded = runways_mod.load_helipads(RUNWAYS_DIR)
+    return sorted(i for i in runways_mod.load_index(RUNWAYS_DIR)
+                  if i not in named or i not in padded)
+
+
+def _fill_airport_names(connection, keep_going):
+    """Never at the runways' expense: any failure here is a note in the log,
+    not an exception through the lookup that would lose its landings."""
+    try:
+        return _fill_airport_names_unguarded(connection, keep_going)
+    except Exception as e:
+        return {"named": 0, "note": "airport names failed %r" % (e,)}
+
+
+def _fill_airport_names_unguarded(connection, keep_going):
+    """Ask the sim to name every cached airport not yet asked about, up to
+    AIRPORT_NAMES_MAX a pass. connection() gives the open lookup connection
+    or None. Returns {named, note}. Stops when the aircraft moves, as the
+    runway requests do; a failed request leaves that airport for next time."""
+    import runways as runways_mod
+    todo = _airports_unnamed()
+    if not todo:
+        return {"named": 0, "note": "every airport named"}
+    index = runways_mod.load_index(RUNWAYS_DIR)
+    got, ms, why = {}, [], ""
+    for ident in todo[:AIRPORT_NAMES_MAX]:
+        if not keep_going():
+            why = ", stopped: the aircraft moved"
+            break
+        gsc = connection()
+        if gsc is None:
+            why = ", stopped: SimConnect open failed"
+            break
+        doc = runways_mod.load_airport(index[ident][2]) or {}
+        t = time.perf_counter()
+        details = gsc.facility_details(ident, doc.get("region") or "")
+        ms.append((time.perf_counter() - t) * 1000.0)
+        if details is None:
+            why = ", %s did not answer" % ident
+            continue
+        got[ident] = details
+    if got:
+        with _runway_lock:
+            names = runways_mod.load_names(RUNWAYS_DIR, asked=True)
+            pads = runways_mod.load_helipads(RUNWAYS_DIR)
+            for ident, details in got.items():
+                names[ident] = details["name"]
+                pads[ident] = details["helipads"]
+            os.makedirs(RUNWAYS_DIR, exist_ok=True)
+            persistence.atomic_json(runways_mod.names_path(RUNWAYS_DIR),
+                                    runways_mod.names_doc(names))
+            persistence.atomic_json(runways_mod.helipads_path(RUNWAYS_DIR),
+                                    runways_mod.helipads_doc(pads))
+    named = sum(1 for v in got.values() if v["name"])
+    n_pads = sum(len(v["helipads"]) for v in got.values())
+    return {"named": len(got),
+            "note": "%d airport(s) asked for names and helipads in %.0f ms: "
+                    "%d named, %d helipad(s)%s"
+                    % (len(got), sum(ms), named, n_pads, why)}
+
+
+def _airports_wanting_ground(points):
+    """Airports with runways near points that were on no helipad, whose
+    ground has not been asked for - nearest first, once each.
+
+    The points are the takeoffs and landings no runway contains: an
+    airplane's end on its runway never asks, and a helicopter's on a pad
+    is named already."""
+    import runways as runways_mod
+    index = runways_mod.load_index(RUNWAYS_DIR)
+    pads = runways_mod.load_helipads(RUNWAYS_DIR)
+    out = {}
+    for lat, lon in points:
+        near = []
+        for ident, (la, lo, path) in index.items():
+            if abs(la - lat) > 0.1:
+                continue
+            d = runways_mod.nm_apart(lat, lon, la, lo)
+            if d <= RUNWAY_LOOKUP_RADIUS_NM:
+                near.append((d, ident, path))
+        if any(runways_mod.on_helipad(pads.get(i), lat, lon, runways_mod.HELIPAD_MARGIN_FT)
+               for _d, i, _p in near):
+            continue
+        for d, ident, path in near:
+            if ident in out or runways_mod.load_ground(RUNWAYS_DIR, ident) is not None:
+                continue
+            doc = runways_mod.load_airport(path) or {}
+            if doc.get("runways"):
+                out[ident] = (d, doc.get("region") or "")
+    return sorted(out.items(), key=lambda kv: kv[1][0])
+
+
+def _fill_ground(connection, keep_going, points):
+    """Fetch the ground of the airports _airports_wanting_ground names, up
+    to GROUND_MAX a pass. Never at the runways' expense: a failure is a note."""
+    try:
+        import runways as runways_mod
+        todo = _airports_wanting_ground(points)
+        if not todo:
+            return {"saved": 0, "note": "no airport ground wanted"}
+        saved, ms, why = 0, [], ""
+        for ident, (_d, region) in todo[:GROUND_MAX]:
+            if not keep_going():
+                why = ", stopped: the aircraft moved"
+                break
+            gsc = connection()
+            if gsc is None:
+                why = ", stopped: SimConnect open failed"
+                break
+            t = time.perf_counter()
+            doc = gsc.facility_ground(ident, region)
+            ms.append((time.perf_counter() - t) * 1000.0)
+            if doc is None:
+                why = ", %s did not answer" % ident
+                continue
+            path = runways_mod.ground_path(RUNWAYS_DIR, ident)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            persistence.atomic_json(path, doc)
+            saved += 1
+        return {"saved": saved,
+                "note": "%d airport ground(s) in %.0f ms, slowest %.0f ms%s"
+                        % (saved, sum(ms), max(ms) if ms else 0.0, why)}
+    except Exception as e:
+        return {"saved": 0, "note": "airport ground failed %r" % (e,)}
+
+
+def lookup_runways(points, backfill=False, keep_going=None):
     """Cache the runways of every airport near these points that is not cached.
 
-    Runs on its own thread and its own SimConnect connection; returns the
-    number of airports written. With backfill, landings already on record whose
-    airports have no runways cached are added, up to RUNWAY_BACKFILL_MAX.
+    Runs on its own thread and its own SimConnect connection. With backfill,
+    takeoffs and landings already on record whose airports have no runways
+    cached are added. Returns {"status", "saved"} - the outcome, not just a count, since
+    nothing saved can mean every one of these (SME review R5):
+      done       every point was searched; saved may be 0 - off airport, or
+                 everything near was already cached
+      more       RUNWAY_BACKFILL_MAX airports were saved this pass and more
+                 are still to fetch
+      cancelled  the aircraft started moving; stopped after the request in hand
+      failed     the sim could not be asked, or did not answer for an airport
+
+    The parked check was made once, before the worker started, and the
+    lookup then ran to the end whatever the aircraft did - a touch-and-go or
+    a taxi overlapped every facility request and cache write. keep_going()
+    is asked before the airport list and before each airport; by default it
+    is "still stationary on the ground", the test heavy maintenance uses.
     """
+    if keep_going is None:
+        keep_going = lambda: not maintenance_unsafe()
     import runways as runways_mod
     index = runways_mod.load_index(RUNWAYS_DIR)
 
@@ -5816,69 +6524,158 @@ def lookup_runways(points, backfill=False):
 
     want = uncovered(points)
     if backfill:
-        want += uncovered(_landing_points_on_record())
-    if not want:
-        return 0
-    # A coarse grid, so 84,000 airports are not each measured against every
-    # point: only the cells around a point are looked in.
+        want += uncovered(_runway_points_on_record())
+    if not want and not (backfill and _airports_unnamed()):
+        return {"status": "done", "saved": 0}
+    if not keep_going():
+        return {"status": "cancelled", "saved": 0}
+    # The grid: see _runway_cell.
     cells = {}
     for p in want:
-        cells.setdefault((int(p[0] * 10), int(p[1] * 10)), []).append(p)
+        cells.setdefault(_runway_cell(p[0], p[1]), []).append(p)
 
-    gsc = GameSimConnect()
+    gsc = None
+
+    def connection():
+        nonlocal gsc
+        if gsc is None:
+            gsc = GameSimConnect()
+            if not gsc.open():
+                return None
+        return gsc
+
     try:
-        if not gsc.open():
-            log("runways: SimConnect open failed")
-            return 0
-        listed = gsc.facility_airports()
-        if not listed:
-            log("runways: the sim returned no airport list")
-            return 0
+        if not want:
+            # Nothing to find, but airports cached before names were asked
+            # for still want theirs: once a session, with the backfill.
+            named = _fill_airport_names(connection, keep_going)
+            log("runways: nothing to look up; %s" % named["note"])
+            return {"status": "done", "saved": 0, "named": named["named"]}
+        # Timed, so the log says what the list costs: whether keeping a copy
+        # between sim sessions would be worth its staleness is that number.
+        session, listed = held_airport_list()
+        if listed is not None:
+            list_note = "airport list held from this connection (%d)" % len(listed)
+        else:
+            if connection() is None:
+                log("runways: SimConnect open failed")
+                return {"status": "failed", "saved": 0}
+            t_list = time.perf_counter()
+            rows_in = gsc.facility_airports()
+            list_ms = (time.perf_counter() - t_list) * 1000.0
+            if not rows_in:
+                log("runways: the sim returned no airport list (%.0f ms)" % list_ms)
+                return {"status": "failed", "saved": 0}
+            listed = AirportList(rows_in)
+            del rows_in
+            kept = hold_airport_list(session, listed)
+            list_note = "airport list fetched in %.0f ms (%d)%s" % (
+                list_ms, len(listed), "" if kept else ", not kept: the connection changed")
         targets = {}
-        for ident, region, la, lo, al in listed:
-            ci, cj = int(la * 10), int(lo * 10)
-            for di in (-1, 0, 1):
-                for dj in (-1, 0, 1):
-                    for p in cells.get((ci + di, cj + dj), ()):
+        rows = int(math.ceil(RUNWAY_LOOKUP_RADIUS_NM / (60.0 / RUNWAY_CELLS_PER_DEG)))
+        # Positions only: an ident is decoded for an airport near a point,
+        # not for all 84,000 (0.4 s a pass, measured, when every one was).
+        for k, (la, lo) in enumerate(zip(listed.lat, listed.lon)):
+            ci, cj = _runway_cell(la, lo)
+            reach = _runway_cell_reach(la, RUNWAY_LOOKUP_RADIUS_NM)
+            columns = set((cj + dj) % _LON_CELLS for dj in range(-reach, reach + 1))
+            for di in range(-rows, rows + 1):
+                for col in columns:
+                    for p in cells.get((ci + di, col), ()):
                         if runways_mod.nm_apart(p[0], p[1], la, lo) <= RUNWAY_LOOKUP_RADIUS_NM:
-                            targets[ident] = region
+                            targets[listed.ident(k)] = listed.region(k)
         saved = 0
+        status = "done"
+        asked_ms = []
         for ident in sorted(targets):
             if ident in index:
                 continue
             if saved >= RUNWAY_BACKFILL_MAX:
+                status = "more"
                 break
+            if not keep_going():
+                status = "cancelled"
+                break
+            if connection() is None:
+                log("runways: SimConnect open failed")
+                status = "failed"
+                break
+            t_ask = time.perf_counter()
             doc = gsc.facility_runways(ident, targets[ident])
+            asked_ms.append((time.perf_counter() - t_ask) * 1000.0)
             if doc is None:
+                status = "failed"
                 continue
             # Saved even with no runways: a heliport is still an airport that
             # has been asked about, and asking again would find the same.
             os.makedirs(RUNWAYS_DIR, exist_ok=True)
             persistence.atomic_json(runways_mod.cache_path(RUNWAYS_DIR, ident), doc)
             saved += 1
-        log("runways: %d point(s), %d airport(s) nearby, %d cached"
-            % (len(want), len(targets), saved))
-        return saved
+        # Names last, and never at the runways' expense: they are tooltips,
+        # so their outcome does not decide whether a landing is kept.
+        named = ({"named": 0, "note": "names not asked for"}
+                 if status == "cancelled" else
+                 _fill_airport_names(connection, keep_going))
+        # Last of all, the slow one: an airport's ground, for a helicopter's
+        # end that was on no pad. After the names, which bring the pads.
+        ground = ({"saved": 0, "note": "ground not asked for"}
+                  if status == "cancelled" else
+                  _fill_ground(connection, keep_going, want))
+        log("runways: %d point(s), %d airport(s) nearby, %d cached, %s; %s; %s; %s; %s"
+            % (len(want), len(targets), saved, status, list_note,
+               ("%d runway request(s) in %.0f ms, slowest %.0f ms"
+                % (len(asked_ms), sum(asked_ms), max(asked_ms)))
+               if asked_ms else "no runway requests", named["note"], ground["note"]))
+        return {"status": status, "saved": saved,
+                "named": named["named"] + ground["saved"]}
     finally:
-        gsc.close()
+        if gsc is not None:
+            gsc.close()
 
 
 def start_runway_lookup():
-    """Start a lookup on its own thread unless one is already running."""
+    """Start a lookup on its own thread unless one is already running.
+
+    The queue and the backfill flag are settled by the outcome, not before
+    it: they were emptied and marked done as the worker started, so a lookup
+    that failed or was cut short lost its landings for the session. Only a
+    finished search - an off-airport landing included - takes points off the
+    queue; anything else puts them back for the next parked moment, and a
+    failure also waits RUNWAY_RETRY_SEC before trying again."""
     with _runway_lock:
         t = _runway_state["thread"]
         if t is not None and t.is_alive():
             return False
+        if time.time() < _runway_state.get("retry_after", 0.0):
+            return False
         points, _runway_queue[:] = list(_runway_queue), []
         backfill = not _runway_state["backfilled"]
-        _runway_state["backfilled"] = True
 
     def work():
         try:
-            if lookup_runways(points, backfill=backfill):
-                schedule_logbook_rebuild(reason="runways cached", bake_maps=False)
+            res = lookup_runways(points, backfill=backfill)
         except Exception as e:
             log("runways: lookup failed %r" % (e,))
+            res = {"status": "failed", "saved": 0}
+        status = res.get("status")
+        with _runway_lock:
+            if status == "done":
+                if backfill:
+                    _runway_state["backfilled"] = True
+            else:
+                # Back in front of anything queued meanwhile, once each.
+                kept = list(points)
+                for p in _runway_queue:
+                    if p not in kept:
+                        kept.append(p)
+                _runway_queue[:] = kept
+                if status == "failed":
+                    _runway_state["retry_after"] = time.time() + RUNWAY_RETRY_SEC
+        if status == "cancelled":
+            log("runways: the aircraft moved; %d landing(s) kept for the next "
+                "parked moment" % len(points))
+        if res.get("saved") or res.get("named"):
+            schedule_logbook_rebuild(reason="runways cached", bake_maps=False)
 
     t = threading.Thread(target=work, daemon=True, name="runway-lookup")
     with _runway_lock:
@@ -5934,6 +6731,7 @@ def run_connected(sm, flight=None, tracker=None, resume_snap=None):
         RUNTIME["sm"] = sm
         RUNTIME["replay"]["ghost_def"] = None
         RUNTIME["replay"]["chase"]["camera_acquired"] = False
+    sim_session_changed()
     info = game_dll_status()
     log(
         "simconnect session ready pid=%s %s; game_dll=%s camera_exports=%s"
@@ -6163,6 +6961,7 @@ def run_connected(sm, flight=None, tracker=None, resume_snap=None):
             RUNTIME["connected"] = False
             RUNTIME["sm"] = None
             RUNTIME["replay"]["ghost_def"] = None
+        sim_session_changed()
 
 def start_stall_watchdog():
     """Leave evidence when the loop stops turning.

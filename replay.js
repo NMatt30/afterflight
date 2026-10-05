@@ -1,5 +1,8 @@
 (function () {
-  var LOGGER = "http://127.0.0.1:8742";
+  // Relative, like logbook.js: the page is served by the watcher itself. An
+  // absolute 127.0.0.1 made every replay control a cross-origin request when
+  // the page was opened as localhost, which the watcher no longer grants.
+  var LOGGER = "";
   var chase = { distance: 25, height: 6, orbit: 20 };
   var chaseTimer = null;
 
@@ -41,7 +44,10 @@
   }
 
   async function stopReplay() {
-    var resp = await fetch(LOGGER + "/replay/stop", { method: "POST" });
+    // A command must be JSON, bodyless or not (watcher.caller_refusal).
+    var resp = await fetch(LOGGER + "/replay/stop", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}"
+    });
     return parseJson(resp);
   }
 

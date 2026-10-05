@@ -58,12 +58,31 @@ DEV_ONLY = ("test_*.py", ".github/*", "AGENTS.md", "CLAUDE.md", "ENGINEERING.md"
             "DESIGN-NOTES.md", "HANDOFF.md", "build_release.py", ".gitattributes",
             ".gitignore", "snapshot.py")
 
-# A user's: never in a release. Mirrors the data entries in .gitignore.
-USER_DATA = ("sessions/*", "native/*", "logbook.json", "logbook.cache.json",
-             "current.json", "last_event.json", "events.jsonl", "excluded.json",
-             "flight_prefs.json", "notify_state.json", "settings.json",
-             "watcher.log", "watcher.lock", "watcher.pid", ".maintenance.lock",
-             "CALIBRATION.md", "*.log", "*.tmp", "*.bak")
+# Every file the app writes or its user owns, by what a backup does with it.
+# One list, so the release guard, .gitignore and backup.ps1 can each be checked
+# against it (test_release.py) rather than drifting apart - they had: the
+# user's own places.json was in none of the three, and the runway cache, which
+# landings are graded against and which cannot be rebuilt offline, was in no
+# backup at all. Restoring one could quietly regrade history.
+#   backed_up  - cannot be recreated: the default backup carries it
+#   full_only  - rebuilt from the above: only a -Full backup carries it
+#   never      - this process's own state, or the sim's binary: never copied
+DATA = {
+    "backed_up": ("sessions/*.jsonl", "sessions/*.meta.json", "sessions/clips/*",
+                  "sessions/runways/*", "events.jsonl", "excluded.json",
+                  "flight_prefs.json", "settings.json", "places.json",
+                  "current.json", "last_event.json", "notify_state.json"),
+    "full_only": ("sessions/maps/*", "sessions/tilecache/*", "sessions/detail/*",
+                  "sessions/months/*", "logbook.json", "logbook.cache.json"),
+    "never": ("native/*", "watcher.log", "watcher.lock", "watcher.pid",
+              ".maintenance.lock", "*.log", "*.log.*", "*.tmp", "*.bak", "*.bak-*"),
+}
+
+# Never in a release: everything above, anything else under sessions/, and the
+# owner's private calibration record. An update is a release copied over an
+# install, so a release carrying any of it would overwrite somebody's own.
+USER_DATA = (("sessions/*",) + DATA["backed_up"] + DATA["full_only"]
+             + DATA["never"] + ("CALIBRATION.md",))
 
 LAUNCHER = ('@echo off\r\n'
             'rem Starts the AfterFlight tray with the Python that came with it.\r\n'

@@ -56,9 +56,22 @@ SCHEMA = 2
 # style, tiles or supersample. Those have their own signature entries; drawing
 # logic has none, so this is what stops a stale PNG being served as current.
 # Bumped for: markers at the leg events, jump-splitting, stop markers, and
-# not splitting a jump the aircraft plainly flew across, the landing float, and
-# the touchdown point.
-BUILDER_VERSION = 37
+# not splitting a jump the aircraft plainly flew across, the landing float, the
+# touchdown point, one landing grade with the touchdown as a word, the
+# airport and runway at each end of a leg, a helicopter's helipad, and the
+# airport pavement it was on.
+BUILDER_VERSION = 41
+
+# What an end of a leg is called when the aircraft was on a runway the sim
+# describes AND inside a place named in places.json: the airport and runway
+# ("KBFI 14R", False - the default) or the place's own name (True). Either
+# way the other is kept and searchable. Off a runway it is the place's name,
+# then coordinates, as before airports were known.
+ROUTE_PREFER_PLACE_NAMES = False
+
+# A helicopter's end: the margins and the radius live in runways.py beside
+# the geometry they feed (HELIPAD_MARGIN_FT, PAVEMENT_MARGIN_FT,
+# HELICOPTER_AIRPORT_RADIUS_NM), the last two being settings.
 EXCLUDED_JSON = os.path.join(BASE, "excluded.json")
 DETAIL_DIR = os.path.join(SESSIONS, "detail")
 
@@ -563,6 +576,8 @@ def find_rows(summaries):
             "a": e.get("aircraft"),
             "f": e.get("route_from"),
             "t": e.get("route_to"),
+            # Every named stop, the middle ones too. A few bytes a flight.
+            "p": e.get("places") or [],
             "s": e.get("started_at"),
         })
     return rows
@@ -896,6 +911,243 @@ def _recovered_contacts(contacts, rate, recovered):
     return contacts
 
 
+def travel_deg(points, idx):
+    """The ground track, degrees true, over the second up to points[idx], or
+    None when the aircraft barely moved or the samples cannot say.
+
+    The track, not the heading: heading carries the crab of a crosswind
+    approach, and the runway is the way the aircraft went.
+    """
+    if not idx:
+        return None
+    p = points[idx]
+    j = idx
+    while j > 0 and _finite(points[j - 1].get("t")) and _finite(p.get("t")) \
+            and p["t"] - points[j - 1]["t"] <= 1.0:
+        j -= 1
+    q = points[j] if j < idx else points[idx - 1]
+    try:
+        dn = (float(p["lat"]) - float(q["lat"])) * 364000.0
+        de = ((float(p["lon"]) - float(q["lon"])) * 364000.0
+              * math.cos(math.radians(float(p["lat"]))))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if abs(dn) + abs(de) < 1.0:
+        return None
+    return math.degrees(math.atan2(de, dn)) % 360.0
+
+
+# How far back from the takeoff event the last sample on the ground may be and
+# still be the takeoff roll. The event is the first sample off the ground, so
+# the roll's end is a second before it at most; a sample further back is a gap
+# in the recording, and a gate is not a runway.
+LIFTOFF_ROLL_MAX_SEC = 10.0
+
+
+def liftoff_index(points, t_off):
+    """Index of the last sample on the ground before lift-off, or None."""
+    if not _finite(t_off):
+        return None
+    found = None
+    for i, p in enumerate(points):
+        t = p.get("t")
+        if not _finite(t):
+            continue
+        if t > t_off + grading.LANDING_MATCH_SEC:
+            break
+        if p.get("on_ground"):
+            found = i
+    if found is None or points[found]["t"] < t_off - LIFTOFF_ROLL_MAX_SEC:
+        return None
+    return found
+
+
+def takeoff_runway(clip_id, track, t_off, aircraft=None, category=None,
+                   vs0_kt=None):
+    """The airport and runway a takeoff rolled down, or None.
+
+    None is "not known" - no runway cached, a helicopter, a strip the sim
+    does not list, a takeoff off airport - and the route then names the place
+    or gives the coordinates. The same match a touchdown gets: a cached runway
+    containing the point, travelled along its length, whose end is the one
+    departed from. From the takeoff clip at 10 Hz when there is one, the
+    1 Hz track otherwise. The same aircraft as the landing side: an airplane.
+    """
+    if t_off is None:
+        return None
+    if not category:
+        category = grading.infer_category(track)
+    profile = grading.profile_for(aircraft, category=category, vs0_kt=vs0_kt)
+    if not grading.scores_float(profile):
+        return None
+    index = runway_index()
+    if not index:
+        return None
+    for points, source in ((clip_points(clip_id) if clip_id else [], "clip"),
+                           (track, "track")):
+        if not points:
+            continue
+        idx = liftoff_index(points, t_off)
+        if idx is None:
+            continue
+        p = points[idx]
+        deg = travel_deg(points, idx)
+        if deg is None:
+            continue
+        try:
+            hit = runways.touchdown_at(index, p["lat"], p["lon"], deg,
+                                       RUNWAY_RADIUS_NM)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not hit:
+            return None
+        return {"airport": hit["airport"], "runway": hit["runway"],
+                "lateral_ft": round(float(hit["lateral_ft"]), 1),
+                "source": source}
+    return None
+
+
+def airport_names(sorties):
+    """{ident: name} for every airport a leg in the logbook departed from or
+    arrived at, where the sim has given its name. Read at every build and
+    carried in the index, not in the sorties: a name arriving later is a
+    tooltip, and must not rebuild a single flight."""
+    names = runways.load_names(runways_dir())
+    if not names:
+        return {}
+    used = set()
+    for s in sorties:
+        for l in s.get("legs") or []:
+            for end in (l.get("departure"), l.get("arrival")):
+                if end and end.get("airport"):
+                    used.add(end["airport"])
+    return {i: names[i] for i in sorted(used) if i in names}
+
+
+_helipad_memo = {"key": None, "pads": {}}
+_ground_memo = {}
+
+
+def airport_ground(ident):
+    """An airport's saved ground, reread only when its file moves; None when
+    it has not been asked for."""
+    key = file_sig(runways.ground_path(runways_dir(), ident))
+    hit = _ground_memo.get(ident)
+    if not hit or hit[0] != key:
+        hit = (key, runways.load_ground(runways_dir(), ident))
+        _ground_memo[ident] = hit
+    return hit[1]
+
+
+def helipad_index():
+    """{ident: [pad]}, reread only when the helipads file moves."""
+    path = runways.helipads_path(runways_dir())
+    key = file_sig(path)
+    if key != _helipad_memo["key"]:
+        _helipad_memo["key"] = key
+        _helipad_memo["pads"] = runways.load_helipads(runways_dir())
+    return _helipad_memo["pads"]
+
+
+def helicopter_end(event, aircraft=None, category=None, vs0_kt=None, track=None):
+    """The airport a helicopter took off from or landed at, or None.
+
+    In order:
+      1. the helipad it was on - the airport or heliport that lists it;
+      2. the pavement it was on - an airport with runways whose parking
+         spots or taxi paths it was within runways.PAVEMENT_MARGIN_FT of;
+      3. the backup: an airport with runways whose reference point is
+         within runways.HELICOPTER_AIRPORT_RADIUS_NM - any such airport, or
+         with runways.RADIUS_WHERE_PAVEMENT_MAPPED off, only one whose
+         pavement is not mapped (none in the sim's data, or not fetched).
+    Heliports are named only from their pads. None for an airplane, which is
+    named from its runway, and for anywhere the sim lists nothing.
+    """
+    if not event or not usable_fix(event.get("lat"), event.get("lon")):
+        return None
+    if not category:
+        category = grading.infer_category(track or [])
+    if grading.scores_float(grading.profile_for(aircraft, category=category,
+                                                vs0_kt=vs0_kt)):
+        return None
+    lat, lon = float(event["lat"]), float(event["lon"])
+    index = runway_index()
+    if not index:
+        return None
+    pads = helipad_index()
+    nearby = sorted((runways.nm_apart(lat, lon, la, lo), ident, path)
+                    for ident, (la, lo, path) in index.items()
+                    if abs(la - lat) < 0.1
+                    and runways.nm_apart(lat, lon, la, lo) <= RUNWAY_RADIUS_NM)
+    best = None
+    for _d, ident, _path in nearby:
+        hit = runways.on_helipad(pads.get(ident), lat, lon, runways.HELIPAD_MARGIN_FT)
+        if hit and (best is None or hit[0] < best[0]):
+            best = (hit[0], ident)
+    if best:
+        return {"airport": best[1], "runway": None, "how": "helipad",
+                "distance_ft": round(best[0], 1)}
+    with_runways = [(d, ident, doc) for d, ident, path in nearby
+                    for doc in [runways.load_airport(path) or {}] if doc.get("runways")]
+    paved = None
+    unmapped = []
+    for d, ident, doc in with_runways:
+        # A runway is pavement too: a helicopter on one is at its airport,
+        # whatever else is mapped - and a takeoff from a runway never asks
+        # for the airport's ground, since the runway already contains it.
+        on_ground = runways.off_pavement_ft(airport_ground(ident), lat, lon)
+        on_runway = runways.off_runways_ft(doc, lat, lon)
+        offs = [o for o in (on_ground, on_runway) if o is not None]
+        off = min(offs) if offs else None
+        if off is not None and off <= runways.PAVEMENT_MARGIN_FT:
+            if paved is None or off < paved[0]:
+                paved = (off, ident)
+        elif on_ground is None or runways.RADIUS_WHERE_PAVEMENT_MAPPED:
+            unmapped.append((d, ident))
+    if paved:
+        return {"airport": paved[1], "runway": None, "how": "pavement",
+                "distance_ft": round(paved[0], 1)}
+    for d, ident in unmapped:
+        if d <= runways.HELICOPTER_AIRPORT_RADIUS_NM:
+            return {"airport": ident, "runway": None, "how": "nearby",
+                    "distance_ft": round(d * runways.FT_PER_NM, 1)}
+    return None
+
+
+def runway_end(hit):
+    """{airport, runway} of a matched runway, or None."""
+    if not hit or not hit.get("airport"):
+        return None
+    return {"airport": hit["airport"], "runway": hit.get("runway")}
+
+
+def runway_label(end):
+    """'KBFI 14R', or None."""
+    if not end or not end.get("airport"):
+        return None
+    return ("%s %s" % (end["airport"], end.get("runway") or "")).strip()
+
+
+def route_end(event, on_runway, places):
+    """What one end of a leg is called: {label, kind, place, runway}.
+
+    kind is airport, place or coords, or None with no position at all. place
+    is the places.json name and runway the airport and runway, each whether
+    or not it won the label, so a search finds the sortie by either.
+    """
+    if not event:
+        return {"label": None, "kind": None, "place": None, "runway": None}
+    place = name_point(event.get("lat"), event.get("lon"), places)
+    airport = runway_label(on_runway)
+    if place and (ROUTE_PREFER_PLACE_NAMES or not airport):
+        return {"label": place, "kind": "place", "place": place, "runway": airport}
+    if airport:
+        return {"label": airport, "kind": "airport", "place": place, "runway": airport}
+    coords = coord_label(event.get("lat"), event.get("lon"))
+    return {"label": coords, "kind": "coords" if coords else None,
+            "place": None, "runway": None}
+
+
 def landing_touchdown_point(clip_id, track, t_land, aircraft=None,
                             category=None, vs0_kt=None):
     """Where a landing touched down on its runway, scored, or None.
@@ -920,20 +1172,10 @@ def landing_touchdown_point(clip_id, track, t_land, aircraft=None,
         if not idx:
             continue
         p = points[idx]
-        # The ground track over the second before contact: heading carries the
-        # crab of a crosswind approach, the track does not.
-        j = idx
-        while j > 0 and _finite(points[j - 1].get("t")) and _finite(p.get("t")) \
-                and p["t"] - points[j - 1]["t"] <= 1.0:
-            j -= 1
-        q = points[j] if j < idx else points[idx - 1]
+        track_deg = travel_deg(points, idx)
+        if track_deg is None:
+            continue
         try:
-            dn = (float(p["lat"]) - float(q["lat"])) * 364000.0
-            de = ((float(p["lon"]) - float(q["lon"])) * 364000.0
-                  * math.cos(math.radians(float(p["lat"]))))
-            if abs(dn) + abs(de) < 1.0:
-                continue
-            track_deg = math.degrees(math.atan2(de, dn)) % 360.0
             hit = runways.touchdown_at(index, p["lat"], p["lon"], track_deg,
                                        RUNWAY_RADIUS_NM)
         except (KeyError, TypeError, ValueError):
@@ -952,17 +1194,40 @@ def landing_touchdown_point(clip_id, track, t_land, aircraft=None,
     return None
 
 
-def _held(alignment, landing_float, touchdown_point):
-    """(letter the touchdown rate alone earned, what last lowered it), or
-    (None, None). The measures lower the letter in this order, each from the
-    letter the one before left; the last one to bite set what was printed."""
-    held_from = held_by = None
-    for key, m in (("alignment", alignment), ("float", landing_float),
-                   ("touchdown_point", touchdown_point)):
-        if m and m.get("held_from"):
-            held_from = held_from or m["held_from"]
-            held_by = key
-    return held_from, held_by
+def landing_marked_down_by(landing, feel):
+    """What made the landing grade worse than the touchdown felt, or None.
+
+    landing is the landing phase as graded; feel is the touchdown's own band
+    letter (grading.touchdown_feel). The passenger's landing sentence is
+    written about how the arrival felt, so a landing marked down for
+    something else needs its own words - it slid, it floated, it landed long.
+
+    Read from the phase's own record, in the order its limits were applied:
+    the last limit that held the score down set it. Failing a limit, the
+    counted measure that scored furthest below the touchdown pulled the blend
+    down. This replaced a second reconstruction, in a different order from
+    the one the caps ran in, which named the wrong measure whenever two of
+    them bit (SME review R7).
+    """
+    if not landing or feel is None or landing.get("letter") is None:
+        return None
+    if _letter_rank(landing["letter"]) <= _letter_rank(feel):
+        return None
+    parts = landing.get("parts") or []
+    held = [p for p in parts if p.get("held")]
+    if held:
+        return held[-1]["key"]
+    td = next((p.get("score") for p in parts if p.get("key") == "touchdown"), None)
+    below = [p for p in parts
+             if p.get("key") in ("touchdown_point", "float") and p.get("counted")
+             and p.get("score") is not None and td is not None and p["score"] < td]
+    if below:
+        return min(below, key=lambda p: p["score"])["key"]
+    return None
+
+
+def _letter_rank(letter):
+    return "ABCDF".find(letter or "") if letter else -1
 
 
 def landing_surface(clip_id, track, t_land, hit):
@@ -1169,6 +1434,11 @@ def global_signature(bake_maps):
         # work. Whether a cached doc still needs maps is answered by looking
         # at the doc, below.
         "places:" + file_sig(PLACES_JSON),
+        "route:%d" % bool(ROUTE_PREFER_PLACE_NAMES),
+        # Settings, so they change without the file changing.
+        "heli:%s/%s/%s/%s" % (runways.HELIPAD_MARGIN_FT, runways.PAVEMENT_MARGIN_FT,
+                              runways.HELICOPTER_AIRPORT_RADIUS_NM,
+                              bool(runways.RADIUS_WHERE_PAVEMENT_MAPPED)),
         # A cached sortie must not survive a change to what is hidden.
         "grading:" + grading_revision(),
         # The float and touchdown-point bands are settings, so they change
@@ -1283,20 +1553,34 @@ def sortie_signature(group, gsig, events_by_flight=None, sortie_id=None,
     clips = {clip_id_from_event(e) for k in keys for e in (idx.get(k) or [])}
     for cid in sorted(c for c in clips if c):
         parts.append("clip:%s:%s" % (cid, file_sig(_clip_path(cid))))
-    # The runways a landing is measured against arrive after it - the watcher
-    # looks them up once the aircraft is parked - so the sortie built at
-    # landing time has to rebuild when they do. Only the files near this
-    # sortie's own landings: a new airport elsewhere rebuilds nothing.
+    # The runways a landing is measured against, and a takeoff named from,
+    # arrive after it - the watcher looks them up once the aircraft is
+    # parked - so the sortie built at that time has to rebuild when they do.
+    # Only the files near this sortie's own takeoffs and landings: a new
+    # airport elsewhere rebuilds nothing.
     index = runway_index()
     near = set()
     for k in keys:
         for e in (idx.get(k) or []):
-            if (e.get("kind") == "landing" and _finite(e.get("lat"))
+            if (e.get("kind") in ("landing", "takeoff") and _finite(e.get("lat"))
                     and _finite(e.get("lon"))):
                 near.update(runways.airports_near(index, e["lat"], e["lon"],
                                                   RUNWAY_RADIUS_NM))
     for path in sorted(near):
         parts.append("rwy:%s:%s" % (os.path.basename(path), file_sig(path)))
+    # The helipads of those airports, from the one file every airport's pads
+    # share: the resolved pads, not the file's signature, so a pad found for
+    # an airport elsewhere rebuilds nothing here.
+    if near:
+        by_path = {p: ident for ident, (_la, _lo, p) in index.items()}
+        pads = helipad_index()
+        mine = {by_path[p]: pads.get(by_path[p]) for p in near if p in by_path}
+        parts.append("pads:" + hashlib.sha1(
+            json.dumps(mine, sort_keys=True).encode("utf-8")).hexdigest()[:12])
+        # And their ground, which arrives later still.
+        for ident in sorted(by_path[p] for p in near if p in by_path):
+            parts.append("gnd:%s:%s" % (ident, file_sig(
+                runways.ground_path(runways_dir(), ident))))
     return "|".join(parts)
 
 
@@ -1390,12 +1674,32 @@ def summarize_sortie(sortie):
     started = sortie.get("started_at") or ""
     first_from = None
     last_to = None
+    # The airport behind each end of the row, when it is shown as one - so
+    # the page can name it on hover.
+    from_airport = None
+    to_airport = None
     for l in legs:
         r = l.get("route") or {}
         if first_from is None and r.get("from"):
             first_from = r.get("from")
+            if r.get("from_kind") == "airport":
+                from_airport = (l.get("departure") or {}).get("airport")
         if r.get("to"):
             last_to = r.get("to")
+            to_airport = ((l.get("arrival") or {}).get("airport")
+                          if r.get("to_kind") == "airport" else None)
+    # Every named end of every leg - airports with their runways, and place
+    # names - so a search finds a sortie by a stop in the middle as well as
+    # by where it began and ended. Coordinates are not names.
+    places_named = []
+    for l in legs:
+        r = l.get("route") or {}
+        for end in ("from", "to"):
+            names = [r.get(end) if r.get("%s_named" % end) else None,
+                     r.get("%s_runway" % end), r.get("%s_place" % end)]
+            for n in names:
+                if n and n not in places_named:
+                    places_named.append(n)
     has_clip = any((l.get("takeoff") or {}).get("clip_id")
                    or (l.get("landing") or {}).get("clip_id") for l in legs)
     return {
@@ -1419,6 +1723,9 @@ def summarize_sortie(sortie):
         "scores": scores,
         "route_from": first_from,
         "route_to": last_to,
+        "route_from_airport": from_airport,
+        "route_to_airport": to_airport,
+        "places": places_named,
         "edited": bool(sortie.get("edited")),
         "prefs": sortie.get("prefs") or {"rating": True, "passenger": True},
         "has_clips": has_clip,
@@ -1606,18 +1913,19 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
                     rate_recovered = True
                 else:
                     rate = None
-            # The letter is the touchdown judged on this type's own criteria -
-            # rotary, light airplane, transport - the curve it is scored on.
+            # The touchdown is described, not graded: a word on this type's
+            # own scale - rotary, light airplane, transport - and its rate.
+            # The landing's one grade is its phase, below.
             letter_profile = grading.profile_for(
                 aircraft, category=category or grading.infer_category(track),
                 vs0_kt=vs0_kt)
-            grade = grading.touchdown_letter(rate, letter_profile)
-            grade_name = passenger.name_for_grade(grade)
+            touchdown_word = grading.touchdown_word(rate, letter_profile)
+            feel = grading.touchdown_feel(rate, letter_profile)
             # A gentle arrival that is still sliding sideways is not a good
-            # landing. Alignment can only hold the letter DOWN, never lift it,
-            # and is None for any track without the lateral accelerations -
-            # those keep the letter the rate alone gave them, because
-            # "not measured" must not read as "arrived square".
+            # landing. Alignment can only hold the landing grade DOWN, never
+            # lift it, and is None for any track without the lateral
+            # accelerations, because "not measured" must not read as
+            # "arrived square".
             alignment = None
             try:
                 # The whole track, not seg: seg stops at touchdown and the
@@ -1626,15 +1934,9 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
                 alignment = grading.landing_alignment_for(
                     track, aircraft, category=category, vs0_kt=vs0_kt,
                     t_land=t1)
-                held = grading.worse_letter(
-                    grade, grading.alignment_ceiling_letter(alignment))
-                if alignment and held and held != grade:
-                    alignment["held_from"] = grade
-                    grade = held
-                    grade_name = passenger.name_for_grade(held) or grade_name
             except Exception as e:
                 # Same rule as phase grading: a bug here must not cost the
-                # whole logbook, and the landing keeps its rate-only letter.
+                # whole logbook.
                 say("%s leg %d: alignment failed %r" % (sortie_id, i, e))
                 alignment = None
             # Where on the runway it touched, when the runway is known. None
@@ -1645,12 +1947,6 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
             try:
                 touchdown_point = landing_touchdown_point(
                     ld_clip, track, t1, aircraft, category, vs0_kt)
-                held = grading.worse_letter(
-                    grade, grading.touchdown_point_ceiling_letter(touchdown_point))
-                if touchdown_point and held and held != grade:
-                    touchdown_point["held_from"] = grade
-                    grade = held
-                    grade_name = passenger.name_for_grade(held) or grade_name
             except Exception as e:
                 say("%s leg %d: touchdown point failed %r" % (sortie_id, i, e))
                 touchdown_point = None
@@ -1660,9 +1956,9 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
             # where the runway began would count the approach. From the
             # landing clip when there is one - at 10 Hz it places the crossing
             # and the contact to a tenth of a second, where the 1 Hz track is
-            # a second either way - and from the track when there is not. Like
-            # alignment it can only hold the letter down, and only once
-            # grading.GRADE_FLOAT is on.
+            # a second either way - and from the track when there is not. It
+            # counts toward the landing grade only once grading.GRADE_FLOAT is
+            # on.
             landing_float = None
             try:
                 if touchdown_point:
@@ -1680,12 +1976,6 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
                             track, aircraft, category=category, vs0_kt=vs0_kt,
                             t_land=t1, source="track", past=past,
                             surface=surface)
-                held = grading.worse_letter(
-                    grade, grading.float_ceiling_letter(landing_float))
-                if landing_float and held and held != grade:
-                    landing_float["held_from"] = grade
-                    grade = held
-                    grade_name = passenger.name_for_grade(held) or grade_name
             except Exception as e:
                 say("%s leg %d: float failed %r" % (sortie_id, i, e))
                 landing_float = None
@@ -1707,6 +1997,20 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
                 say("%s leg %d: phase grading failed %r" % (sortie_id, i, e))
                 phase_grade = None
 
+            # The landing's one grade: its phase - the touchdown blended with
+            # where and how long, held down by alignment and the landing
+            # limits. A leg too short to grade in phases has no phase, and its
+            # landing is the touchdown alone, scored on the same curve.
+            landing_phase = ((phase_grade or {}).get("phases") or {}).get("landing")
+            if landing_phase and landing_phase.get("score") is not None:
+                grade = landing_phase.get("letter")
+                landing_score = landing_phase.get("score")
+            else:
+                grade = grading.touchdown_letter(rate, letter_profile)
+                landing_score = grading.score_for_touchdown_fpm(rate, letter_profile)
+                landing_score = round(landing_score, 1) if landing_score is not None else None
+            marked_down_by = landing_marked_down_by(landing_phase, feel)
+
             if t0 is not None and t1 is not None and t1 > t0:
                 airborne_s = round(t1 - t0, 1)
             else:
@@ -1714,8 +2018,26 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
 
             to_clip = clip_id_from_event(to_e) if to_e else None
 
-            from_name = name_point(to_e.get("lat"), to_e.get("lon"), places) if to_e else None
-            to_name = name_point(ld_e.get("lat"), ld_e.get("lon"), places) if ld_e else None
+            # The airport and runway at each end, where the aircraft was on a
+            # runway the sim describes: the takeoff roll, and the touchdown
+            # matched above. Off airport, None, and the route keeps the
+            # place's name or the coordinates.
+            departure = None
+            try:
+                departure = (takeoff_runway(to_clip, track, t0, aircraft,
+                                            category, vs0_kt)
+                             or helicopter_end(to_e, aircraft, category, vs0_kt, track))
+            except Exception as e:
+                say("%s leg %d: departure runway failed %r" % (sortie_id, i, e))
+                departure = None
+            arrival = runway_end(touchdown_point)
+            if arrival is None:
+                try:
+                    arrival = helicopter_end(ld_e, aircraft, category, vs0_kt, track)
+                except Exception as e:
+                    say("%s leg %d: arrival helipad failed %r" % (sortie_id, i, e))
+            from_end = route_end(to_e, departure, places)
+            to_end = route_end(ld_e, arrival, places)
 
             leg = {
                 "seq": i,
@@ -1727,8 +2049,11 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
                 "max_gs_kt": stats["max_gs_kt"],
                 "peak_vs_fpm": stats["peak_vs_fpm"],
                 "landing_rate_fpm": round(rate, 1) if rate is not None else None,
+                # One grade for the landing, the phase's; the touchdown on its
+                # own is a word and the rate above.
                 "landing_grade": grade,
-                "landing_grade_name": grade_name,
+                "landing_score": landing_score,
+                "touchdown_word": touchdown_word,
                 # None means the track carries no lateral accelerations,
                 # not that the aircraft arrived square.
                 "landing_alignment": alignment,
@@ -1736,6 +2061,9 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
                 # or no recording reaching back to 50 ft - never a short float.
                 "landing_float": landing_float,
                 "touchdown_point": touchdown_point,
+                # {airport, runway} at each end, or None off a runway.
+                "departure": departure,
+                "arrival": arrival,
                 # Per-phase grading. seg is this leg's own slice of the
                 # track, the only place cruise is visible: clips cover the
                 # takeoff and landing windows and nothing in between.
@@ -1749,10 +2077,17 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
                 "profile": (phase_grade or {}).get("profile"),
                 "profile_label": (phase_grade or {}).get("profile_label"),
                 "route": {
-                    "from": from_name or (coord_label(to_e.get("lat"), to_e.get("lon")) if to_e else None),
-                    "to": to_name or (coord_label(ld_e.get("lat"), ld_e.get("lon")) if ld_e else None),
-                    "from_named": bool(from_name),
-                    "to_named": bool(to_name),
+                    "from": from_end["label"],
+                    "to": to_end["label"],
+                    # Named is an airport or a place: what the map labels.
+                    "from_named": from_end["kind"] in ("airport", "place"),
+                    "to_named": to_end["kind"] in ("airport", "place"),
+                    "from_kind": from_end["kind"],
+                    "to_kind": to_end["kind"],
+                    "from_place": from_end["place"],
+                    "to_place": to_end["place"],
+                    "from_runway": from_end["runway"],
+                    "to_runway": to_end["runway"],
                 },
                 "takeoff": None,
                 "landing": None,
@@ -1763,9 +2098,9 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
             # stays - that is a measurement, not an opinion, and the UI still
             # shows the fpm it touched down at.
             if not prefs["rating"]:
-                for k in ("landing_grade", "landing_grade_name", "phase_grade",
-                          "grade", "score", "ride_grade", "profile",
-                          "profile_label"):
+                for k in ("landing_grade", "landing_score", "touchdown_word",
+                          "phase_grade", "grade", "score", "ride_grade",
+                          "profile", "profile_label"):
                     leg[k] = None
             if to_e:
                 to_ok = usable_fix(to_e.get("lat"), to_e.get("lon"))
@@ -1820,7 +2155,9 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
             leg["passenger"] = None if not prefs["passenger"] else passenger.assess(
                 sortie_id, i,
                 aircraft=aircraft,
-                grade=grade,
+                # The landing sentence is about how the arrival felt, so it
+                # takes the touchdown's band, not the landing grade.
+                grade=feel,
                 rate_fpm=rate,
                 duration_s=airborne_s,
                 peak_vs_fpm=stats["peak_vs_fpm"],
@@ -1830,12 +2167,10 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
                 # what let the prose contradict the pills beside it.
                 ride_grade=(phase_grade or {}).get("ride_letter"),
                 overall_grade=(phase_grade or {}).get("letter") or grade,
-                # So the landing line describes what lowered the letter - a
-                # slide, a long float, a long landing - rather than a firmness
-                # the touchdown never had. held_from is the letter the rate
-                # alone earned: the first one any measure lowered.
-                held_from=_held(alignment, landing_float, touchdown_point)[0],
-                held_by=_held(alignment, landing_float, touchdown_point)[1],
+                # So the landing line says what marked the landing down - a
+                # slide, a long float, a long landing - rather than inventing
+                # a firmness the touchdown never had.
+                held_by=marked_down_by,
                 avoid=recent_picks,
             )
 
@@ -2139,6 +2474,8 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
         # Every flight, but only what filtering and search need. The rows
         # themselves live in the month files and are fetched when opened.
         "find": find_rows(summaries),
+        # Airport names for the page's tooltips: {ident: name}.
+        "airport_names": airport_names(sorties_out),
         "hidden": hidden_out,
     }
     atomic_write_json(LOGBOOK_JSON, doc)
@@ -2351,15 +2688,13 @@ def _purge(entry, log=None):
         say("%d file(s) survived; leaving this hidden so the delete can be "
             "retried" % len(failed))
 
-    # the caches still describe the world as it was a moment ago
-    try:
-        cache, cache_text = read_cache()
-        if cache_text is not None:
-            cache["sorties"] = {}
-            cache["flights"] = {}
-            write_cache(cache, cache_text)
-    except Exception:
-        pass
+    # The cache is left alone. Everything above changes something a signature
+    # already reads - this sortie's track, its own events, its exclusions, or
+    # files that no longer exist - so the next build rebuilds what was touched
+    # and reuses the rest. Emptying the cache here made every delete rebuild
+    # every flight and redraw every map: about two minutes a delete on a real
+    # logbook, while the page waited. test_cache covers it against a full
+    # reprocess.
 
     say("deleted %d of %d file(s), %.1f KB"
         % (len(deleted), len(plan["files"]), freed / 1024.0))
@@ -2380,7 +2715,8 @@ if __name__ == "__main__":
     # as well, or it overwrites the watcher's logbook with one graded and
     # drawn on the defaults.
     import settings
-    settings.apply_saved(("grading", "passenger", "flightprefs", "tiles", "mapbake"))
+    settings.apply_saved(("grading", "passenger", "flightprefs", "tiles", "mapbake",
+                          "runways"))
     d = build(bake_maps="--no-maps" not in sys.argv, log=print,
               allow_network="--offline" not in sys.argv,
               force="--force" in sys.argv)

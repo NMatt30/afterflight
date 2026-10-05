@@ -222,6 +222,206 @@ def from_facility(ident, region, airport, runways):
     }
 
 
+# Airport names, one file beside the airport files: {"schema", "names":
+# {ident: name}}. Kept apart so that adding a name never rewrites an airport's
+# runway file - those are the evidence landings are graded against, and are
+# never replaced automatically. load_airport refuses it - it has no ident or
+# runways - so it never enters the airport index.
+NAMES_FILE = "_names.json"
+NAMES_SCHEMA = 1
+
+
+def names_path(cache_dir):
+    return os.path.join(cache_dir, NAMES_FILE)
+
+
+def clean_name(text):
+    """An airport name as a person reads it. The sim's are UTF-8, measured,
+    but one hospital's carried a no-break space and an invisible left-to-
+    right mark; both go, and runs of spaces become one."""
+    import unicodedata
+    text = "".join(" " if unicodedata.category(c) == "Zs" else c
+                   for c in str(text) if unicodedata.category(c) != "Cf")
+    return " ".join(text.split())
+
+
+def load_names(cache_dir, asked=False):
+    """{ident: name} for the airports whose names the sim has given, or {}.
+
+    With asked, also the airports it was asked about and gave no name for,
+    as "" - so they are not asked again."""
+    try:
+        with open(names_path(cache_dir), encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if not (isinstance(doc, dict) and doc.get("schema") == NAMES_SCHEMA
+            and isinstance(doc.get("names"), dict)):
+        return {}
+    return {str(k): clean_name(v) for k, v in doc["names"].items()
+            if isinstance(v, str) and (asked or clean_name(v))}
+
+
+def names_doc(names):
+    return {"schema": NAMES_SCHEMA, "names": dict(sorted(names.items()))}
+
+
+# Helipads, one file beside the airport files as the names are, for the same
+# reason: {"schema", "helipads": {ident: [{lat, lon, heading, length_ft,
+# width_ft}]}}. An empty list is an airport asked about that has none.
+HELIPADS_FILE = "_helipads.json"
+HELIPADS_SCHEMA = 1
+
+
+def helipads_path(cache_dir):
+    return os.path.join(cache_dir, HELIPADS_FILE)
+
+
+def load_helipads(cache_dir):
+    """{ident: [pad]} for every airport asked about, or {}."""
+    try:
+        with open(helipads_path(cache_dir), encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if not (isinstance(doc, dict) and doc.get("schema") == HELIPADS_SCHEMA
+            and isinstance(doc.get("helipads"), dict)):
+        return {}
+    out = {}
+    for ident, pads in doc["helipads"].items():
+        if isinstance(pads, list):
+            out[str(ident)] = [p for p in pads if isinstance(p, dict)
+                               and isinstance(p.get("lat"), (int, float))
+                               and isinstance(p.get("lon"), (int, float))]
+    return out
+
+
+def helipads_doc(pads):
+    return {"schema": HELIPADS_SCHEMA, "helipads": dict(sorted(pads.items()))}
+
+
+# A helicopter's end, off every pad. Both are owner's settings, applied over
+# these defaults (settings.py, "Route names").
+#
+# On an airport's pavement: within its parking circles, or within half a taxi
+# path's width of the path, plus PAVEMENT_MARGIN_FT - aprons are not in the
+# sim's data, and a helicopter parked on one between marked stands sat 100-160
+# ft from anything mapped. 200 ft is about a stand's depth beside its
+# taxilane: a judgment, labelled as one, chosen by the owner.
+PAVEMENT_MARGIN_FT = 200.0
+# Off every pad and every airport's pavement, an airport with runways whose
+# reference point is within this radius. The owner's choice: pavement first,
+# the radius as the backup.
+HELICOPTER_AIRPORT_RADIUS_NM = 0.5
+# Whether the radius backs up the pavement at every airport (True, the
+# owner's reading of "radius as a backup") or only at an airport the sim maps
+# no pavement for (False - stricter: a field beside an airport whose
+# pavement is mapped then keeps its coordinates).
+RADIUS_WHERE_PAVEMENT_MAPPED = True
+# Where the position point sits on a helicopter on a pad: an AS365 is 14 m
+# long. A judgment from the airframe, not fitted to flights.
+HELIPAD_MARGIN_FT = 30.0
+
+# An airport's ground - parking circles and taxi paths - one file per airport
+# under ground/, since a large airport's is hundreds of kilobytes and the
+# airport index reads every file beside it. Fetched only for airports near a
+# helicopter's end that was on no pad. A file with nothing in it is an
+# airport the sim gave no ground for.
+GROUND_DIR = "ground"
+GROUND_SCHEMA = 1
+
+
+def ground_path(cache_dir, ident):
+    return cache_path(os.path.join(cache_dir, GROUND_DIR), ident)
+
+
+def ground_doc(ident, parkings, paths):
+    """parkings: [(lat, lon, radius_ft)]; paths: [(lat1, lon1, lat2, lon2,
+    width_ft)]."""
+    r = lambda v: round(float(v), 7)
+    return {"schema": GROUND_SCHEMA, "ident": ident,
+            "parkings": [[r(a), r(b), round(float(c), 1)] for a, b, c in parkings],
+            "paths": [[r(a), r(b), r(c), r(d), round(float(w), 1)] for a, b, c, d, w in paths]}
+
+
+def load_ground(cache_dir, ident):
+    """An airport's ground as saved, or None when it has not been asked."""
+    try:
+        with open(ground_path(cache_dir, ident), encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not (isinstance(doc, dict) and doc.get("schema") == GROUND_SCHEMA
+            and isinstance(doc.get("parkings"), list) and isinstance(doc.get("paths"), list)):
+        return None
+    return doc
+
+
+def _segment_ft(lat, lon, a_lat, a_lon, b_lat, b_lon):
+    ax, ay = _local_ft(lat, lon, a_lat, a_lon)
+    bx, by = _local_ft(lat, lon, b_lat, b_lon)
+    dx, dy = bx - ax, by - ay
+    length2 = dx * dx + dy * dy
+    t = 0.0 if length2 == 0 else max(0.0, min(1.0, -(ax * dx + ay * dy) / length2))
+    return math.hypot(ax + t * dx, ay + t * dy)
+
+
+def off_runways_ft(airport, lat, lon):
+    """Feet from this point to the nearest of an airport's runways - 0 on
+    one, its rectangle being its length by its width - or None without any."""
+    best = None
+    for rw in (airport or {}).get("runways") or []:
+        try:
+            e, n = _local_ft(rw["lat"], rw["lon"], lat, lon)
+            h = math.radians(float(rw["heading"]))
+            along = e * math.sin(h) + n * math.cos(h)
+            across = e * math.cos(h) - n * math.sin(h)
+            d = math.hypot(max(0.0, abs(along) - float(rw["length_ft"]) / 2.0),
+                           max(0.0, abs(across) - float(rw["width_ft"]) / 2.0))
+        except (KeyError, TypeError, ValueError):
+            continue
+        best = d if best is None else min(best, d)
+    return best
+
+
+def off_pavement_ft(ground, lat, lon):
+    """Feet from this point to the airport's mapped pavement - 0 inside a
+    parking circle or on a taxi path - or None when nothing is mapped."""
+    if not ground:
+        return None
+    best = None
+    near_deg = 0.05                         # about 3 nm: nothing further can matter
+    for p_lat, p_lon, radius in ground.get("parkings") or []:
+        if abs(p_lat - lat) > near_deg:
+            continue
+        d = max(0.0, nm_apart(lat, lon, p_lat, p_lon) * FT_PER_NM - radius)
+        best = d if best is None else min(best, d)
+    for a_lat, a_lon, b_lat, b_lon, width in ground.get("paths") or []:
+        if abs(a_lat - lat) > near_deg:
+            continue
+        d = max(0.0, _segment_ft(lat, lon, a_lat, a_lon, b_lat, b_lon) - width / 2.0)
+        best = d if best is None else min(best, d)
+    if best is None and (ground.get("parkings") or ground.get("paths")):
+        return float("inf")
+    return best
+
+
+def on_helipad(pads, lat, lon, margin_ft):
+    """The pad this point is on, as (distance_ft, pad), or None.
+
+    On is within the pad's own half-diagonal - its corner, from its centre -
+    plus margin_ft for where the aircraft's position point sits on its body.
+    """
+    best = None
+    for pad in pads or []:
+        reach = 0.5 * math.hypot(float(pad.get("length_ft") or 0.0),
+                                 float(pad.get("width_ft") or 0.0)) + margin_ft
+        d = nm_apart(lat, lon, pad["lat"], pad["lon"]) * FT_PER_NM
+        if d <= reach and (best is None or d < best[0]):
+            best = (d, pad)
+    return best
+
+
 def cache_path(cache_dir, ident):
     safe = "".join(ch for ch in str(ident) if ch.isalnum() or ch in "-_")
     return os.path.join(cache_dir, (safe or "unnamed") + ".json")

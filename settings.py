@@ -82,22 +82,25 @@ SPEC = [
      "type": "bool", "group": "Float and touchdown spot",
      "label": "Count the float in the landing grades", "live": True,
      "note": "Off: the float is shown on each airplane landing but doesn't "
-             "affect any grade. On: it counts toward the landing score - a "
-             "short float helps, a long one costs - and a long float can also "
-             "lower the landing letter, never raise it. Only measured on a "
-             "runway the sim knows about, so not off airport."},
+             "affect any grade. On: it counts toward the landing grade - a "
+             "short float helps, a long one costs - and a float past half "
+             "marks also caps it. Only measured on a runway the sim knows "
+             "about, so not off airport."},
     {"key": "float_normal_s", "module": "grading", "attr": "FLOAT_NORMAL_S",
      "type": "float", "min": 3.0, "max": 20.0, "group": "Float and touchdown spot",
      "label": "Float: full marks up to (seconds)", "live": True,
      "note": "How long you can float without losing points. Timed from 50 ft "
              "above the runway, or from the start of the runway if you "
-             "crossed it lower. The FAA's figure for an average pilot is 7."},
+             "crossed it lower. The default, 7, is the flare time an FAA "
+             "advisory circular (AC 25-32) uses for an average pilot."},
     {"key": "float_margin_ft", "module": "grading", "attr": "FLOAT_MARGIN_FT",
      "type": "float", "min": 500.0, "max": 6000.0, "group": "Float and touchdown spot",
      "label": "Float: extra runway before half marks (feet)", "live": True,
-     "note": "How much more runway you can float over before the score "
-             "drops to half. The FAA's touchdown zone allows about 2,000 ft. "
-             "Turned into seconds using your speed."},
+     "note": "How much further you can float, past a normal flare, before "
+             "the score drops to half. Turned into seconds at your speed. "
+             "The default, 2,000 ft, is AfterFlight's own allowance - about "
+             "the gap between a normal touchdown point and the end of the "
+             "touchdown zone - not an FAA figure."},
     {"key": "float_beyond_ft", "module": "grading", "attr": "FLOAT_BEYOND_FT",
      "type": "float", "min": 100.0, "max": 6000.0, "group": "Float and touchdown spot",
      "label": "Float: more runway before zero (feet)", "live": True,
@@ -108,10 +111,10 @@ SPEC = [
      "label": "Count the touchdown spot in the landing grades", "live": True,
      "note": "Off: how far down the runway you touched down is shown but "
              "doesn't affect any grade. On: it counts toward the landing "
-             "score - near the aim point helps, far down the runway costs - "
-             "and landing long can also lower the landing letter, never "
-             "raise it. Needs the runway's layout, which the app gets from "
-             "the sim after you park."},
+             "grade - near the aim point helps, far down the runway costs - "
+             "and landing past the touchdown zone also caps it. Needs the "
+             "runway's layout, which the app gets from the sim after you "
+             "park."},
     {"key": "tdz_target_ft", "module": "grading", "attr": "TDZ_TARGET_FT",
      "type": "float", "min": 0.0, "max": 4000.0, "group": "Float and touchdown spot",
      "label": "Touchdown spot: aim point (feet from the runway start)", "live": True,
@@ -149,6 +152,27 @@ SPEC = [
              "or described with no grades."},
 
     # ---- maps ----
+    # ---- route names ----
+    {"key": "heli_pavement_margin_ft", "module": "runways", "attr": "PAVEMENT_MARGIN_FT",
+     "type": "float", "min": 0.0, "max": 1000.0, "group": "Route names",
+     "label": "Helicopter: distance from an airport's pavement (feet)", "live": True,
+     "note": "A helicopter's takeoff or landing off a helipad is named for an "
+             "airport when it is this close to the airport's parking spots or "
+             "taxiways. Aprons are not in the sim's data, so this allows for "
+             "them; 200 ft is about a parking stand's depth beside its "
+             "taxiway - a judgment, not a published figure."},
+    {"key": "heli_airport_radius_nm", "module": "runways", "attr": "HELICOPTER_AIRPORT_RADIUS_NM",
+     "type": "float", "min": 0.0, "max": 3.0, "group": "Route names",
+     "label": "Helicopter: airport radius, the backup (nm)", "live": True,
+     "note": "When a helicopter's takeoff or landing is on no helipad and no "
+             "airport's pavement, an airport with runways whose reference "
+             "point is this close names it."},
+    {"key": "heli_radius_where_paved", "module": "runways", "attr": "RADIUS_WHERE_PAVEMENT_MAPPED",
+     "type": "bool", "group": "Route names",
+     "label": "Helicopter: radius also at airports with mapped pavement", "live": True,
+     "note": "On: the radius backs up the pavement test at every airport. "
+             "Off: only at an airport the sim maps no parking or taxiways "
+             "for, so a field beside a mapped airport keeps its coordinates."},
     {"key": "tile_source", "module": "tiles", "attr": "TILE_SOURCE",
      "type": "choice", "choices": ["topo", "osm"], "group": "Maps",
      "label": "Basemap", "live": True,

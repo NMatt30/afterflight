@@ -126,10 +126,26 @@ import importlib.util, sys
 spec = importlib.util.spec_from_file_location('w', r'$Base\watcher.py')
 w = importlib.util.module_from_spec(spec); sys.modules['w'] = w
 spec.loader.exec_module(w)
+# A refresh, not a lookup: the lookup prefers the copy already in native,
+# so after a sim update it said RESOLVED on the old one.
+r = w.refresh_game_simconnect_dll()
+status = r.get('status')
+if status == 'updated':
+    print('UPDATED native from', r.get('source'))
+elif status == 'unchanged':
+    print('UNCHANGED - native already holds the same bytes as', r.get('source'))
+elif status == 'staged':
+    print('STAGED - the watcher has the old copy loaded. The new one is checked')
+    print('  and waits beside it; it takes over the next time the watcher starts.')
+    print('  Restart the tray to use it now.')
+elif status == 'failed':
+    print('FAILED -', r.get('detail'), '- the copy in native is untouched')
 info = w.load_game_simconnect_dll()
 missing = info.get('missing') or []
-if info.get('ok'):
-    print('RESOLVED', info.get('path'))
+if status in ('updated', 'unchanged', 'staged'):
+    pass
+elif info.get('ok'):
+    print('RESOLVED', info.get('path'), '(no copy of the sim\'s found to refresh from)')
 elif info.get('path'):
     print('UNRESOLVED', info.get('path'))
     print('  that file is there, but does not export:', ','.join(missing))

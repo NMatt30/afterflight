@@ -218,6 +218,287 @@ def test_lookup_cost_no_longer_grows_with_position():
         % (late / early, late * 1e6, early * 1e6))
 
 
+# --------------------------------------------------------------------------
+# who owns a replay (SME review R3)
+# --------------------------------------------------------------------------
+
+class FakeGame(object):
+    """A stand-in for the sim's own connection: records what it is asked to
+    do, and can be made to wait - in open(), or in camera_set() - so two
+    requests can be made to overlap exactly where they used to race."""
+    instances = []
+    gate = None            # open() waits on this when set
+    spawn_none = False     # spawn_ghost() fails
+    on_acquire = None      # called inside camera_acquire(), mid-start
+    next_oid = [100]
+
+    def __init__(self):
+        self.dll_path = "stand-in"
+        self.closed = False
+        self.removed = []
+        self.events = []
+        self.oid = None
+        self.block = None          # camera_set() waits on this when set
+        self.blocked = False
+        FakeGame.instances.append(self)
+
+    def open(self, timeout=None, quiet=False):
+        if FakeGame.gate is not None:
+            FakeGame.gate.wait(5)
+        return True
+
+    def close(self):
+        self.closed = True
+
+    def spawn_ghost(self, title, pt, livery=None):
+        if FakeGame.spawn_none:
+            return None
+        FakeGame.next_oid[0] += 1
+        self.oid = FakeGame.next_oid[0]
+        return self.oid
+
+    def set_ghost_pose(self, oid, pt):
+        return True
+
+    def set_ghost_freeze(self, oid, on):
+        return True
+
+    def set_ghost_gear(self, oid, value):
+        return True
+
+    def set_ghost_flaps(self, oid, value):
+        return True
+
+    def camera_acquire(self, oid):
+        self.events.append("acquire")
+        if FakeGame.on_acquire is not None:
+            FakeGame.on_acquire(self)
+        return True
+
+    def camera_set(self, oid, pose=None, aim_only=False):
+        if self.block is not None:
+            self.blocked = True
+            self.block.wait(10)
+        return True
+
+    def camera_release(self):
+        self.events.append("release")
+        return True
+
+    def remove_object(self, oid):
+        self.removed.append(oid)
+
+
+class Stage(object):
+    """The real start_replay / stop_replay / worker, on FakeGame."""
+
+    def __init__(self, paused=True):
+        import types
+        self.keep = {n: getattr(watcher, n) for n in (
+            "GameSimConnect", "game_dll_status", "load_clip", "REPLAY_START_PAUSED")}
+        with watcher.RUNTIME_LOCK:
+            self.keep_rt = (watcher.RUNTIME["connected"], watcher.RUNTIME["sm"],
+                            watcher.RUNTIME.get("camera_state"))
+            watcher.RUNTIME["connected"] = True
+            watcher.RUNTIME["sm"] = types.SimpleNamespace(quit=0)
+            watcher.RUNTIME["camera_state"] = None
+        FakeGame.instances = []
+        FakeGame.gate = None
+        FakeGame.spawn_none = False
+        FakeGame.on_acquire = None
+        watcher.GameSimConnect = FakeGame
+        watcher.game_dll_status = lambda: {"ok": True}
+        points = clip(n=200)
+        watcher.load_clip = lambda clip_id=None, path=None: {
+            "id": "same-clip", "aircraft": "Test Type",
+            "points": [dict(p) for p in points]}
+        watcher.REPLAY_START_PAUSED = paused
+
+    def close(self):
+        import threading
+        FakeGame.gate = None
+        FakeGame.on_acquire = None
+        for g in FakeGame.instances:
+            if g.block is not None:
+                g.block.set()
+        watcher.stop_replay()
+        for th in threading.enumerate():
+            if th.name == "ghost-replay":
+                th.join(5)
+        for n, v in self.keep.items():
+            setattr(watcher, n, v)
+        with watcher.RUNTIME_LOCK:
+            (watcher.RUNTIME["connected"], watcher.RUNTIME["sm"],
+             watcher.RUNTIME["camera_state"]) = self.keep_rt
+
+    @staticmethod
+    def live():
+        """Connections a replay opened and nothing has closed."""
+        return [g for g in FakeGame.instances if g.oid is not None and not g.closed]
+
+    @staticmethod
+    def workers():
+        import threading
+        return [th for th in threading.enumerate()
+                if th.name == "ghost-replay" and th.is_alive()]
+
+
+def test_two_replays_started_at_once_leave_one_that_stop_can_stop():
+    """Both used to get past the stop before either published, both spawned,
+    and the second overwrote the only record of the first - which Stop then
+    never reached: a ghost, a connection and a worker left running."""
+    import threading
+    s = Stage()
+    try:
+        FakeGame.gate = threading.Event()
+        out = []
+        ths = [threading.Thread(target=lambda: out.append(
+            watcher.start_replay({"clip_id": "same-clip"}))) for _ in range(2)]
+        for th in ths:
+            th.start()
+        time.sleep(0.4)                  # both requests are in flight
+        FakeGame.gate.set()
+        for th in ths:
+            th.join(10)
+        assert len(out) == 2 and all(r.get("ok") for r in out), out
+        live = Stage.live()
+        assert len(live) == 1, (
+            "%d replays left running after two starts; at most one may be"
+            % len(live))
+        with watcher.RUNTIME_LOCK:
+            owned = watcher.RUNTIME["replay"].get("gsc")
+        assert owned is live[0], "the running replay is not the one Stop owns"
+        watcher.stop_replay()
+        assert not Stage.live(), "Stop left a replay running"
+        for g in FakeGame.instances:
+            if g.oid is not None:
+                assert g.oid in g.removed, "ghost %s was never removed" % g.oid
+        time.sleep(0.3)
+        assert not Stage.workers(), "a replay worker outlived Stop"
+    finally:
+        s.close()
+
+
+def test_a_stop_during_a_start_stops_what_the_start_made():
+    """A Stop that arrives while a start is still spawning used to find
+    nothing to stop, and the start then published a replay nobody stopped."""
+    import threading
+    s = Stage()
+    try:
+        FakeGame.gate = threading.Event()
+        starter = threading.Thread(target=lambda: watcher.start_replay({"clip_id": "same-clip"}))
+        starter.start()
+        time.sleep(0.3)                  # the start is inside open()
+        stopper = threading.Thread(target=watcher.stop_replay)
+        stopper.start()
+        time.sleep(0.3)
+        FakeGame.gate.set()
+        starter.join(10)
+        stopper.join(10)
+        assert not Stage.live(), "Stop returned and a replay was left running"
+        with watcher.RUNTIME_LOCK:
+            assert not watcher.RUNTIME["replay"].get("active")
+            assert watcher.RUNTIME["replay"].get("gsc") is None
+    finally:
+        s.close()
+
+
+def test_a_worker_that_outlived_its_stop_cannot_touch_the_next_replay():
+    """Stop joins the worker for 2 s and then tears down anyway. A worker
+    stuck in a camera call then woke after a newer replay of the SAME clip
+    had started - the clip id was the only ownership check - and cleared the
+    new replay's object id and camera flag, and released the camera again."""
+    import threading
+    s = Stage(paused=False)
+    try:
+        assert watcher.start_replay({"clip_id": "same-clip"}).get("ok")
+        old = FakeGame.instances[-1]
+        old.block = threading.Event()
+        for _ in range(100):
+            if old.blocked:
+                break
+            time.sleep(0.02)
+        assert old.blocked, "fixture: the worker never reached camera_set"
+        before = set(Stage.workers())
+        t0 = time.time()
+        watcher.stop_replay()
+        assert time.time() - t0 < 5, "Stop deadlocked against its worker"
+        watcher.REPLAY_START_PAUSED = True
+        assert watcher.start_replay({"clip_id": "same-clip"}).get("ok")
+        new = FakeGame.instances[-1]
+        releases = old.events.count("release")
+        old.block.set()                     # the old worker wakes up now
+        for th in before:
+            th.join(5)
+        with watcher.RUNTIME_LOCK:
+            rep = watcher.RUNTIME["replay"]
+            state = (rep.get("object_id"), rep.get("gsc"), rep.get("active"),
+                     rep["chase"].get("camera_acquired"))
+        assert state == (new.oid, new, True, True), (
+            "the old worker changed the new replay's state: object_id, gsc, "
+            "active, camera_acquired = %r" % (state[:1] + state[2:],))
+        assert old.events.count("release") == releases, (
+            "the old worker released the camera after a newer replay took it")
+        assert not new.closed and new.oid not in new.removed
+    finally:
+        s.close()
+
+
+def test_an_old_worker_waking_during_the_next_start_cannot_touch_it():
+    """The narrower window: the stopped worker wakes while the next start is
+    still running - after it has taken the camera, before it has published.
+    Only Stop moving the generation on keeps the old worker out of it."""
+    import threading
+    s = Stage(paused=False)
+    try:
+        assert watcher.start_replay({"clip_id": "same-clip"}).get("ok")
+        old = FakeGame.instances[-1]
+        old.block = threading.Event()
+        for _ in range(100):
+            if old.blocked:
+                break
+            time.sleep(0.02)
+        assert old.blocked, "fixture: the worker never reached camera_set"
+        before = set(Stage.workers())
+        watcher.stop_replay()
+        releases = old.events.count("release")
+        state_seen = []
+
+        def wake_the_old_one(new):
+            old.block.set()
+            for th in before:
+                th.join(5)
+            with watcher.RUNTIME_LOCK:
+                state_seen.append(watcher.RUNTIME["replay"]["chase"].get("camera_acquired"))
+        FakeGame.on_acquire = wake_the_old_one
+        watcher.REPLAY_START_PAUSED = True
+        assert watcher.start_replay({"clip_id": "same-clip"}).get("ok")
+        assert state_seen, "fixture: the old worker was never woken mid-start"
+        assert old.events.count("release") == releases, (
+            "the old worker released the camera while the next replay was taking it")
+        new = FakeGame.instances[-1]
+        with watcher.RUNTIME_LOCK:
+            rep = watcher.RUNTIME["replay"]
+            assert (rep.get("object_id"), rep.get("gsc"), rep.get("active")) == (new.oid, new, True)
+    finally:
+        s.close()
+
+
+def test_a_start_that_fails_partway_leaves_nothing_and_does_not_wedge():
+    s = Stage()
+    try:
+        FakeGame.spawn_none = True
+        r = watcher.start_replay({"clip_id": "same-clip"})
+        assert not r.get("ok") and r.get("error") == "ghost unavailable", r
+        assert all(g.closed for g in FakeGame.instances), "a failed start left a connection open"
+        FakeGame.spawn_none = False
+        t0 = time.time()
+        assert watcher.start_replay({"clip_id": "same-clip"}).get("ok")
+        assert time.time() - t0 < 3, "the lifecycle lock was left held"
+    finally:
+        s.close()
+
+
 def main():
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]

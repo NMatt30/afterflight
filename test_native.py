@@ -138,6 +138,29 @@ def test_the_recording_loop_never_imports_python_simconnect():
         watcher.write_current, watcher.stop_replay = keep
 
 
+def test_a_sim_connection_drops_the_held_airport_list_at_both_ends():
+    """The airport list is held for one connection to the sim. run_connected
+    moves the connection on as it starts - a list held from before is not
+    this connection's - and again as it ends."""
+    keep = (watcher.write_current, watcher.stop_replay)
+    watcher.write_current = lambda *a, **k: None
+    watcher.stop_replay = lambda *a, **k: None
+    try:
+        session = watcher.held_airport_list()[0]
+        watcher.hold_airport_list(session, ["held"])
+        with NoSimConnect():
+            conn = FakeConn()
+            conn._quit = True
+            watcher.run_connected(watcher.NativeSim(conn, FakeSampler()))
+        after, held = watcher.held_airport_list()
+        assert held is None, "a list outlived the connection"
+        assert after == session + 2, (
+            "the connection moved %d time(s); it should at its start and its end"
+            % (after - session))
+    finally:
+        watcher.write_current, watcher.stop_replay = keep
+
+
 class Logs(object):
     """watcher.log captured for the duration."""
 
@@ -218,6 +241,139 @@ def test_without_the_dll_the_package_is_the_fallback():
     finally:
         (watcher.SIM_CONNECTION, watcher.game_dll_status, importlib.util.find_spec,
          watcher._FALLBACK_SAID[0]) = keep
+
+
+# --------------------------------------------------------------------------
+# refreshing the sim's DLL (SME review R4)
+# --------------------------------------------------------------------------
+
+class Dlls(object):
+    """native/ and two "sim" copies in a temporary folder. A real DLL cannot
+    be made here, so the export check reads a marker instead: a file passes
+    if it starts with b"MZ-ok"."""
+
+    def __init__(self, native=b"MZ-ok old", sim=b"MZ-ok new"):
+        import tempfile
+        self.dir = tempfile.mkdtemp()
+        self.native = os.path.join(self.dir, "native", "SimConnect_internal.dll")
+        self.sim = os.path.join(self.dir, "sim", "SimConnect_internal.dll")
+        os.makedirs(os.path.dirname(self.sim))
+        if native is not None:
+            os.makedirs(os.path.dirname(self.native))
+            self.write(self.native, native)
+        if sim is not None:
+            self.write(self.sim, sim)
+        self._keep = {n: getattr(watcher, n) for n in (
+            "NATIVE_DIR", "NATIVE_DLL", "NATIVE_DLL_STAGED", "_sim_dll_sources",
+            "_dll_has_exports", "_process_image_dirs", "_windowsapps_dlls",
+            "_install_dll")}
+        watcher.NATIVE_DIR = os.path.dirname(self.native)
+        watcher.NATIVE_DLL = self.native
+        watcher.NATIVE_DLL_STAGED = self.native + ".new"
+        watcher._sim_dll_sources = lambda: [self.sim] if os.path.isfile(self.sim) else []
+        watcher._process_image_dirs = lambda names: [os.path.dirname(self.sim)]
+        watcher._windowsapps_dlls = lambda: []
+
+        def exports(path, names):
+            try:
+                with open(path, "rb") as f:
+                    ok = f.read(5) == b"MZ-ok"
+            except OSError:
+                ok = False
+            return ok, ([] if ok else list(names))
+        watcher._dll_has_exports = exports
+
+    @staticmethod
+    def write(path, data):
+        with open(path, "wb") as f:
+            f.write(data)
+
+    @staticmethod
+    def read(path):
+        with open(path, "rb") as f:
+            return f.read()
+
+    def close(self):
+        import shutil
+        for n, v in self._keep.items():
+            setattr(watcher, n, v)
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+
+def test_startup_keeps_using_the_copy_in_native():
+    """The ordinary resolution is unchanged: a working copy in native/ is
+    used, and nothing is copied over it on a normal start."""
+    d = Dlls()
+    try:
+        assert watcher.resolve_game_simconnect_dll() == d.native
+        assert d.read(d.native) == b"MZ-ok old"
+    finally:
+        d.close()
+
+
+def test_a_refresh_takes_the_sims_copy_and_says_so():
+    """-ResolveDll went through that same resolver and said RESOLVED on the
+    old copy, however different the sim's was."""
+    d = Dlls()
+    try:
+        r = watcher.refresh_game_simconnect_dll()
+        assert r["status"] == "updated" and r["source"] == d.sim, r
+        assert d.read(d.native) == b"MZ-ok new", "native/ still holds the old copy"
+        assert not os.path.isfile(d.native + ".new")
+        again = watcher.refresh_game_simconnect_dll()
+        assert again["status"] == "unchanged", again
+    finally:
+        d.close()
+
+
+def test_a_copy_in_use_is_staged_and_taken_up_at_the_next_start():
+    """A running watcher has the DLL loaded, and Windows will not replace a
+    file in use. The new copy waits beside it - not reported as done - and
+    replaces it when the watcher next starts."""
+    d = Dlls()
+    try:
+        def in_use(staged):
+            raise PermissionError(13, "The process cannot access the file")
+        watcher._install_dll = in_use
+        r = watcher.refresh_game_simconnect_dll()
+        assert r["status"] == "staged", r
+        assert d.read(d.native) == b"MZ-ok old", "the copy in use was touched"
+        assert d.read(d.native + ".new") == b"MZ-ok new"
+        watcher._install_dll = d._keep["_install_dll"]      # the watcher restarts
+        assert watcher.resolve_game_simconnect_dll() == d.native
+        assert d.read(d.native) == b"MZ-ok new", "the staged copy was not taken up"
+        assert not os.path.isfile(d.native + ".new")
+    finally:
+        d.close()
+
+
+def test_a_staged_copy_that_fails_its_check_is_not_promoted():
+    d = Dlls()
+    try:
+        d.write(d.native + ".new", b"garbage")
+        assert watcher.promote_staged_dll() == "rejected"
+        assert d.read(d.native) == b"MZ-ok old" and not os.path.isfile(d.native + ".new")
+    finally:
+        d.close()
+
+
+def test_a_bad_source_leaves_the_working_copy_alone():
+    d = Dlls(sim=b"not a dll")
+    try:
+        r = watcher.refresh_game_simconnect_dll()
+        assert r["status"] == "no source", r
+        assert d.read(d.native) == b"MZ-ok old"
+    finally:
+        d.close()
+
+
+def test_with_no_sim_copy_the_refresh_says_so():
+    d = Dlls(sim=None)
+    try:
+        assert watcher.refresh_game_simconnect_dll()["status"] == "no source"
+        assert d.read(d.native) == b"MZ-ok old"
+    finally:
+        d.close()
 
 
 def main():

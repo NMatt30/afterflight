@@ -37,12 +37,13 @@ a window would both corrupt the ride figures, so `sampler.self_test()` covers it
 above ground, falling back to turn-derived bank and landing-site elevation
 only for a track without those fields.
 
-`gforce` and the accelerations are recorded but **not yet graded on**. The
-comfort thresholds were calibrated against once-a-second derived figures, and
-swapping in a directly measured one without recalibrating would move every
-grade for no honest reason. The body-axis conventions also need confirming
-against a flight: parked, all three read zero, which does not distinguish
-"correct" from "not populated".
+Two measures read the peaks directly: the **rotation** at lift-off is the
+largest departure of `G FORCE` from 1 g over the phase, and landing
+**alignment** reads the lateral peak-to-peak per rollout second (`accel_x`).
+The comfort measures - vertical and fore/aft g in each phase - are still
+derived from the once-a-second rates their bands were set against: swapping in
+a directly measured figure without re-deriving the bands would move every
+grade for no honest reason.
 
 Cost: 247 -> ~370 bytes a row, about 1.3 MB per flight hour, and 0.003% of a
 core for the peak tracking.
@@ -161,45 +162,120 @@ The private calibration record holds the original comparison. A contact more tha
 lifts is a touch-and-go, and stays two events.
 
 
-On touchdown vertical speed, local, no cloud:
+**The touchdown is described, not graded.** The landing has one grade, its
+phase (see Leg grading). There used to be a second A-F letter for the
+touchdown alone, beside it, which alignment, the float and the touchdown spot
+could lower - and a firm arrival right on the aim point read "Landing B" and
+"C" at once. So the touchdown is a word, on the aircraft type's own scale
+(`grading.touchdown_word`), and its rate:
 
-| Grade | |vs| fpm | Name |
+| Rate, fpm | Light airplane, helicopter, other | Jet / transport |
 |---|---|---|
-| A | ≤ 60 | Butter |
-| B | ≤ 150 | Smooth |
-| C | ≤ 300 | Firm |
-| D | ≤ 500 | Hard |
-| F | > 500 | Arrival |
+| up to 60 | Butter | Soft (under 100: held off) |
+| 60 - 150 | Smooth | On target (100 - 250, the published airline band) |
+| 150 - 300 | Firm | Firm (250 - 300) |
+| 300 - 500 | Hard | Hard |
+| over 500 | Very hard | Very hard |
+
+Over 500 fpm approaches the 600 fpm (10 ft/s) that both 14 CFR 23.473 and
+25.473 build for. The passenger's landing sentence is chosen by the same band
+(`touchdown_feel`), since it is written about how the arrival felt.
+
+**The light touchdown curve steps at 60 fpm,** from 100 to 89. It was added
+while the touchdown had a letter of its own, read off the curve: the
+full-marks plateau to 60 fpm had taken the curve's A/B anchor, and a ramp
+from 100 at 60 fpm to 80 at 150 passes 90 at 105, so A had drifted to 105 fpm
+unnoticed. With no touchdown letter it still keeps a helicopter's landing
+grade - which is the touchdown alone - at A only up to 60 fpm, where
+"Butter" ends; `test_off_the_curve_the_letter_is_still_the_ladder` checks
+it at every rate from 0 to 700 fpm. 89 rather than a hair under 90, because
+the page rounds a score to a whole number.
 
 There is no E. Most grading scales people have seen do not have one, and a
 five-band scale spent two of its bands on landings nobody walks away from
 describing differently.
 
-**This ladder is duplicated, and has drifted before.** It lives in
-`passenger.GRADE_TABLE` and again in `gradeFpm()` in the EFB app, which cannot
-call back into the watcher. The two agree today - 60 / 150 / 300 / 500 - but
-only because both were edited. They were once 450 in one and 500 in the other,
-which grades the same landing D in the logbook and C in the EFB. The separate
-score-to-letter ladder for phase grades (`grading.LETTER_TABLE`) is served over
-`/grading`, so the logbook UI has no copy of that one.
+**The EFB tablet shows the watcher's word.** It used to grade the touchdown
+itself, `gradeFpm()`, on the light ladder for every aircraft - a jet's 200
+fpm, inside the airline target, read "C Firm". It cannot work the aircraft
+type out without a second copy of the thresholds, so the watcher puts the
+word in the landing event (`touchdown_word`), and the tablet shows the rate
+at once and the word when the event arrives - nothing in between rather than
+a guess. Checked offline; not yet in the sim. The score-to-letter ladder for phase grades
+(`grading.LETTER_TABLE`) is served over `/grading`, so the logbook UI has no
+copy of that one.
 
 ### Leg grading
 
-The landing grade above judges one moment. A leg is also graded as a whole, in
+A leg is graded as a whole, in
 `grading.py`, which owns every threshold in the system.
 
-A leg is split into four phases by its altitude profile, each scored out of 100
-and given a letter, and the leg grade is the weighted average:
+A leg is split into five phases by its altitude profile, each scored out of 100
+and given a letter, and the leg grade is the weighted average. For the two
+airplane profiles:
 
 | Phase | Weight | Scored on |
 |---|---|---|
-| Lift-off | 10% | vertical g 40, fore-aft g 30, bank 30 |
-| Climb | 20% | vertical g 40, bank 35, fore-aft g 25 |
-| Cruise | 25% | vertical g 40, fore-aft g 30, bank 30 |
-| Descent and landing | 45% | touchdown 45, approach g 17, vortex ring exposure 16, descent angle 12, sink at 500 ft 10 |
+| Lift-off | 10% | rotation 40, fore/aft g 30, steepest turn 30 |
+| Climb | 20% | vertical g 40, steepest turn 35, fore/aft g 25 |
+| Cruise | 25% | vertical g 40, fore/aft g 30, steepest turn 30 |
+| Descent - the approach | 25% | approach g 31, descent angle 25, steepest turn 22, sink at 500 ft 22 |
+| Landing | 20% | the touchdown, blended with the touchdown spot and the float when they are switched on; alignment and the landing limits can only lower it |
+
+The helicopter profile grades lift-off on vertical g rather than rotation and
+adds vortex ring exposure to its descent; the unclassified profile drops the
+descent angle and the 500 ft gate, which depend on a fixed-wing figure.
+`grading.describe()` - the How grading works panel - is the authority on the
+current numbers; these were its numbers when this was written.
 
 The leg grade is then **held to no more than one band above the worst phase**.
 A lovely cruise does not cancel an alarming approach.
+
+**The landing is a phase of its own** (`LANDING_PHASE`, on). The touchdown
+used to do two jobs: it set the landing letter, and it was 45% of the
+descent, so the Grading tab listed it twice and the descent mixed how the
+approach was flown with how the wheels met the runway. Now the descent is the
+approach and the landing is the fifth phase. The descent's 45% is split by the
+touchdown's own share of it, 25 and 20, so with every measure present a leg
+averages exactly as before; what changes is that the weakest-phase cap sees
+the approach and the landing separately. Measured when it went on: the
+averages were unchanged, no landing letter or ride grade moved, and a
+minority of legs dropped a letter and none rose - an approach no longer hides
+behind a good touchdown.
+
+**The landing phase is a blend, and it is the landing's grade.** It is how
+the landing was flown, and the pilot
+standards treat touching down near the aim point with little float as a main
+criterion beside a smooth arrival - something a cap, which can only punish,
+could never credit. So the phase blends the touchdown (50), the touchdown spot
+(35) and the float (15): `LANDING_WEIGHTS`, a judgment and labelled as one,
+since nothing published weights them against each other. The float carries
+least because a long float and a long touchdown are mostly one mistake. Each
+of the last two counts only while its Settings switch is on. Two limits keep
+the blend honest:
+
+- the phase never sits more than 10 points above the touchdown alone
+  (`LANDING_LEAD_POINTS`), so precision can lift a firm landing a little and
+  cannot rescue a hard one;
+- a spot or float scoring under 50 - a spot past the end of the touchdown
+  zone, or a float past its half-marks allowance, a fault the standards say
+  to go around for - caps the phase at its own score
+  plus one band as well as weighing in (`LANDING_FAULT_SCORE`). Without that,
+  the blend let a soft touchdown well past the zone average up to a C.
+
+**The ride is everything flown except the landing**, the approach included.
+It once left out the whole descent, which made sense while the descent
+carried the touchdown - and then the passenger paragraph called a ride smooth
+beside an F approach. An audit of every paragraph against the grades beside
+it found that on several legs before the change and on none after.
+
+**A brisk climb-out is long enough to grade.** Airplane lift-off ran from
+wheels-up to 400 ft, and a phase under 15 s is not graded. A light jet reaches
+400 ft in roughly 14 to 21 s, so whether its departure was graded was a coin
+toss - and backwards, since a phase bounded by height is shortest when it is
+flown best. Lift-off for airplanes now ends at 400 ft or once it has lasted
+`min_phase_s`, whichever is later, and never past the start of the climb.
+Helicopters are unchanged.
 
 Two design points, both from getting it wrong first:
 
@@ -233,17 +309,24 @@ transports.
 
 | | Light airplane | Jet / transport |
 |---|---|---|
-| Steepest turn | full marks 10°, zero 30° | 15° / 35° |
+| Rotation | full marks 0.2 g, zero 0.4 g | 0.45 / 0.9 g |
+| Steepest turn | full marks 20°, zero 45° | 20° / 35° |
 | Sink at 500 ft | 400 / 1000 fpm | 500 / 1200 fpm |
 | Descent angle | 3.5° / 7° | 3.5° / 9° |
-| Touchdown bank | full marks 4°, zero 14° | same, and it is a placeholder |
-| Rollout scrub | full marks 0.15 g, zero 0.55 g | same, and it is a placeholder |
+| Touchdown | full marks to 60 fpm, zero at 600 | full marks 100 to 250 fpm, less either side, zero at 600 |
+| Touchdown bank | full marks 4°, zero 14° | same - uncalibrated |
+| Rollout slide | full marks 0.15 g, zero 0.55 g | same - uncalibrated |
+| Float, touchdown spot | published figures plus AfterFlight's float allowance - see Where on the runway | same |
 
-**The landing letter is not vertical speed alone any more.** A light airplane
-arrived at the gentlest vertical speed of its set while rolling onto one main
-and sliding for several seconds after it was down. It scored a B, and the
-pilot said so. Touchdown vertical speed still sets the letter; alignment
-can now hold it down, and can never lift it. That asymmetry is the point: a
+A steepest-turn band was once narrowed because the wide one gave full marks
+to every flight in the logbook. Those flights had simply never banked hard
+enough to test it, and the narrow band marked down a correct pattern turn; it
+is wide again.
+
+**The landing is not vertical speed alone.** A light airplane arrived at
+the gentlest vertical speed of its set while rolling onto one main and
+sliding for several seconds after it was down. It scored a B, and the pilot
+said so. Alignment can hold the landing grade down, and can never lift it. That asymmetry is the point: a
 gentle arrival that is still sliding sideways is not a good landing, while a
 perfectly square arrival at 600 fpm is still an arrival.
 
@@ -254,12 +337,12 @@ Two measures, both already in the track and neither previously read:
   still *growing* after the wheels are down — a dropped wing, not a held slip.
 - **scrub** — mean peak-to-peak lateral acceleration per rollout second.
 
-The letter may then sit **one band above the alignment score**, the same
-allowance the leg rollup gives its weakest phase. Alignment caps the
-**Descent phase score** on the same terms, which is how it reaches the leg
+The landing may then sit **one band above the alignment score**, the same
+allowance the leg rollup gives its weakest phase - it caps the landing phase
+(the descent, with `LANDING_PHASE` off), which is how it reaches the leg
 grade.
 
-**Alignment is listed with the Descent metrics but carries no weight, and
+**Alignment is listed with the landing metrics but carries no weight, and
 that was measured rather than assumed.** Weighting it was the obvious design
 and it is wrong, exactly:
 
@@ -289,14 +372,13 @@ lateral accelerations being recorded. Scoring them would award a flawless
 alignment to landings nobody measured. A missing reading must never pass for
 a good one.
 
-**What moved.** One landing letter, and no other.
+**What moved, when alignment arrived.** One landing letter, and no other.
 
-**The tablet does not know about this.** The in-sim EFB grades from
-`PLANE TOUCHDOWN NORMAL VELOCITY` alone, so it will still show B for a landing
-the logbook holds at C. That is a real divergence and it is here rather than
-hidden: the tablet is a live instrument reading one simvar at the moment of
-contact, and the logbook is the record, which can look at the five seconds
-afterwards. Making them agree means teaching the EFB to sample the rollout.
+**The tablet grades nothing.** It reads `PLANE TOUCHDOWN NORMAL VELOCITY` at
+the moment of contact and shows the rate, then the watcher's word for the
+touchdown (see Landing grade). The landing grade - alignment included - is
+the logbook's, which can look at the seconds after contact; the tablet once
+showed a letter of its own that disagreed with it.
 
 
 **Every phase cites the standard behind its numbers, in the panel.** Once per
@@ -384,19 +466,220 @@ Templates only - no LLM, no network. Four slots (opening, ride, landing,
 closer). The variant is picked from a hash of `sortie_id + leg`, so the same leg
 never rewrites itself between rebuilds.
 
-Pool sizes: openings 12/14/12 (short / medium / long leg, so the phrasing fits
-the length), rides 14 per mood, landings 14-16 **per grade**, closers 14 per
-tone. That is ~44,000 distinct paragraphs for the common case of a
-medium-length grade A leg, against 108 before.
+Pool sizes: openings 24 per leg length (short / medium / long, so the
+phrasing fits the length; 12 when the length is unknown), rides 28 per mood,
+landings 26 **per letter**, closers 22 to 26 per tone - 69,888 to 454,272
+distinct paragraphs. `py -3 passenger.py` prints the current counts.
 
-Two details that matter more than pool size:
+Details that matter more than pool size:
 
-- **Consecutive legs never repeat a line.** The hash is uniform, but with a pool
-  of 14 there is still a ~7% chance two legs in a row draw the same opening -
-  and they sit next to each other on screen, which is where a repeat is most
-  obvious. Each leg is passed the previous leg's `picks` and steps off them.
+- **Nearby legs never repeat a line.** The hash is uniform, but a pool still
+  draws the same line for two legs in a row now and then - and they sit next
+  to each other on screen, which is where a repeat is most obvious. Each leg
+  is passed the picks of the last six legs, per slot, and steps off them.
+- **The landing line describes the touchdown, and says why the landing was
+  marked down.** It is chosen by how the arrival felt (`touchdown_feel`), and
+  when the landing grade came out worse than that, by why: `held` (it slid),
+  `held_float` and `held_long`, none of which may call the touchdown firm. The
+  cause is read from the landing phase's own record - the last limit that held
+  it, else the counted measure furthest below the touchdown
+  (`landing_marked_down_by`). It was rebuilt afterwards in a different order
+  from the one the caps ran in, and named the wrong measure whenever two bit.
+- **The ride is the flown phases except the landing** (see Leg grading), so it
+  cannot call a ride smooth beside a weak approach.
 - **`a` vs `an`.** Eight, eleven and eighteen start with a vowel sound, so
   "a 11-minute leg" is fixed up after formatting.
+
+## Where on the runway
+
+**The touchdown spot and the float** are measured on every airplane landing
+on a runway the sim has described, and shown on the leg. Each counts toward
+the landing only while its Settings switch is on (`GRADE_TOUCHDOWN_POINT`,
+`GRADE_FLOAT`, both off by default). Helicopters are never measured on
+either. The watcher asks about the airports near a helicopter's ends too,
+for its helipads and names, but only to name the route - nothing it learns
+there reaches a helicopter's grade.
+
+- **Touchdown spot:** distance past the landing threshold - the displaced one
+  where there is one. 100 within 1,400 ft (AC 91-79A's target touchdown
+  point, about 1,000 ft down, plus the Private Pilot ACS tolerance of 400 ft),
+  50 at the end of the touchdown zone (3,000 ft, or the first third of a
+  shorter runway), 0 a further 1,000 ft on - a judgment, labelled as one - and
+  0 more than 50 ft short of the threshold.
+- **Float:** the time from 50 ft above the runway to main-gear touchdown, the
+  air distance of AC 25-32, timed from the 10 Hz landing clip. 100 for a 7 s
+  flare (AC 25-32's average pilot in normal operations); 50 after a further
+  2,000 ft of floating and 0 after 1,000 ft more, turned into seconds at the
+  speed actually flown so one rule serves a trainer and a jet. The 7 s is the
+  published figure. The 2,000 and 1,000 ft are an excess-float allowance and
+  AfterFlight's judgment: 2,000 ft is the gap AC 91-79A leaves between its
+  target touchdown point and the end of the touchdown zone, so the half-marks
+  point reaches about that end only near 85 kt - about 2,700 ft down at 60 kt,
+  3,900 ft at 160 kt, and blind to a short runway's first third. It used to be
+  called the end of the zone; it is not, and the touchdown spot is what
+  measures the zone. A first version sloped to zero and failed a jet touching
+  down inside the zone, which AC 91-79A calls typical; the test that pins the
+  steps is that version, kept. **The clock starts at the later of 50 ft and the
+  threshold:** the AC assumes 50 ft over the threshold, and an arrival
+  crossing lower had its approach counted as float. So the float needs the
+  runway too.
+
+Both bands are settings, defaulting to the published figures
+(`grading.PUBLISHED`). The score, the band text and the cap read the
+same values when called, so a setting moves all three together, and the
+build signs the values (`runway_tunables`) because a setting changes them
+without changing `grading.py`. The touchdown curve and its words are not
+settings.
+
+**The runway comes from the sim,** the only authority on its own scenery, and
+nothing about what it sends was taken from the SDK on trust: the message
+layout was measured against a running sim first, and the facility-data trap
+in AGENTS.md records it. Once parked after a landing the watcher opens a
+short-lived connection of its own, asks for the airport list and the runways
+of every airport within 3 nm of the touchdown, and caches them under
+`sessions/runways/`. Read-only throughout. "Parked" is checked before the
+airport list and again before each airport: it used to be checked once, as
+the lookup started, and a touch-and-go overlapped every request after that.
+A lookup cut short by movement, or one that fails, keeps its landings for the
+next parked moment - a failure waits two minutes before asking again - and
+only a finished search, an off-airport landing included, lets them go. Every recorded airplane
+touchdown located on a runway centreline to within 10 ft. A sortie signs the
+runway files near its own landings, so a runway cached later rebuilds that
+sortie and nothing else.
+
+**The airport list is asked for once per sim connection.** It is the whole
+world, and nothing else says which airports are near a past takeoff or
+landing: as far as is known here, the sim answers "airports near here" only
+around the aircraft now. Every lookup with anything to find asked for it
+afresh. It is now held in memory for the connection it came from - fetched
+the first time a lookup needs it, dropped when the sim connection ends or a
+new one begins, so a sim restarted with different scenery is asked again. A
+lookup still waiting for the list when the connection changes does not keep
+it. Held packed (`AirportList`): as tuples it was 21.5 MB, packed 2.4 MB,
+and a pass over it costs the same 0.3 s. Not kept on disk: when a file copy
+should be refreshed is a question with no measurement behind it yet. Each
+lookup's log line now says what the list cost - "fetched in N ms" or "held
+from this connection" - and how long the runway requests took, which is the
+measurement a decision about a disk copy needs.
+
+**Which airports are near is measured in nautical miles, not grid cells.**
+84,000 airports are sorted into 0.1 degree cells so that only those near a
+landing are measured exactly. One cell either way is 6 nm of latitude
+anywhere, but 6 nm x cos(latitude) of longitude - under the 3 nm radius
+beyond about 60 degrees, so an airport 2.2 nm from a landing at 80 N was
+never asked about. The reach in longitude now follows the latitude, wraps
+across 180 degrees, and at the pole is every column; the exact distance
+still decides.
+
+**A landing's runway is known when a cached runway contains the touchdown,**
+not when a cached airport is near it. A heliport cached 2.5 nm from a landing
+once made that landing count as covered, and the airport it was really at was
+never asked about.
+
+**Heights are above the runway's surface.** The sim gives a runway one
+elevation, and runways are not flat: on one climbing 2%, a 30 ft threshold
+crossing measured above the touchdown point read 10 ft. The threshold
+crossing and the float's 50 ft point are now read from the aircraft itself -
+altitude less PLANE ALT ABOVE GROUND while it was over the runway
+(`grading.RunwaySurface`) - from this landing's readings only: a while before
+touchdown to shortly after, between the threshold and the far end, within 250
+ft of the centreline. Without those limits the departure and the downwind
+count as runway, and a first version put a crossing at 2,390 ft. Ground
+before the threshold is never used, so a runway on a mesa is not moved down
+by the drop off its end. The height over the threshold is shown as
+information and graded nowhere.
+
+### The airport and runway at each end of a leg
+
+A leg recorded only coordinates for where it began and ended. The runway
+match the touchdown spot uses names both ends: an end is that airport and
+runway ("KBFI 14R") when a runway the sim describes contains it, travelled
+along its length. The departure is the last sample on the ground before
+lift-off and the ground track over the second before it, from the 10 Hz
+takeoff clip when there is one; the runway end is the one whose direction
+matches the roll, which for a takeoff is the runway departed from. The
+arrival is the touchdown match itself.
+
+- **Off a runway, nothing is guessed.** An airport near is not the runway
+  used - the heliport trap above - so an end that no runway contains keeps
+  its places.json name or its coordinates. A last ground sample more than
+  `LIFTOFF_ROLL_MAX_SEC` before lift-off is a gap in the recording, not the
+  roll, and names nothing.
+- **A helicopter's ends come from helipads.** A heliport is not a runway, so
+  a helicopter is never matched to one. Its end is the airport or heliport
+  whose helipad it was on: within the pad's half-diagonal plus
+  `HELIPAD_MARGIN_FT` (30, for where the position point sits on a 14 m
+  airframe - a judgment, not fitted). Pads were measured live before this
+  was built: a record of type 4, 44 bytes - three doubles, three floats
+  (length and width in metres), two ints - with the name in the same
+  request. On a private copy of the owner's data, the helicopter ends on a
+  pad sat within 27 ft of its centre and the next-nearest end 370 ft from
+  any pad, so the margin decides nothing close.
+- **Off every pad, the pavement it was on.** The sim's data has no airport
+  boundary, but it maps an airport's parking spots (circles) and taxi
+  network (paths with widths), and every runway is a rectangle. An end on
+  any of those, or within `PAVEMENT_MARGIN_FT` (200) of one, is at that
+  airport, however far its reference point - which is mid-field, and was
+  0.6-1.9 nm from helicopter ends on a large airport's aprons. Aprons are
+  not mapped; ends parked on one sat 100-160 ft from anything that is, so
+  the margin is about a stand's depth beside its taxilane: a judgment, the
+  owner's choice, and a setting. Measured live before it was built: one
+  request per airport, the airport's record its reference (two doubles),
+  parking spots type 15 (20 bytes: type, then radius, heading, BIAS_X,
+  BIAS_Z as floats, metres east and north of the reference), taxi points
+  type 14 (12 bytes: type, BIAS_X, BIAS_Z), taxi paths type 16 (16 bytes:
+  type, width, start, end). Start and end index the taxi points in arrival
+  order - except that a path of **type 3 ends at a parking spot**: read as
+  a point, its median length was 2,600-7,600 ft at every airport tried;
+  as a parking spot, 55-258 ft. A first probe read it as a point, and
+  called three apron ends on a taxiway that were not. The ground of a large
+  airport is thousands of records - 37 s and about 850 KB for one with
+  8,315 paths, the owner seeing no stutter, parked - so it is fetched only
+  for airports with runways near a helicopter end on no pad and no runway,
+  once each, ten a pass, into `sessions/runways/ground/`.
+- **The radius is the backup.** Off every pad and every airport's
+  pavement, an airport with runways whose reference point is within
+  `HELICOPTER_AIRPORT_RADIUS_NM` (0.5, the owner's, a setting) names the
+  end. It was first built only for airports the sim maps no pavement for;
+  the owner's "radius as a backup" meant every airport, and that is the
+  default. `RADIUS_WHERE_PAVEMENT_MAPPED`, off, restores the stricter
+  reading, under which a field beside a mapped airport keeps its
+  coordinates.
+  Heliports are named only from their pads - in a city their towers are a
+  few hundred feet apart - and an airplane never by any of this. Pads are
+  kept in `sessions/runways/_helipads.json`, beside the names; the sortie
+  signature carries the pads and the ground files of the airports near its
+  ends, and the global one the margins and the radius.
+- **The watcher asks for both ends** at the next parked moment, takeoffs as
+  well as landings, and the backfill reads takeoffs on record too - so flights
+  recorded before this get their departures named at the first lookup.
+- **A place name and an airport at one end**: the airport and runway win by
+  default; `ROUTE_PREFER_PLACE_NAMES` makes the place win. The other is kept
+  on the route (`from_place`, `from_runway`), shown on hover, and searchable.
+- **Search covers every stop.** The compact find row carries `p`, every named
+  end of every leg, so a stop in the middle of a sortie finds it - not only
+  the first departure and the last arrival.
+- **Measured** on a private copy of the owner's data: every airplane takeoff
+  whose airport was already cached matched a runway centreline within 50 ft;
+  the rest were at airports never looked up, which the backfill fetches. A
+  quick turnaround kept the same runway end; a full stop that taxied back
+  departed the reciprocal. No grade, passenger line or touchdown measurement
+  moved.
+- **Airport names** are a tooltip on the code, from the sim's facility data:
+  a definition of its own (`AIRPORT_NAME_FIELDS`), so a failure costs the
+  name and never the runways. Measured live before it was built: `NAME64`
+  arrives as one 64-byte airport record of plain text ending at the first
+  zero byte - and the bytes after that zero are leftover memory ("Zurich"
+  came back as `Zurich\0A\0...`), so the text is cut there. `NAME`, 32
+  bytes, gave the same text for nine airports; the longer field keeps names
+  like "Municipal Acoustics Center Madrid City Council" whole. About 37 ms an
+  airport. Names are short - "Vance Brand", "Pensacola Intl". They live in
+  `sessions/runways/_names.json`, never in the airport files, which are the
+  evidence landings are graded against and are not rewritten; every cached
+  airport is asked once, an airport with no name is recorded so it is not
+  asked again, and a request that fails is asked for at the next lookup.
+  The index carries `{ident: name}` for the airports the logbook uses,
+  read at every build, so a name arriving later rebuilds no flight.
 
 ---
 
@@ -544,6 +827,20 @@ A track whose bounding box is under 0.05 nm is not drawn: that is a parked
 aircraft's GPS jitter, and autoscaling it produces a convincing-looking flight
 path that never happened.
 
+### A sim skip is not a landing and a takeoff
+
+The route map splits a track wherever two consecutive samples are further
+apart than flying could account for, so it does not draw a straight line
+across a reposition - and each piece gets its own start and end marker. A sim
+that skips ahead mid-flight, after a sim-rate change or a stutter it catches
+up on, jumps forward along its own route, and the map drew a landing and a
+start a third of the way through a flight that did neither. A jump is now
+joined when it was plainly flown across: airborne both sides, no slew,
+altitude within 500 ft, under 25 nm, and within 15 degrees of the ground
+track of the step before - ground track rather than heading, because at
+altitude the two differ by the wind correction angle. Anything that cannot be
+checked splits, as before. `test_map.py` covers it.
+
 ### Naming places
 
 Optional and offline. Create `places.json`:
@@ -566,15 +863,50 @@ Localhost only.
 | Method | Path | |
 |---|---|---|
 | GET | `/` `/logbook.html` `/logbook.json` `/logbook.js` `/replay.js` | the UI |
-| GET | `/sessions/maps/*.png` | baked maps |
+| GET | `/sessions/maps/*.png` `/sessions/months/*.json` `/sessions/detail/*.json` | maps, month files, flight detail |
 | GET | `/state` `/current` `/last_event` | `/state` shape is frozen (EFB) |
 | GET | `/clips` `/clips/<id>` | |
+| GET | `/grading` | How grading works, from `grading.describe()` |
+| GET | `/settings` | settings, with their defaults |
+| GET | `/export` | a track as KML or GPX |
 | POST | `/replay` `/replay/stop` `/replay/pause` `/replay/chase` `/replay/lock` `/replay/recenter` | |
+| POST | `/settings` | save settings |
 | POST | `/logbook/rebuild` | |
+| POST | `/logbook/hide` `/logbook/restore` | remove from the logbook, or put back |
+| POST | `/logbook/purge` | delete for good; with `dry_run`, the default, only say what would go |
+| POST | `/logbook/prefs` | the per-flight rating and passenger switches |
 
 Static serving is allowlisted: only those routes and `sessions/` with an
 approved extension. `watcher.py`, `watcher.log`, `*.jsonl`, the DLL, dotfiles
 and `..` traversal are all refused.
+
+**Loopback is not a caller check.** Binding to 127.0.0.1 says where a request
+comes from, and any web page open in a browser can address 127.0.0.1. Every
+response used to grant every origin every method, and nothing checked a
+command's Origin, Host or content type, so a page could hide, delete, change
+settings or start a replay. Now, before a request is dispatched
+(`caller_refusal`):
+
+- **Host** must be `127.0.0.1` or `localhost` at this port, for reads as well
+  as commands - the DNS-rebinding guard.
+- **A command** - every POST, the bodyless Stop and Rebuild included - must
+  carry no Origin or the page's own, and must be JSON. A browser cannot send
+  a cross-site JSON POST without a preflight, and a preflight is granted
+  nothing. `Origin: null` is refused: it is what any sandboxed document sends.
+- **Only `GET /state` is shared** with other origins, because the EFB tablet
+  polls it from inside the sim under an origin not known here. It carries the
+  current flight - position, ids, recent events, replay state - so it is not
+  private from other pages. That is an interim choice; restricting it starts
+  with observing the EFB's real origin across reloads, not with trusting one
+  value.
+
+This keeps browser pages out. It does not identify the tray: the tray posts
+JSON with no Origin, and so could any other local program. Telling local
+programs apart would need authentication, which this is not. The page's own
+scripts are same-origin and relative for this reason - `replay.js` used an
+absolute 127.0.0.1, which made every replay control a cross-origin request
+when the page was opened as `localhost`. Refusals are logged once a minute per
+reason. `test_http.py` drives the real handler.
 
 ---
 
@@ -586,12 +918,13 @@ and the growth curve, not the baseline.
 
 | Change | Effect |
 |---|---|
-| Rebuilds never run during a flight | Removes a 2.4 s CPU spike at 81% of a core that used to land ~75 s after every takeoff. Held requests run at flight end, or after the aircraft has been parked 60 s. An explicit **Rebuild** also waits while airborne or moving. |
+| Heavy rebuilds never run during a flight | Removes a 2.4 s CPU spike at 81% of a core that used to land ~75 s after every takeoff. Held requests run at flight end, or after the aircraft has been parked 60 s. An explicit **Rebuild** also waits while airborne or moving. An index-only refresh does run mid-flight, so the list stays current; it reuses every unchanged sortie and logs its own time each run. |
 | Per-sortie signature cache | A sortie whose flight records have not changed is reused whole: no track re-read, no map re-render. Warm rebuild went **2.98 s -> 0.03 s**. Stops the cost growing with the size of the logbook. |
 | Per-flight meta in that signature | The track read was cached; the flight's `meta.json` was read anyway, for every flight, on every rebuild - the one term left that grew with the whole logbook rather than with what had just been flown. A read is 105 us against 39 for a stat, so at ~1,900 flight records it was 200 ms a rebuild spent re-learning what had not changed. Now 1 read instead of 24 on a warm build, and the one still read is the flight being recorded. |
 | Sampler throttled to every 2nd sim frame | ~21 Hz delivered against a 10 Hz consumer. The sim marshals less than half as much data for us to discard. |
 | fsync policy | In-progress clip writes, `current.json` and in-flight `meta.json` are no longer synced to physical disk; the write at clip close still is. fsync measured 1.0-1.8 ms per call. |
-| Clip write cadence 1 s -> 5 s | An open clip is rewritten whole as it grows; at 10 Hz that is ~600 points. A crash now loses at most 5 s of an open clip instead of 1 s. |
+| Clip write cadence 1 s -> 5 s | A clip is appended, never rewritten (`clipfile.py`): each checkpoint appends the points since the last. A crash loses at most 5 s of an open clip. |
+| Build cache read once | It was read three times and written twice per build, indented and fsynced, whether or not anything had changed - 80% of a rebuild that changed nothing. Now read once, written only when its text changed, and compact: a no-change rebuild 0.18 -> 0.07 s and a 1.4 -> 0.6 MB cache file on the install's data, 2.67 -> 1.11 s on a logbook sixteen times that size. Still linear in the logbook. |
 | `/state` served from memory | The EFB polls it every 2 s from inside the sim. `current`/`last_event` come from RUNTIME; `notify_state.json` is written by the agent so it is re-read only when its mtime changes. |
 | Log rotation | Rotates at 4 MB, keeps 2 files. |
 
@@ -730,20 +1063,22 @@ that sorts chronologically as text.
 
 ## Clip windows
 
-60 s per clip, weighted the way each event actually reads:
+By default, 60 s per clip, weighted the way each event actually reads. Both
+windows are settings (Settings, Clip windows):
 
 | Clip | Before | After |
 |---|---|---|
 | Takeoff | 5 s | 55 s |
 | Landing | 55 s | 5 s |
 
-The ring buffer holds **60 s** at 5 Hz (316 samples) - it has to cover the
-landing's 55 s lookback, or the start of the approach has already fallen out of
-the buffer by the time the touchdown is detected. This widens the doc's 45 s
-buffer in section 6.
+The ring buffer holds **60 s** at the 10 Hz capture rate (`BUFFER_MAX`, 616
+samples) - it has to cover the landing's lookback, or the start of the
+approach has already fallen out of the buffer by the time the touchdown is
+detected. A setting that asks for a longer lookback grows the buffer to match
+(`resize_live_buffer`), with no restart.
 
-Clips already on disk keep the length they were recorded at (the old 25 s / 30 s
-windows); the new windows apply to everything recorded from now on.
+*History:* the first clips were 25 s and 30 s, at a lower sample rate. Clips
+already on disk keep the length and rate they were recorded at.
 
 ### The ghost used to jump at the touchdown
 
@@ -763,6 +1098,9 @@ without it keep their gap.
 
 ### Sample rate: ~2.6 Hz, not the intended 5 Hz
 
+*History: the push sampler below replaced this, and capture now runs at
+10 Hz.*
+
 Measured against the live sim, every `aq.get()` costs a flat ~50 ms - that is the
 python-SimConnect polling tick, not sim latency - and `sample()` makes one call
 per variable:
@@ -772,7 +1110,8 @@ full sample() cost: 0.649 s  -> 1.54 Hz ceiling   (13 vars x ~50 ms)
 ```
 
 The `_time=200` cache softens this to a measured ~0.38 s per clip sample
-(~2.6 Hz), which is why clips carry roughly half the points section 6 assumes.
+(~2.6 Hz), which is why clips carried roughly half the points the original
+design assumed.
 `PLANE_HEADING_DEGREES_MAGNETIC` was being fetched and never read, and is gone.
 
 The real fix is one SimConnect data definition fetched as a single struct
@@ -906,13 +1245,20 @@ Rates: **42.4 Hz pushed** against a legacy ceiling of **1.67 Hz**, and
 `latest()` costs nothing measurable. Shadow mode also logged `all fields agree`
 across ~10,000 pushes before the switch.
 
-`SAMPLER_MODE` is now `fast`. The detect loop measures **4.99 Hz** sustained -
-the 5 Hz that section 6 specifies, up from the 2.84 Hz the clips were actually
-recording at. `/state` reports `sampler.mode` and `sampler.sample_hz`, so the
+`SAMPLER_MODE` is now `fast`. The detect loop then measured **4.99 Hz**
+sustained - the 5 Hz the original design specified, up from the 2.84 Hz the
+clips were actually recording at. *(Capture has since moved to 10 Hz: see
+"Capture is now 10 Hz".)* `/state` reports `sampler.mode` and `sampler.sample_hz`, so the
 rate can be checked at any time without flying.
 
-**If it ever needs backing out:** set `SAMPLER_MODE = "legacy"` in `watcher.py`
-and restart. `shadow` re-enables the comparison logging.
+**On the native connection - the default since 0.7.0 - there is no legacy
+path.** These modes apply only with `SIM_CONNECTION = "python-simconnect"`.
+Natively the push sampler is the connection, and a tick with no fresh push
+holds the last reading (see Running without a Python install).
+
+**If the old connection ever needs backing out to:** set `SAMPLER_MODE =
+"legacy"` in `watcher.py` with that connection, and restart. `shadow`
+re-enables the comparison logging.
 
 **Originally, to adopt it:** fly one leg with `shadow`, then check the log:
 
@@ -931,8 +1277,6 @@ request-id routing and staleness:
 py -3 sampler.py
 ```
 
-Until `fast` is switched on, capture stays at ~2.8 Hz and that remains the
-ceiling on replay smoothness.
 
 ## Pause / Resume
 
@@ -976,14 +1320,14 @@ Starting another replay tears the previous one down first.
 
 ## Performance
 
-Unchanged from the budget: detect 1 Hz, buffer 5 Hz / 45 s, watcher
-Below Normal. The logbook rebuild is the only addition — ~0.4 s for the current
-tree, debounced 20 s, on a background thread, and it never runs during a clip
-window.
+Detect work about 1 Hz, watcher Below Normal - the hard rule in AGENTS.md.
+Capture runs at 10 Hz into a 60 s buffer (see "Capture is now 10 Hz"); the
+original budget was 5 Hz and 45 s. The logbook rebuild runs on a background
+thread, debounced, and never during a clip window.
 
-The tray opens your **default browser** rather than embedding one.  budgets
-no Chromium compositing in VR and  lists a left-open Chromium as a risk, so
-there is no browser to leave open by accident.
+The tray opens your **default browser** rather than embedding one. The
+original design budgeted no Chromium compositing in VR and listed a left-open
+Chromium as a risk, so there is no browser to leave open by accident.
 
 The UI used to tell you to close the tab before flying in VR. That was inherited
 caution about an embedded browser, not a measured property of this page, and it
@@ -1035,22 +1379,27 @@ handed back when the clip ends or you press Stop.
 
 ### Camera modes
 
+*History, superseded where marked. The current behavior: the camera bar's
+**Follow the ghost** box, on by default (`chase_follow`), travels with the
+aircraft; off, the camera is planted at the event and only its aim follows
+(see "Place mode is a tripod" below). Distance, Height and Orbit re-plant it
+live. A control pad cannot move it (see "A control pad cannot move the placed
+camera").*
+
 3. **The replay loop was re-aiming the camera 20 times a second.** Even once
-   acquire worked, any input you gave was overwritten within 50 ms. There are
-   now two modes, selected in the camera bar:
+   acquire worked, any input you gave was overwritten within 50 ms. Two modes
+   were added, selected in the camera bar:
 
    | Mode | Behavior |
    |---|---|
-   | **Place & let go** (default) | One `CameraSet` puts the camera at the event, then the watcher does not touch it again — the sim's own camera controls, i.e. your control pad, own it. |
-   | **Locked follow** | The old behavior: re-aims every frame. Smooth, but it fights any input. |
+   | **Place & let go** (then the default) | One `CameraSet` puts the camera at the event, then the watcher does not touch it again - meant to leave it to the sim's own camera controls. *Superseded:* the sim gives a control pad no control of a camera an add-on holds, and place mode now re-aims every frame as a tripod. |
+   | **Locked follow** | Re-aims every frame. Now the default, as **Follow the ghost**. |
 
    `POST /replay/recenter` (the **Recenter on ghost** button) re-places the
-   camera on the ghost once, for when you have flown the view somewhere else
-   and want to get back.
+   camera on the ghost once, for when the shot has lost it.
 
-   Moving Distance / Height / Orbit also re-places the camera once, so the
-   sliders now set the *initial vantage* rather than driving a live chase.
-   Defaults are 45 m back, 15 m up.
+   Moving Distance / Height / Orbit re-places the camera. Defaults are 45 m
+   back, 15 m up.
 
 4. **The camera struct was the wrong size, so the sim rejected every
    `CameraSet`.** This was the real reason nothing ever moved, and why fixes
@@ -1219,11 +1568,11 @@ SimConnect_CameraEnableFlag(HANDLE, DWORD flag);
 ```
 
 Sweeping 0-7 against a live sim: 1 and 2 are accepted, 0 and 4 are refused with
-exception 46 - matching the two documented flags. The watcher now enables both
-right after acquiring:
+exception 46 - matching the two documented flags. The watcher once enabled both
+right after acquiring; it now enables neither:
 
-- `CAMERA_FLAG_INTERACTION` (1) - the sim's own camera controls, and therefore a
-  control pad, can move the camera we placed
+- `CAMERA_FLAG_INTERACTION` (1) - meant to let the sim's own camera controls,
+  and therefore a control pad, move the camera we placed
 - `CAMERA_FLAG_ABOVE_GROUND` (2) - keeps it from sinking through terrain
 
 **This does not give a control pad control of the camera.** Tested in the sim:
@@ -1239,6 +1588,8 @@ So articulation is the Distance / Height / Orbit knobs in the camera bar, which
 re-plant the camera live during a replay.
 
 ### Lock to ghost
+
+*The box is now labelled **Follow the ghost**, and is on by default.*
 
 **Lock to ghost** in the camera bar holds the vantage you have set up as the
 ghost moves, instead of planting the camera and letting the ghost fly out of
@@ -1427,6 +1778,32 @@ the existing `visibilitychange` handler polls at once on return.
 This replaced a fixed `setTimeout(load, 4000)` after a settings save, which
 was a guess at how long a rebuild takes. A full rebake measures ~20 s.
 
+### A reload must not move the reader
+
+Every rebuild reloads the list, and rebuilds come after each takeoff,
+landing, runway lookup and watcher start. A reload used to clear every open
+flight back to "Loading", the page shrank, and the browser put the reader at
+the top. Open flights now keep their previous detail until the new one
+arrives, the month is refetched behind the list on screen, and the flight at
+the top of the screen is put back where it was; the reader's own scrolling
+cancels that. Measured scrolled 9,000 px down a fully expanded month: a
+reload moved the page to 0 before, and by 0 px after. The camera bar's offset
+is watched with a ResizeObserver rather than measured once, because the
+filter bar wraps after the flights are drawn and the bar had pinned 40 px
+behind it. Verify this with the page scrolled and flights open: a reload at
+the top of the page proves nothing.
+
+### The Grading tab
+
+A phase pill's tooltip once carried every measure with its score, weight and
+band - a dozen lines, which the browser cut off at a fixed width. The pill
+now gives its grade, the two measures that cost the most and any limit that
+held it down. The detail is a Grading tab beside each leg's Overview: one card
+per phase in the order flown, lift-off to landing, then the overall, each
+measure beside its band. Nothing in the page knows a threshold; it shows the
+leg as built. The tab is built when first opened, and the chosen tab is kept
+per leg across a reload.
+
 ## Sortie identity across a reconnect
 
 A reconnect mints a new `flight_id`. That is fine as a record of the fragment,
@@ -1453,6 +1830,58 @@ fragments both declare one, that decides whether they group; the timing and
 distance rules remain only for a track carrying no sortie id, so that data
 still groups exactly as it did.
 
+## When an aircraft becomes a flight
+
+**A valid aircraft is not a flight.** The sim answers with a valid title and
+a plausible position while its own menus are up, with the chosen aircraft
+parked at the departure position, so choosing an aircraft used to mint a
+flight: a few minutes of a stationary aeroplane, no takeoff, no distance. A
+fresh aircraft is now held as a `PendingFlight` - points in a ring, nothing on
+disk, no recording claim - and promoted when it leaves the ground or nets 50 m
+of displacement in a sliding 60 s window. The ring is then replayed into the
+track, so a cold-and-dark start keeps its prefix. `arm_or_begin` is the whole
+decision, and `test_arming.py` drives it.
+
+Not a speed: airspeed on a parked aircraft is the wind, and ground speed
+jitters to 0.99 kt while the aircraft settles on its gear. Measured across 12
+hours of stationary aircraft, the worst 60 s drift was 3.6 m, so 50 m clears
+it about fourteen times over. The window slides rather than accumulating from
+where the candidate armed, or slow drift adds up past any threshold given a
+long enough sit in the menus.
+
+**Being somewhere else is not having gone there.** Picking a different
+parking spot moves the aircraft in one sample, with the sim reporting no
+ground speed for it, and the continuity check only rejects jumps over
+`RESUME_JUMP_NM`. So a change of stand minted a flight - 90 m, 550 m, 1 nm and
+4 nm were each measured to arm one. Each step is now checked against the
+ground speed reported for it. That corroborates the displacement rather than
+replacing it: wind rocking a parked aircraft never nets 50 m, so it still arms
+nothing.
+
+**"Not on the ground" is not flying.** While loading an aircraft the sim can
+report SIM ON GROUND false for a few ticks, with the aircraft frozen on its
+pad at 0.0 g. Every recorded lift-off read 0.997 to 1.5 g on its first
+airborne sample. Airborne arms unless there is positive evidence of a frozen
+sim - every g reading present and under 0.8 - and a missing reading is not
+that evidence.
+
+**A landing needs a flight to land from.** A takeoff had to stay airborne for
+`BOUNCE_SEC` before it counted; a landing only had to stay down, so that
+loading blip became a one-second, zero-distance landing. A landing now needs
+`flown`, set by the same `BOUNCE_SEC` airborne and cleared when a landing
+commits - and set on reattaching in the air, or a watcher restarted just
+before touchdown would refuse a real landing. The tracker runs at 10 Hz and
+the track is written at 1 Hz: driven at 1 Hz the fault did not reproduce even
+on the old code, and at 10 Hz the old code logged the phantom for any blip of
+three ticks or more.
+
+**A resumed flight keeps counting its legs.** A flight resumed from disk got
+its leg count from clip names ending `.json`. Clips had become `.jsonl`, so the
+count came back 0, and the next leg appended its clips to leg 1's - replaying
+either played leg 1. `restore_tracker_leg` now asks `clipfile` for names, and
+opening a clip refuses a name already on disk and takes the next free leg, so
+a miscount costs a leg number rather than a recording.
+
 ## Liveries
 
 Clips record `TITLE` and `LIVERY NAME` separately; ghosts spawn through
@@ -1462,9 +1891,11 @@ measurement — **livery third, before the tail number**. The other order return
 
 A clip may carry no livery. Playback then borrows
 the livery of the aircraft loaded right now, but only when it is the same
-variant the clip was flown in, so it cannot guess across aircraft. The UI's
-**Livery** field covers what that cannot. Every replay reports the livery used
-and its source (`clip`, `current aircraft`, or `typed`).
+variant the clip was flown in, so it cannot guess across aircraft; failing
+that, the sim picks its default. There is no way to type one: the UI once had
+a **Livery** field, removed because a livery chosen by hand can be wrong while
+the recording already knows. Every replay reports the livery used and its
+source (`clip` or `current aircraft`).
 
 ## The EFB package
 
@@ -1480,18 +1911,56 @@ py -3 deploy_efb.py           # deploy, regenerate layout.json, verify
 py -3 deploy_efb.py --remove-legacy   # also delete the pre-rename package
 ```
 
+From the release zip, which has no `py`: `.\runtime\python.exe deploy_efb.py`.
+
 Restart MSFS afterwards. It reads these files at startup and reloading the EFB
 app alone does not always pick up a change.
 
 **`layout.json` is generated, never hand-written.** It records every file's
 byte size and timestamp and the sim validates them, so a stale entry leaves a
 package MSFS refuses to load with nothing to say why. `deploy_efb.py`
-regenerates it on both sides and then verifies every entry against disk.
+regenerates the deployed copy's on every deploy and then verifies every entry
+against disk. The committed `efb-pkg/layout.json` is rewritten only when a
+path or size no longer matches: git does not keep modification times, so
+restamping the dates on every deploy left every working tree modified - it
+showed as `-dirty` in the version, and would have made `git pull` refuse.
+Nothing reads those dates; the verification checks paths and sizes.
+`test_efb.py` covers it.
 
 For the same reason `.gitattributes` pins `efb-pkg/** -text`. With
 `core.autocrlf=true` — the Windows default — git would rewrite line endings on
 checkout, change the byte sizes, and produce exactly that silent failure on a
 fresh clone.
+
+## Who owns a replay
+
+**A start and a stop are each one operation.** The runtime lock guarded each
+state update, not the whole of a start - stop the old one, load, open, spawn,
+acquire the camera, publish - so two requests at once both got past the stop
+before either published. Both spawned a ghost, the second overwrote the only
+record of the first, and Stop then left a ghost, a connection and a worker
+running. Start and stop now hold `_replay_lifecycle` throughout. A start stops
+the previous replay through `_stop_replay_locked`, never `stop_replay`, so the
+lock is never taken twice; the worker never takes it, so a stop can wait for
+the worker while holding it. A Stop that arrives during a start waits for it
+and then stops what it made.
+
+**A worker that outlived its stop must not touch the next replay.** Stop
+waits 2 s for the worker and then tears down anyway, and a worker stuck in a
+camera call woke later. Its only ownership check compared clip ids, which a
+second replay of the same clip shares, so it cleared the new replay's object
+id and camera flag and released the camera again. Every start and every stop
+now moves a generation on (`RUNTIME["replay"]["gen"]`), and a worker writes
+shared state or hands the camera back only while its own generation is
+current; its own ghost and connection it always cleans up. Stop's own step
+matters in the narrowest window - an old worker waking while the next start
+has taken the camera but not yet published.
+
+`test_replay.py` drives the real start, stop and worker on a stand-in
+connection that can be made to wait in `open()` or `camera_set()`: two starts
+at once, a stop during a start, a worker woken after the next start and in the
+middle of it, and a start that fails partway. Not checked in the sim yet:
+replay and Stop, the camera handed back, and the ghost removed.
 
 ## A replay used to be able to record a flight
 
@@ -1515,6 +1984,68 @@ landing during a replay goes unrecorded, which is the right way round: losing a
 recording that has not happened yet beats destroying one that has.
 `test_safety.py` covers it.
 
+## Running without a Python install
+
+Two steps, both shipped in 0.7.0; DESIGN-NOTES.md section 1 holds the
+reasoning that chose them.
+
+**No pip package.** The Python-SimConnect package did three things for the
+recording loop, and the watcher's own ctypes layer now does each
+(`SIM_CONNECTION = "native"`, the default; the `AFTERFLIGHT_SIM_CONNECTION`
+environment variable overrides it): the connection, which is the push
+sampler's own; a clean quit, from the QUIT message; and a sim gone without
+saying so. The package's one-variable-at-a-time read failed when the sim died
+and ended the session, and that was the only crash detection there was.
+Natively a heartbeat - `RequestSystemState` every 5 s, answered even while
+paused - notices it: silent for 15 s, or two failed sends, and the session
+ends as "error" with the flight kept. When the sim stops pushing - a pause, a
+loading screen - the last state is held, timestamped now. Building it found
+a bug a live test would have hit at once: with nothing pushed yet the loop
+assumed a sample and ended the session on its first tick.
+
+Verified against a running sim with the owner flying: connecting parked, a
+full circuit with both clips, a minute in the Escape menu with the heartbeat
+answered and the track continuous, a clean quit, and a reconnect. A sim killed
+outright was not tested live; `test_native.py` covers it, run with the
+package made unimportable. Native needs the sim's own SimConnect DLL, which
+the watcher finds in the install or reads from the running sim and copies to
+`native/`. Where it cannot, and the package is installed, it falls back to the
+package and says so once. Every start keeps using the copy in `native/`;
+`install.ps1 -ResolveDll` is what refreshes it, comparing the sim's copy with
+it and reporting updated, unchanged or staged. It used to go through the same
+resolver and report RESOLVED on the old copy. Staged is a running watcher
+holding the old one loaded, which Windows will not let be replaced: the new
+copy waits beside it, is checked again, and takes over at the next start.
+
+**A zip that carries its own Python.** `build_release.py` packs the tracked
+app files with python.org's embeddable Python and Pillow, both pinned and
+checked against their published SHA-256, plus a `VERSION` file and
+`Start AfterFlight.cmd`. The embeddable Python ignores PYTHONPATH and the
+script's own folder, so its `._pth` names the app folder outright. User data
+stays in the app folder and an update is the zip unpacked over it, so the
+build takes files only from `git ls-files` and refuses one that matches a data
+path; `test_release.py` checks that and that nothing the app imports is left
+out with the developer files. `.github/workflows/release.yml` builds the zip
+on a `v*` tag and runs every test on the bundled Python. It publishes nothing:
+the zip is attached to the GitHub release by hand, after the change has been
+flown.
+
+Verified: the zip, unpacked fresh and started from its launcher, recorded a
+circuit, baked its maps and replayed a landing in the sim; separately, with
+no Python or git on PATH, it ran, read its version and rebuilt a logbook. Not
+verified: a machine that has never had Python installed.
+
+**The version.** `describe_version()` refines `APP_VERSION` from
+`git describe --tags --match "v*"` - release tags only, since a working marker
+tag once became the version every user saw - and a release, which has no
+`.git`, reads the `VERSION` file the build wrote.
+
+Why not PyInstaller or Nuitka: the tray relaunches `[sys.executable,
+WATCHER]`, modules find `BASE` from `__file__`, the data is writable files
+beside the code (a folder either way), and frozen sideloaded utilities draw
+antivirus false positives. Worth revisiting only for a signed single-file
+installer.
+
 ## Maintenance integrity and recovery
 
 Builds and purges share a maintenance lock, including command-line rebuilds.
@@ -1535,6 +2066,25 @@ metadata, complete events, referenced clips, resolved exclusions/preferences,
 prose inputs, and a content revision of the grading code. Each graded leg carries
 `grading_revision`; thresholds and scoring behavior are unchanged by this work.
 
+**A delete is not a reprocess.** It used to empty the build cache and ask for
+one, to be safe after a partial delete - so every delete rebuilt every flight
+and redrew every map, 102 to 144 s each on a real logbook, while the page
+showed nothing. Everything a delete changes is in the sortie signatures -
+the flight's track, cut for a leg and gone for a flight; its own events; its
+exclusions - so it now runs a normal rebuild: 2.7 s on a copy of the same
+logbook, every untouched flight reused. `test_cache.py` checks the result against a full
+reprocess, after a leg and after a flight.
+
+**The dialogs that remove and delete stay open until the work is done.** They
+are `<dialog>`s opened with `showModal()`, so the page behind is inert to
+keyboard as well as mouse, and Escape closes the top one only. A confirm runs
+its work itself, its buttons off and saying what it is doing, and closes on
+the result, or shows the error and stays. It used to close on the click, and a
+second click opened a second confirm on the first one's buttons. Test this
+with real clicks: Chrome groups dialogs opened without a user gesture, and
+one Escape then closes all of them, so a scripted click reports a fault a
+person never sees.
+
 Heavy rebuilds wait while the connected aircraft is moving or airborne, even
 when explicitly requested. A parked build checks for renewed movement between
 sorties, maps, and tile requests. A native image operation or request already in
@@ -1543,6 +2093,26 @@ Incremental index-only refreshes remain available during a flight. Deferred full
 reprocessing is remembered. No frame-performance claim follows from offline tests.
 
 ### Backups and restore verification
+
+**What a backup carries is one inventory,** `build_release.DATA`: what cannot
+be recreated goes in every backup, what is rebuilt from it only in a `-Full`
+one, and the process's own state in none. The same list is what `.gitignore`
+must ignore and what a release must refuse, and `test_release.py` checks all
+three against it, because they had drifted: the runway cache and the user's
+`places.json` were in no backup, so a verified, quiet restore regraded every
+landing its runway had held down - a long one came back from F to A - and
+lost its place names. `test_runways.py` now backs a graded landing up,
+restores it into an empty tree and rebuilds offline, both switches on, and
+requires the same letters, scores, measurements, names and passenger text.
+
+**The runway cache is evidence, and it is shared.** One file per airport,
+kept and backed up, and never replaced automatically. Historical calculations
+use the runway evidence currently available; the application does not keep a
+separate runway version for each landing, so replacing or restoring a
+different airport file would change every landing at that airport together,
+and a landing first looked up today is measured against today's scenery.
+Before any refresh feature: decide whether it rewrites history or only
+applies to new landings, keep the old evidence, and report what moved.
 
 `backup.ps1 -Verify` records SHA-256 hashes, checks archived bytes, and checks
 whether source files changed during copying. `-Full` also includes derived data.
@@ -1560,5 +2130,7 @@ bytes; it does not turn an uncoordinated live copy into a multi-file snapshot.
 `test_integrity.py` covers concurrent writes, partial deletion through the HTTP
 handler, full cache bypass, active recording guards, and a temporary-tree backup
 restore with same-size corruption detection. `.github/workflows/offline.yml`
-runs the offline checks on Windows with Python 3.10 and 3.12. Hosted CI and live
-simulator acceptance are separate checks; a local pass does not claim either.
+runs the offline checks on Windows with Python 3.10 and 3.12, discovering
+`test_*.py` rather than keeping a list, and `release.yml` runs them again on
+the bundled Python when it builds a release. Hosted CI and live simulator
+acceptance are separate checks; a local pass does not claim either.

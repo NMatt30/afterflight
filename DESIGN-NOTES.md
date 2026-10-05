@@ -161,7 +161,7 @@ true you can be relaxed about the rest; if it is not, no policy compensates.
 
 ## 3. Pattern work is a flight regime, and grading has no concept of one
 
-**Discussed 2026-09-05, after three circuits in a C172.**
+**Discussed after circuits flown in a light airplane.**
 
 Everything in `grading.py` assumes a leg goes somewhere: climb out, cruise,
 descend, land. A circuit does none of that, and the grader has no way to know
@@ -169,9 +169,9 @@ it is looking at one.
 
 ### What the circuits showed
 
-Leg detection itself was fine — three circuits became three legs, with 19.3 s
-and 15.7 s on the ground between them, comfortably clear of the 3 s bounce
-merge. That part needs nothing.
+Leg detection itself was fine — each circuit became its own leg, with the
+time on the ground between them comfortably clear of the 3 s bounce merge.
+That part needs nothing.
 
 The grading is where the regime shows. Two problems, one fixed and one not.
 
@@ -180,17 +180,21 @@ circuit the steepest turn of the whole leg is base to final, and it sits in
 that phase — so the gentle crosswind turn was graded and the firm one was
 invisible. Bank now carries 12% of the descent everywhere.
 
-**Not fixed, and not fixable with a threshold:** the bank band penalises
-correct pattern flying. Published guidance puts circuit turns at 20–30
-degrees. The light-airplane band gives 20 degrees half marks and 30 degrees
-zero. Widening it is not the answer — the steepest bank ever recorded in a
-light airplane here is 18 degrees, so a band matching the handbook would put
-every measurement at full marks and the metric would measure nothing.
+**Superseded premise.** When this was written, the light-airplane bank band
+gave 20 degrees half marks and 30 degrees zero, so a correct pattern turn -
+published guidance puts them at 20-30 degrees - was marked down. The note
+argued against widening the band because the logbook's own flying never
+banked enough to test a wider one. That reasoning was wrong, and is now
+against the rules in AGENTS.md: a band comes from published criteria, never
+from how one person's flights happen to bank. The band has since been set
+from the FAA Airplane Flying Handbook - full marks to 20 degrees, zero at 45,
+the top of a medium bank (`grading.py`) - so a normal pattern turn is no
+longer penalised.
 
-The band is not really wrong. It measures **how the turn felt**, and a 30
-degree turn is firm whether or not it was the right turn to make. The
-description now says so. What is missing is any notion that the same number
-means different things in different flying.
+**The question that stands.** A bank band still measures **how the turn
+felt**, and a 30 degree turn is firm whether or not it was the right turn to
+make. What is missing is any notion that the same number means different
+things in different flying.
 
 ### What a fix would need
 

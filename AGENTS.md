@@ -23,13 +23,15 @@ one to make a feature easier.
 | **Never `SetDataOnSimObject`, freeze, or slew the user aircraft.** Replay drives an AI ghost only. Refuse object id `0`. | The user is flying. Writing to their aircraft mid-flight is the one bug in this project that could hurt someone. | `watcher.py` — every method taking an `object_id` checks it against `USER_OBJECT_ID` first: most raise `RuntimeError("refusing SetData on user aircraft")`, two return early. `test_safety.py` enforces it |
 | **Never call `CameraSetRelative6DOF`.** | It is user-aircraft relative. The chase camera is placed in world coordinates instead. | `watcher.py`, and the startup log line says `CameraSetRelative6DOF not used` |
 | **SimConnect and HTTP stay on loopback.** Never bind to `0.0.0.0` or a LAN address. | This talks to a running game on the user's own machine. It is not a network service. | `HTTP_HOST = "127.0.0.1"` |
+| **Browser pages cannot command the watcher.** Every request needs this server's Host; every POST needs no Origin or the page's own, and JSON. Only `GET /state` is shared with other origins, for the EFB. | Loopback says where a request comes from, not who sent it: any web page can address 127.0.0.1. | `caller_refusal` in `watcher.py`, before dispatch; `test_http.py` |
 | **The detect loop stays cheap** — about 1 Hz of real work, process priority Below Normal. No heavy work while the sim is flying if it costs frames. | Dropped frames in VR are the thing this must never cause. | `POLL_SEC`, and the priority set at startup |
 | **Never burst-fetch map tiles mid-flight.** Bake after the sortie, or pass `allow_network=False`. | Same reason. | `logbook_build.build(allow_network=...)`; the watcher defers map bakes while a flight is active |
 
 If a change appears to need one of these relaxed, that is the signal to stop
 and ask, not to relax it.
 
-**These are tests, not just prose.** `test_safety.py` enforces every row above.
+**These are tests, not just prose.** `test_safety.py` enforces every row above
+except the browser one, which `test_http.py` enforces through the real handler.
 It is behavioral where it matters: it does not check that a function says the
 word "refusing", it drives each one with object id 0 through a stand-in
 SimConnect table and fails if *any* call is made. Two of the eight guards
@@ -89,22 +91,33 @@ once graded on one profile built from FSF and GPWS numbers, and a Cessna scored
 VS0 61 kt, the 14 CFR 23.49 boundary. Saturation is the symptom to watch for:
 a metric returning the same answer for every flight is measuring nothing.
 
-**The landing letter is two things, and only one of them can lift it.**
-Touchdown vertical speed sets it; touchdown *alignment* - peak bank through
-the rollout, and sideways acceleration after contact - can only hold it down.
-Alignment caps the Descent *phase* on the same terms, which is how it reaches
-the leg grade. It is listed with the Descent metrics at weight 0: giving it a
-weight moves `w x (alignment - touchdown)` into every descent, which pays most
-where the touchdown was worst - measured, it upgraded a hard landing by a
-whole band. Four splits were tried against real legs and every one of them
-raised most of the sample.
+**The landing has one grade, its phase, and the touchdown is a word.** There
+used to be a second A-F letter for the touchdown alone, which alignment, the
+float and the touchdown spot could lower, beside the landing phase's grade -
+a firm arrival on the aim point read "Landing B" and "C" at once. Now the
+landing phase is the landing's grade, and the touchdown is described:
+`grading.touchdown_word`, on the type's own scale - Butter, Smooth, Firm,
+Hard, Very hard; for a transport Soft, On target, Firm, Hard, Very hard,
+named for the published 100-250 fpm target band - and its rate. A leg too
+short to grade in phases falls back to `touchdown_letter`, the letter of the
+touchdown's score. The EFB tablet shows the same word: the watcher sends it
+with each landing event (`touchdown_word`), since the tablet cannot work out
+the aircraft type without a second copy of the thresholds.
+
+**Alignment can only hold the landing down.** Peak bank through the rollout,
+and sideways acceleration after contact, cap the landing phase, which is how
+they reach the leg grade. Alignment is listed with the landing metrics at
+weight 0: giving it a weight moves `w x (alignment - touchdown)` into every
+landing, which pays most where the touchdown was worst - measured, it
+upgraded a hard landing by a whole band. Four splits were tried against real
+legs and every one of them raised most of the sample.
 That asymmetry is deliberate: a landing that arrives gently while sliding
 sideways is not a good landing, but a perfectly square arrival at 600 fpm is
 still an arrival. `ROTARY` scores no alignment at all, because every
 helicopter track may carry no lateral accelerations, and a missing
 reading would grade as a flawless one.
 
-**The float is the second thing that can hold it down, and it is off.** Time
+**The float counts only when switched on** (`GRADE_FLOAT`, off by default). Time
 from 50 ft above the runway to main-gear touchdown - the certification air
 distance, AC 25-32 - measured from the 10 Hz landing clip on airplane
 profiles. **The clock starts at the later of 50 ft and the threshold**: the
@@ -118,25 +131,30 @@ runway's surface, read from PLANE ALT ABOVE GROUND as the aircraft passed
 over it (`grading.RunwaySurface`). Above the touchdown spot was off by 20-40
 ft on runways that climb 2%. Only this landing's readings, over this runway:
 a track is the whole flight, and "past the threshold" is a distance along a
-heading - the departure and a downwind leg are past it too. It is scored on the standard's *zones*, not a slope: 100 for a 7 s
-flare, 50 at the end of the touchdown zone (AC 91-79A), 0 a further 1,000 ft
-on. A first version sloped linearly to zero at the end of the zone and
-failed a jet touching down inside it, which the AC calls typical. It is
-measured and shown everywhere but caps nothing until `GRADE_FLOAT` is
-turned on - the owner reviews the bands against real landings first.
-**The touchdown point is the third, and also off** (`GRADE_TOUCHDOWN_POINT`):
+heading - the departure and a downwind leg are past it too. It is scored in
+steps, not a slope: 100 for a 7 s flare (AC 25-32's normal flare), 50 after a
+further 2,000 ft of floating at the speed flown, 0 a further 1,000 ft on. The
+2,000 and the 1,000 are AfterFlight's allowance, not a published scale - and
+half marks are not the end of the touchdown zone, which they reach only near
+85 kt; the touchdown spot measures the zone against the real runway. A first
+version sloped linearly to zero and failed a jet touching down inside the
+zone, which AC 91-79A calls typical. It is
+measured and shown everywhere but counts for nothing until `GRADE_FLOAT` is
+turned on.
+**The touchdown point likewise** (`GRADE_TOUCHDOWN_POINT`, off by default):
 distance past the landing threshold, 100 within 1,400 ft, 50 at the end of the
 touchdown zone (3,000 ft or the runway's first third), 0 a further 1,000 ft on.
 It needs the runway, which only the sim knows - see the facility-data trap.
-**Both switches and their bands are settings, the ladder is not.** The
-ladder's letters and the touchdown curve are separate constants a setting
-could part; the float and touchdown-point score, band and letter cap all read
+**Both switches and their bands are settings; the touchdown curve and its
+words are not.** The float and touchdown-point score, band and cap all read
 the same values when called, so a setting moves them together. The defaults
 are the published figures, kept in `grading.PUBLISHED`, and the grading panel
 says when the bands in use are the owner's own instead. The build signature
 carries the values (`runway_tunables`), because a setting changes them without
 changing `grading.py`. No setting reaches a helicopter: every use is gated on
-the profile, and the watcher asks the sim for no runway after one lands.
+the profile. The watcher does ask about the airports near a helicopter's
+takeoffs and landings - their helipads and names, to name the route - but
+nothing it learns there reaches a helicopter's grade.
 
 **The landing is a phase of its own** (`LANDING_PHASE`, on). The descent is
 the approach; "landing" holds the touchdown and the landing limits. The
@@ -144,23 +162,30 @@ descent's weight is split by the touchdown's share of it, so the averages
 are what they were with the touchdown inside the descent, and only the
 weakest-phase cap sees more. Measured when it went on, that moved grades
 down and never up: an approach no longer hides behind a good touchdown.
-Off, the touchdown is 45% of the descent as well as the landing letter, and
-the Grading tab listed it twice.
+Off, the touchdown is 45% of the descent, and the landing grade falls back
+to the touchdown alone.
 
-**The landing phase is a blend; the landing letter is not.** The A-F letter is
-how the touchdown felt: the rate sets it, and alignment, the float and the
-touchdown spot can only lower it. The landing PHASE is how the landing was
-flown: touchdown, touchdown spot and float blended (`LANDING_WEIGHTS`, a
+**The landing phase is a blend.** It is how the landing was flown:
+touchdown, touchdown spot and float blended (`LANDING_WEIGHTS`, a
 judgment and labelled one), each only when its Settings switch is on. Two
 limits keep the blend honest: it never sits more than a band above the
-touchdown alone, so precision cannot rescue a hard landing; and a spot or
-float past the touchdown zone caps it as well as weighing in, because a
+touchdown alone, so precision cannot rescue a hard landing; and a spot
+past the touchdown zone, or a float past half marks, caps it as well as
+weighing in, because a
 soft touchdown otherwise averaged a landing far down the runway up to a C.
 
-**The touchdown letter is judged on the aircraft type's own criteria** -
-`grading.touchdown_letter`, the same curve the touchdown is scored on - so
-a letter and its score never disagree. It was one rate ladder for every
-aircraft, which called a jet's 200 fpm, inside the airline target, Firm.
+**The light touchdown curve steps at 60 fpm**, from 100 to 89. It was added
+when the touchdown had a letter of its own, read off the curve, whose A had
+drifted to 105 fpm; it still keeps a helicopter's landing grade - the
+touchdown alone - at A only up to 60 fpm, where "Butter" ends.
+`test_grading` checks `touchdown_letter` against `passenger.GRADE_TABLE` at
+every rate. Change a curve, run it.
+**The passenger's landing sentence is about how the arrival felt**
+(`touchdown_feel`), and when the landing grade came out worse than that, it
+says why - it slid, it floated, it landed long - read from the landing
+phase's own record of which limit held it (`landing_marked_down_by`). A
+second reconstruction, in a different order from the one the caps ran in,
+named the wrong measure whenever two of them bit.
 **And the ride is everything flown except the landing**, the approach
 included: the passenger paragraph once called a ride smooth beside an F
 approach. Check the prose against the pills when grading changes - an
@@ -209,18 +234,19 @@ default, placed near the other tunables at the top of its module.
 | `trackexport.py` | KML and GPX of a track, built on demand. |
 | `settings.py` | User-editable Tier 1 settings, applied over module constants. |
 | `install.ps1` | Checks the machine, stages the sim's DLL, autostart and shortcut. Checks only unless given a switch. Prefers a release's bundled `runtime\python.exe`. |
-| `build_release.py` | The release zip: tracked app files, python.org's embeddable Python and Pillow (pinned, SHA-256 checked), `VERSION` and a launcher. Never anything of a user's - an update is a zip unpacked over an install. `.github/workflows/release.yml` builds it on a `v*` tag. |
+| `build_release.py` | The release zip: tracked app files, python.org's embeddable Python and Pillow (pinned, SHA-256 checked), `VERSION` and a launcher. Never anything of a user's - an update is a zip unpacked over an install. `.github/workflows/release.yml` builds it on a `v*` tag. **`DATA` is the inventory of user and runtime files**: `.gitignore`, the release guard and `backup.ps1` are checked against it. Add a new data file there first. |
 | `persistence.py` | Shared document, maintenance and recording locks plus atomic JSON/JSONL helpers. |
 | `clipfile.py` | Where a clip lives on disk and how to read one. The only place that knows the layout. |
-| `runways.py` | Which runway a touchdown was on and how far past its threshold - geometry, and the per-airport runway cache under `sessions/runways/`. |
+| `runways.py` | Which runway a takeoff or touchdown was on and how far past its threshold - geometry, and the per-airport runway cache under `sessions/runways/`. The same match names a leg's ends (`logbook_build.takeoff_runway`, `route_end`). |
 | `test_integrity.py` | Disposable fixtures for cache, persistence, deletion and backup recovery. |
-| `test_replay.py` | Pose lookup during replay, against the scan it replaced. |
+| `test_replay.py` | Pose lookup during replay, against the scan it replaced; and who owns a replay when starts and stops overlap. |
 | `test_arming.py` | When a reported aircraft becomes a flight, and what a rebuild publishes. |
 | `test_map.py` | What the route map draws as one line, and where it breaks - and so where it puts markers. |
 | `test_efb.py` | When a deploy may rewrite the EFB package's committed `layout.json` - only when its files changed. |
 | `test_release.py` | What the release zip carries and must never carry: no user data, no missing module, a Python that finds the app, a version without git. |
 | `test_runways.py` | The touchdown point end to end: geometry, the zone score, facility-message parsing in the measured layout, the builder, and the cache signature. |
 | `test_native.py` | The sim connection without Python-SimConnect: quit, heartbeat, a held pause, and the recording loop run with the package unimportable. |
+| `test_http.py` | Who may command the watcher: the real handler on a spare port, every action recorded rather than run, a refused request reaching none. |
 | `backup.ps1` | Copies what git deliberately does not, with a SHA-256 manifest and consistency status. |
 | `verify-backup.ps1` | Verifies a backup manifest and every archived file hash. |
 | `logbook.html` / `logbook.js` | The UI. Renders `logbook.json`; writes nothing directly. |
@@ -292,8 +318,20 @@ Data lives in `sessions/` and is **not** in git: flight tracks, clips, maps,
   Seattle's runways within 0.1% of their published lengths, San Diego's
   displaced 27 at 1,808 ft against 1,810, and every recorded airplane
   touchdown located on a runway centreline to within 10 ft. `test_runways.py` encodes the layout
-  so drifting from it fails offline. The lookup runs only when parked, on its
-  own short-lived connection, never the one the recording rides on.
+  so drifting from it fails offline. The lookup runs only when parked - checked
+  before each request, not once at the start - on its own short-lived
+  connection, never the one the recording rides on. It reports done, more,
+  cancelled or failed, and only done takes a landing off the queue.
+  Takeoffs are queued as well as landings: the same match names both ends of
+  a leg, and the sortie signature folds in runway files near either. The
+  airport list is held per sim connection (`sim_session_changed`), not
+  fetched per lookup; each lookup logs what it cost. **Airport names were
+  measured too:** `NAME64` is text ending at the first zero byte with
+  leftover memory after it, so cut there (`airport_name_from`). They are
+  kept in `sessions/runways/_names.json`, never in an airport file.
+  **And an airport's ground:** a taxi path of type 3 ends at a *parking
+  spot*, not a taxi point (`ground_from`). Read as a point it gave
+  plausible-looking nonsense that named the wrong ends.
   **A landing's runway is known when a cached runway contains the touchdown**,
   not when a cached airport is near it: a heliport cached 2.5 nm from a
   landing once hid the airport it was really at from every later lookup.
@@ -317,6 +355,16 @@ Data lives in `sessions/` and is **not** in git: flight tracks, clips, maps,
   `[hidden] { display: none !important; }` guard for this. Verify what
   *renders*, not what the DOM property says — three separate bugs here were
   elements that reported `hidden === true` while still on screen.
+- **A dialog stays open until its work is done.** The four panels are
+  `<dialog>`s opened with `showModal()`, so the page behind is inert to
+  keyboard as well as mouse. A confirm that starts work runs it from the
+  dialog (`confirmRemoval`'s `action`) and closes on the result; closing on
+  the click left a delete running for two minutes behind a page that showed
+  nothing and still took clicks. Let the browser handle Escape - closing the
+  dialog from its `cancel` event passed the key press on to the Removed list
+  beneath. **Test it with real clicks:** Chrome groups dialogs opened without
+  a user gesture, and one Escape then closes all of them, so a scripted
+  `.click()` reports a bug that a person never sees.
 - **A clip is appended, never rewritten.** `clipfile.py` owns the filename
   rule and the reader; `OpenClip` appends through `persistence.append_lines`.
   A failed append rolls the file back and the same batch is retried, so a
@@ -338,6 +386,10 @@ Data lives in `sessions/` and is **not** in git: flight tracks, clips, maps,
   the grade the old profile produced - still won. If you add a new input to a
   flight record, put it in `sortie_signature` too, or the thing built from it
   is stale for ever. `test_cache.py` covers it.
+  **A delete is not a reprocess either.** It used to empty the cache and ask
+  for one, to be safe - every flight rebuilt and every map redrawn, about
+  two minutes per delete. What a delete changes is all in the
+  signatures, and `test_cache.py` checks the result against a reprocess.
 - **`force` and `reprocess` are different questions.** In
   `rebuild_logbook_now`, `force` is scheduling - run even though a flight is
   in progress - and `reprocess` is correctness: ignore the sortie cache. They
@@ -370,6 +422,13 @@ Data lives in `sessions/` and is **not** in git: flight tracks, clips, maps,
   its own thread, so a watcher whose detect loop has wedged still replies to
   `/state` while recording nothing. Liveness is `heartbeat_age_s`, which the
   detect loop stamps every pass, and the tray restarts on that.
+- **A replay is started and stopped under `_replay_lifecycle`, and a worker
+  checks its generation.** `start_replay` and `stop_replay` each hold the lock
+  for the whole operation; inside a start, stop the old replay with
+  `_stop_replay_locked`, or the lock deadlocks against itself. A worker
+  writes `RUNTIME["replay"]` or releases the camera only while
+  `_replay_is(gen)` - a clip id is not ownership, since two replays of one
+  clip share it. `test_replay.py` covers both.
 - **Tests must not write to `watcher.log`.** Importing `watcher` makes
   `watcher.log()` append to the real operational log, so a test that drives a
   refusal path writes "refusing CameraSet on user aircraft" into it. That is
@@ -392,6 +451,7 @@ py -3 test_efb.py           # a deploy does not dirty the committed EFB layout
 py -3 test_runways.py       # where on the runway, and what the sim really sends
 py -3 test_release.py       # the release zip: no user data in it, nothing missing
 py -3 test_native.py        # the sim connection with no Python-SimConnect
+py -3 test_http.py          # a web page cannot command the watcher
 py -3 test_integrity.py     # locks, partial deletes, backup round trip
 py -3 sampler.py            # offline self-test: state block layout and peaks
 py -3 flightprefs.py        # offline self-test: the per-flight switches
@@ -420,11 +480,17 @@ rewrite every commit and leave the two branches sharing no history after
 each release. Afterwards `develop` fast-forwards to the merge commit. Open
 pull requests against `develop`.
 
+**A release tag builds the zip.** `.github/workflows/release.yml` runs on a
+`v*` tag: it builds `AfterFlight-<tag>.zip` with `build_release.py`, runs every
+test on the Python inside it, and keeps the zip as a workflow artifact. It
+publishes nothing - the zip goes on the GitHub release by hand, once checked.
+
 **Before opening a pull request**
 
 1. `py -3 test_safety.py` passes. If you changed something it covers,
    say why the invariant still holds.
-2. Both self-tests pass, and everything compiles.
+2. Every test file and the offline self-tests listed above pass, and
+   everything compiles.
 3. A full rebuild produces the same grades for existing legs, unless changing
    grades is the point — and if it is, say which legs moved and why.
 4. Anything user-visible was checked in a browser, not only in the DOM.
