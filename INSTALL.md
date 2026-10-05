@@ -136,10 +136,15 @@ itself. The installer can do the same on demand, which is useful to check it:
 .\install.ps1 -ResolveDll
 ```
 
-Expect `RESOLVED` and a path. It looks in three places, in order: the `native\`
-folder, the installed MSFS package, and any **running** sim.
+It takes a fresh copy from the sim - a running sim first, then the installed
+package - compares it with the one in `native\`, and says what it did:
+`UPDATED`, `UNCHANGED`, or `STAGED` when a running watcher has the old copy
+loaded (Windows will not replace a file in use; the new one is checked and
+takes over the next time the watcher starts - restart the tray to use it
+now).
 
-**If it says `UNRESOLVED`, start Microsoft Flight Simulator and run it again.**
+**If it finds no copy of the sim's - `UNRESOLVED`, or `RESOLVED` with no copy
+to refresh from - start Microsoft Flight Simulator and run it again.**
 With the sim running the DLL is read straight out of the sim's own process,
 which works whatever the install layout is — that is the answer whenever the
 package lookup comes up empty. The sim does not need to be in a flight; sitting
@@ -149,8 +154,8 @@ Without the DLL nothing is recorded, unless the old `SimConnect` pip package
 is installed to fall back to; replay and the chase camera need the DLL either
 way.
 
-> **Re-run this after a sim update.** The path moves, and the watcher prefers
-> the copy already in `native\`.
+> **Re-run this after a sim update.** The watcher keeps using the copy already
+> in `native\` on every start; this is what replaces it.
 
 ---
 

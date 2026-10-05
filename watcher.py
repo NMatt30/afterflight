@@ -374,6 +374,9 @@ SIMCONNECT_EVENT_FLAG_GROUPID_IS_PRIORITY = 16
 NATIVE_DIR = os.path.join(BASE, "native")
 GAME_DLL_FILENAME = "SimConnect_internal.dll"
 NATIVE_DLL = os.path.join(NATIVE_DIR, GAME_DLL_FILENAME)
+# A refreshed copy waiting for the one in use to be let go: see
+# refresh_game_simconnect_dll.
+NATIVE_DLL_STAGED = NATIVE_DLL + ".new"
 CAMERA_CLIENT_NAME = b"msfs-logger-chase"
 SIMCONNECT_UNUSED = 0xFFFFFFFF
 SIMCONNECT_DATATYPE_INITPOSITION = 12
@@ -3745,7 +3748,115 @@ _CAMERA_EXPORTS = (
 )
 
 
+def _sim_dll_sources():
+    """The sim's own copies of the DLL: the running sim's folder first, then
+    the installed package. Never native/, which is the copy."""
+    out = []
+    for d in _process_image_dirs(("FlightSimulator2024.exe", "FlightSimulator.exe")):
+        p = os.path.join(d, GAME_DLL_FILENAME)
+        if os.path.isfile(p):
+            out.append(p)
+    out.extend(_windowsapps_dlls())
+    seen, unique = set(), []
+    for p in out:
+        a = os.path.abspath(p)
+        if a in seen or a == os.path.abspath(NATIVE_DLL):
+            continue
+        seen.add(a)
+        unique.append(p)
+    return unique
+
+
+def _file_sha256(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _install_dll(staged):
+    """Put a checked copy in place of native/'s. Raises OSError while the old
+    one is loaded by a process - Windows will not replace a DLL in use."""
+    os.replace(staged, NATIVE_DLL)
+
+
+def refresh_game_simconnect_dll():
+    """Take a fresh copy of the sim's DLL into native/, as install.ps1
+    -ResolveDll asks (SME review R4).
+
+    Startup keeps using the copy in native/ while it has the exports needed,
+    and that is right for every start. But -ResolveDll, the documented step
+    after a sim update, went through the same resolver and reported RESOLVED
+    on the old copy without looking at the sim's. This always compares
+    against the sim and says what happened:
+      updated    native/ now holds the sim's copy
+      unchanged  native/ already held the same bytes
+      staged     the copy in native/ is loaded by a running watcher, which
+                 Windows will not let be replaced: the new one waits beside
+                 it, checked, and takes over when the watcher next starts
+      no source  no copy of the sim's was found: start the sim and re-run
+      failed     copying or checking failed; native/ is untouched
+    """
+    sources = _sim_dll_sources()
+    for src in sources:
+        ok, missing = _dll_has_exports(src, _CAMERA_EXPORTS)
+        if not ok:
+            log("dll refresh: skip %s missing=%s" % (src, ",".join(missing)))
+            continue
+        try:
+            want = _file_sha256(src)
+            if os.path.isfile(NATIVE_DLL) and _file_sha256(NATIVE_DLL) == want:
+                return {"status": "unchanged", "source": src, "path": NATIVE_DLL}
+            os.makedirs(NATIVE_DIR, exist_ok=True)
+            shutil.copy2(src, NATIVE_DLL_STAGED)
+            good = (_file_sha256(NATIVE_DLL_STAGED) == want
+                    and _dll_has_exports(NATIVE_DLL_STAGED, _CAMERA_EXPORTS)[0])
+        except OSError as e:
+            return {"status": "failed", "source": src, "detail": repr(e)}
+        if not good:
+            try:
+                os.remove(NATIVE_DLL_STAGED)
+            except OSError:
+                pass
+            return {"status": "failed", "source": src,
+                    "detail": "the copy did not match its source"}
+        try:
+            _install_dll(NATIVE_DLL_STAGED)
+        except OSError as e:
+            log("dll refresh: native copy in use (%r); staged for the next start" % (e,))
+            return {"status": "staged", "source": src, "path": NATIVE_DLL_STAGED}
+        log("dll refresh: native copy updated from %s" % src)
+        return {"status": "updated", "source": src, "path": NATIVE_DLL}
+    return {"status": "no source", "looked_in": sources}
+
+
+def promote_staged_dll():
+    """At startup, before anything loads native/: a refresh that could not
+    replace a DLL in use left its copy beside it. Checked again first; a
+    staged file that fails is discarded and the working copy kept."""
+    if not os.path.isfile(NATIVE_DLL_STAGED):
+        return None
+    ok, missing = _dll_has_exports(NATIVE_DLL_STAGED, _CAMERA_EXPORTS)
+    if not ok:
+        log("dll refresh: staged copy rejected, missing=%s" % ",".join(missing))
+        try:
+            os.remove(NATIVE_DLL_STAGED)
+        except OSError:
+            pass
+        return "rejected"
+    try:
+        _install_dll(NATIVE_DLL_STAGED)
+    except OSError as e:
+        log("dll refresh: staged copy could not be promoted %r" % (e,))
+        return "failed"
+    log("dll refresh: staged copy promoted into native/")
+    return "promoted"
+
+
 def resolve_game_simconnect_dll():
+    promote_staged_dll()
     ordered = []
     if os.path.isfile(NATIVE_DLL):
         ordered.append(NATIVE_DLL)

@@ -1880,7 +1880,12 @@ outright was not tested live; `test_native.py` covers it, run with the
 package made unimportable. Native needs the sim's own SimConnect DLL, which
 the watcher finds in the install or reads from the running sim and copies to
 `native/`. Where it cannot, and the package is installed, it falls back to the
-package and says so once.
+package and says so once. Every start keeps using the copy in `native/`;
+`install.ps1 -ResolveDll` is what refreshes it, comparing the sim's copy with
+it and reporting updated, unchanged or staged. It used to go through the same
+resolver and report RESOLVED on the old copy. Staged is a running watcher
+holding the old one loaded, which Windows will not let be replaced: the new
+copy waits beside it, is checked again, and takes over at the next start.
 
 **A zip that carries its own Python.** `build_release.py` packs the tracked
 app files with python.org's embeddable Python and Pillow, both pinned and

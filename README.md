@@ -523,9 +523,10 @@ change to check in the sim.
 The release zip has been run in the sim from a fresh folder, and with Python
 hidden from the PATH, but not yet on a machine that has never had Python.
 
-After a sim update the Store DLL path moves. The watcher prefers the copy in
-`native/` while it has the exports it needs; whether an old copy still talks to
-an updated sim has not been tested, so after an update take a fresh one:
+After a sim update, take a fresh copy: the watcher keeps using the one in
+`native/` while it has the exports it needs, and whether an old copy still
+talks to an updated sim has not been tested. This compares against the sim's
+and replaces it - or stages it, if the watcher has it loaded:
 
 ```powershell
 .\install.ps1 -ResolveDll
