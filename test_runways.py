@@ -802,6 +802,10 @@ class Lookup(object):
         self.asked = []
         self.lists = 0
         self.on_request = None
+        self.on_list = None
+        # A list held from an earlier test's "connection" would answer for
+        # this one.
+        watcher.sim_session_changed()
         self.airports = airports
         self.open_ok = open_ok
         self.rebuilds = []
@@ -824,6 +828,8 @@ class Lookup(object):
 
             def facility_airports(self):
                 look.lists += 1
+                if look.on_list:
+                    look.on_list()
                 return [(ident, "K2", LAT0 + look.far + 0.01 * i, LON0, 0.0)
                         for i, ident in enumerate(look.airports)]
 
@@ -865,6 +871,7 @@ class Lookup(object):
         watcher._runway_queue[:] = queue
         with watcher.RUNTIME_LOCK:
             watcher.RUNTIME["connected"], watcher.RUNTIME["current_doc"] = self._keep_rt
+        watcher.sim_session_changed()
         shutil.rmtree(self.dir, ignore_errors=True)
 
 
@@ -935,6 +942,57 @@ def test_an_off_airport_landing_is_searched_once_and_not_again():
         look.close()
 
 
+def test_the_airport_list_is_asked_for_once_per_sim_connection():
+    """Every lookup with anything to find asked the sim for all 84,000
+    airports. Now the list is held for the connection it came from, and a
+    new connection asks again - scenery may have changed with the sim. The
+    log says which, and what the list cost."""
+    look = Lookup()
+    lines, keep_log = [], watcher.log
+    watcher.log = lambda msg, *a, **k: lines.append(str(msg))
+    try:
+        look.run()
+        assert look.lists == 1 and look.asked == ["KAAA", "KBBB"], (look.lists, look.asked)
+        assert any("airport list fetched in" in l for l in lines), lines
+        # Another landing, off airport, in the same connection.
+        watcher._runway_queue[:] = [(LAT0 + 5.0, LON0)]
+        look.run()
+        assert look.lists == 1, "the list was asked for again in the same connection"
+        assert any("airport list held from this connection" in l for l in lines), lines
+        # The sim connection ends and begins again.
+        watcher.sim_session_changed()
+        watcher.sim_session_changed()
+        watcher._runway_queue[:] = [(LAT0 + 6.0, LON0)]
+        look.run()
+        assert look.lists == 2, "a new connection used the old connection's list"
+    finally:
+        watcher.log = keep_log
+        look.close()
+
+
+def test_a_list_fetched_as_the_connection_ends_is_not_kept():
+    """The lookup runs on its own thread; the sim can go while it waits for
+    the list. That list belongs to a connection that is over."""
+    look = Lookup()
+    try:
+        look.on_list = watcher.sim_session_changed
+        look.run()
+        assert look.lists == 1
+        assert watcher.held_airport_list()[1] is None, (
+            "a list fetched under the old connection was kept for the new one")
+    finally:
+        look.close()
+
+
+def test_the_held_list_reads_back_what_the_sim_sent():
+    rows = [("KSEA", "K1", 47.45, -122.31, 130.0), ("CYVR", "CY", 49.19, -123.18, 4.0),
+            ("LONGIDENT", "ABC", -33.9, 151.2, 6.0), ("", "", 0.0, 0.0, 0.0)]
+    held = watcher.AirportList(rows)
+    assert len(held) == 4
+    assert list(held) == [r[:4] for r in rows], list(held)
+    assert (held.ident(1), held.region(1)) == ("CYVR", "CY")
+
+
 def test_work_past_the_per_pass_limit_is_kept():
     keep = watcher.RUNWAY_BACKFILL_MAX
     look = Lookup()
@@ -974,8 +1032,12 @@ def _asked_for(touchdown, airport):
     try:
         watcher.RUNWAYS_DIR = d
         watcher.GameSimConnect = FakeSim
+        # Each case is a world of its own: a new connection, so the list
+        # held from the last case is not this one's.
+        watcher.sim_session_changed()
         watcher.lookup_runways([touchdown], keep_going=lambda: True)
     finally:
+        watcher.sim_session_changed()
         watcher.RUNWAYS_DIR, watcher.GameSimConnect = keep
         shutil.rmtree(d, ignore_errors=True)
     return asked

@@ -321,7 +321,9 @@ Data lives in `sessions/` and is **not** in git: flight tracks, clips, maps,
   connection, never the one the recording rides on. It reports done, more,
   cancelled or failed, and only done takes a landing off the queue.
   Takeoffs are queued as well as landings: the same match names both ends of
-  a leg, and the sortie signature folds in runway files near either.
+  a leg, and the sortie signature folds in runway files near either. The
+  airport list is held per sim connection (`sim_session_changed`), not
+  fetched per lookup; each lookup logs what it cost.
   **A landing's runway is known when a cached runway contains the touchdown**,
   not when a cached airport is near it: a heliport cached 2.5 nm from a
   landing once hid the airport it was really at from every later lookup.

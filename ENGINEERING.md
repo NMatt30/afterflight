@@ -545,6 +545,21 @@ touchdown located on a runway centreline to within 10 ft. A sortie signs the
 runway files near its own landings, so a runway cached later rebuilds that
 sortie and nothing else.
 
+**The airport list is asked for once per sim connection.** It is the whole
+world, and nothing else says which airports are near a past takeoff or
+landing: as far as is known here, the sim answers "airports near here" only
+around the aircraft now. Every lookup with anything to find asked for it
+afresh. It is now held in memory for the connection it came from - fetched
+the first time a lookup needs it, dropped when the sim connection ends or a
+new one begins, so a sim restarted with different scenery is asked again. A
+lookup still waiting for the list when the connection changes does not keep
+it. Held packed (`AirportList`): as tuples it was 21.5 MB, packed 2.4 MB,
+and a pass over it costs the same 0.3 s. Not kept on disk: when a file copy
+should be refreshed is a question with no measurement behind it yet. Each
+lookup's log line now says what the list cost - "fetched in N ms" or "held
+from this connection" - and how long the runway requests took, which is the
+measurement a decision about a disk copy needs.
+
 **Which airports are near is measured in nautical miles, not grid cells.**
 84,000 airports are sorted into 0.1 degree cells so that only those near a
 landing are measured exactly. One cell either way is 6 nm of latitude

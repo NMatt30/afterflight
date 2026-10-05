@@ -138,6 +138,29 @@ def test_the_recording_loop_never_imports_python_simconnect():
         watcher.write_current, watcher.stop_replay = keep
 
 
+def test_a_sim_connection_drops_the_held_airport_list_at_both_ends():
+    """The airport list is held for one connection to the sim. run_connected
+    moves the connection on as it starts - a list held from before is not
+    this connection's - and again as it ends."""
+    keep = (watcher.write_current, watcher.stop_replay)
+    watcher.write_current = lambda *a, **k: None
+    watcher.stop_replay = lambda *a, **k: None
+    try:
+        session = watcher.held_airport_list()[0]
+        watcher.hold_airport_list(session, ["held"])
+        with NoSimConnect():
+            conn = FakeConn()
+            conn._quit = True
+            watcher.run_connected(watcher.NativeSim(conn, FakeSampler()))
+        after, held = watcher.held_airport_list()
+        assert held is None, "a list outlived the connection"
+        assert after == session + 2, (
+            "the connection moved %d time(s); it should at its start and its end"
+            % (after - session))
+    finally:
+        watcher.write_current, watcher.stop_replay = keep
+
+
 class Logs(object):
     """watcher.log captured for the duration."""
 

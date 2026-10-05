@@ -6000,6 +6000,78 @@ _runway_state = {"thread": None, "backfilled": False, "retry_after": 0.0}
 _runway_lock = threading.Lock()
 
 
+# The sim's airport list - every airport in the world, 84,000 of them - is
+# what says which airports are near a takeoff or landing; no request answers
+# "airports near here" for anywhere but around the aircraft now. It was
+# requested afresh by every lookup that had anything to find. It is now held
+# for the connection it came from: requested the first time a lookup needs it,
+# dropped when the sim connection ends, so a sim restarted with different
+# scenery is asked again. Not kept on disk - when to refresh a file copy is
+# a question nobody has measured an answer to yet. Each connection to the sim,
+# and each loss of one, moves _airport_list["session"] on, so a lookup that
+# started under the old connection cannot leave its list for the new one.
+_airport_list = {"session": 0, "held": None}
+
+
+class AirportList(object):
+    """The airport list, packed. As tuples it held 21.5 MB for the whole
+    connection (measured, 84,354 synthetic entries); the lookup needs only
+    each airport's ident, region and position, so those are kept as fixed-
+    width bytes and two arrays of doubles - about 2.5 MB."""
+
+    def __init__(self, rows):
+        import array
+        self.lat = array.array("d")
+        self.lon = array.array("d")
+        ids, regions = [], []
+        for ident, region, la, lo, _alt in rows:
+            ids.append(str(ident).encode("ascii", "replace")[:9].ljust(9, b"\0"))
+            regions.append(str(region).encode("ascii", "replace")[:3].ljust(3, b"\0"))
+            self.lat.append(float(la))
+            self.lon.append(float(lo))
+        self.ids = b"".join(ids)
+        self.regions = b"".join(regions)
+
+    def __len__(self):
+        return len(self.lat)
+
+    def ident(self, k):
+        return self.ids[k * 9:k * 9 + 9].split(b"\0")[0].decode("ascii", "replace")
+
+    def region(self, k):
+        return self.regions[k * 3:k * 3 + 3].split(b"\0")[0].decode("ascii", "replace")
+
+    def __iter__(self):
+        """(ident, region, lat, lon), as facility_airports gave them."""
+        for k in range(len(self.lat)):
+            yield self.ident(k), self.region(k), self.lat[k], self.lon[k]
+
+
+def sim_session_changed():
+    """The sim connection began or ended: the held airport list is dropped."""
+    with _runway_lock:
+        _airport_list["session"] += 1
+        _airport_list["held"] = None
+
+
+def held_airport_list():
+    """(session, the list held for it or None). A held list is always the
+    current connection's: every change drops it, and hold_airport_list keeps
+    one only for the connection it was fetched under."""
+    with _runway_lock:
+        return _airport_list["session"], _airport_list["held"]
+
+
+def hold_airport_list(session, airports):
+    """Keep a fetched list - only if the connection it was fetched under is
+    still the current one."""
+    with _runway_lock:
+        if _airport_list["session"] == session:
+            _airport_list["held"] = airports
+            return True
+        return False
+
+
 def queue_runway_lookup(lat, lon, category=None, vs0=None, aircraft=None):
     """Ask for the runways at this takeoff or landing at the next parked
     moment - for an airplane. A helicopter asks the sim for nothing."""
@@ -6142,18 +6214,42 @@ def lookup_runways(points, backfill=False, keep_going=None):
     for p in want:
         cells.setdefault(_runway_cell(p[0], p[1]), []).append(p)
 
-    gsc = GameSimConnect()
+    gsc = None
+
+    def connection():
+        nonlocal gsc
+        if gsc is None:
+            gsc = GameSimConnect()
+            if not gsc.open():
+                return None
+        return gsc
+
     try:
-        if not gsc.open():
-            log("runways: SimConnect open failed")
-            return {"status": "failed", "saved": 0}
-        listed = gsc.facility_airports()
-        if not listed:
-            log("runways: the sim returned no airport list")
-            return {"status": "failed", "saved": 0}
+        # Timed, so the log says what the list costs: whether keeping a copy
+        # between sim sessions would be worth its staleness is that number.
+        session, listed = held_airport_list()
+        if listed is not None:
+            list_note = "airport list held from this connection (%d)" % len(listed)
+        else:
+            if connection() is None:
+                log("runways: SimConnect open failed")
+                return {"status": "failed", "saved": 0}
+            t_list = time.perf_counter()
+            rows_in = gsc.facility_airports()
+            list_ms = (time.perf_counter() - t_list) * 1000.0
+            if not rows_in:
+                log("runways: the sim returned no airport list (%.0f ms)" % list_ms)
+                return {"status": "failed", "saved": 0}
+            listed = AirportList(rows_in)
+            del rows_in
+            kept = hold_airport_list(session, listed)
+            list_note = "airport list fetched in %.0f ms (%d)%s" % (
+                list_ms, len(listed), "" if kept else ", not kept: the connection changed")
         targets = {}
         rows = int(math.ceil(RUNWAY_LOOKUP_RADIUS_NM / (60.0 / RUNWAY_CELLS_PER_DEG)))
-        for ident, region, la, lo, al in listed:
+        # Positions only: an ident is decoded for an airport near a point,
+        # not for all 84,000 (0.4 s a pass, measured, when every one was).
+        for k, (la, lo) in enumerate(zip(listed.lat, listed.lon)):
             ci, cj = _runway_cell(la, lo)
             reach = _runway_cell_reach(la, RUNWAY_LOOKUP_RADIUS_NM)
             columns = set((cj + dj) % _LON_CELLS for dj in range(-reach, reach + 1))
@@ -6161,9 +6257,10 @@ def lookup_runways(points, backfill=False, keep_going=None):
                 for col in columns:
                     for p in cells.get((ci + di, col), ()):
                         if runways_mod.nm_apart(p[0], p[1], la, lo) <= RUNWAY_LOOKUP_RADIUS_NM:
-                            targets[ident] = region
+                            targets[listed.ident(k)] = listed.region(k)
         saved = 0
         status = "done"
+        asked_ms = []
         for ident in sorted(targets):
             if ident in index:
                 continue
@@ -6173,7 +6270,13 @@ def lookup_runways(points, backfill=False, keep_going=None):
             if not keep_going():
                 status = "cancelled"
                 break
+            if connection() is None:
+                log("runways: SimConnect open failed")
+                status = "failed"
+                break
+            t_ask = time.perf_counter()
             doc = gsc.facility_runways(ident, targets[ident])
+            asked_ms.append((time.perf_counter() - t_ask) * 1000.0)
             if doc is None:
                 status = "failed"
                 continue
@@ -6182,11 +6285,15 @@ def lookup_runways(points, backfill=False, keep_going=None):
             os.makedirs(RUNWAYS_DIR, exist_ok=True)
             persistence.atomic_json(runways_mod.cache_path(RUNWAYS_DIR, ident), doc)
             saved += 1
-        log("runways: %d point(s), %d airport(s) nearby, %d cached, %s"
-            % (len(want), len(targets), saved, status))
+        log("runways: %d point(s), %d airport(s) nearby, %d cached, %s; %s; %s"
+            % (len(want), len(targets), saved, status, list_note,
+               ("%d runway request(s) in %.0f ms, slowest %.0f ms"
+                % (len(asked_ms), sum(asked_ms), max(asked_ms)))
+               if asked_ms else "no runway requests"))
         return {"status": status, "saved": saved}
     finally:
-        gsc.close()
+        if gsc is not None:
+            gsc.close()
 
 
 def start_runway_lookup():
@@ -6287,6 +6394,7 @@ def run_connected(sm, flight=None, tracker=None, resume_snap=None):
         RUNTIME["sm"] = sm
         RUNTIME["replay"]["ghost_def"] = None
         RUNTIME["replay"]["chase"]["camera_acquired"] = False
+    sim_session_changed()
     info = game_dll_status()
     log(
         "simconnect session ready pid=%s %s; game_dll=%s camera_exports=%s"
@@ -6516,6 +6624,7 @@ def run_connected(sm, flight=None, tracker=None, resume_snap=None):
             RUNTIME["connected"] = False
             RUNTIME["sm"] = None
             RUNTIME["replay"]["ghost_def"] = None
+        sim_session_changed()
 
 def start_stall_watchdog():
     """Leave evidence when the loop stops turning.
