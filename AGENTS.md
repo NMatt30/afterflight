@@ -314,7 +314,11 @@ Data lives in `sessions/` and is **not** in git: flight tracks, clips, maps,
   84,000 of them in 75 parts, 36-byte entries of a 9-byte ident, 3-byte region
   and three doubles) and per-airport runway data (28 per record, 29 when
   done). Lengths and widths are **metres**; headings are true, for the primary
-  end; displaced thresholds arrive primary first. Each was checked live -
+  end; displaced thresholds arrive primary first - both records are type 23,
+  so only the order says which end, and asking for each threshold alone gave
+  the same answer at two airports. The sim's scenery can differ from the real
+  airport: one field's sim runway has its displaced threshold at the other end
+  from the published one, so check the sim before calling a distance wrong. Each was checked live -
   Seattle's runways within 0.1% of their published lengths, San Diego's
   displaced 27 at 1,808 ft against 1,810, and every recorded airplane
   touchdown located on a runway centreline to within 10 ft. `test_runways.py` encodes the layout
