@@ -738,7 +738,7 @@
     return score + crooked;
   }
 
-  function phaseSection(key, title, ph) {
+  function phaseSection(key, title, ph, leg) {
     var sec = el("section", "gt-phase");
     sec.dataset.phase = key;
     if (ph.score === null || ph.score === undefined) {
@@ -756,6 +756,13 @@
       if (LANDING_LIMITS[p.key]) limits.push(p);
       else t.part(p);
     });
+    // The lift-off card says how fast, as the landing card does for its
+    // threshold and touchdown - information beside the graded measures.
+    if (key === "liftoff" && leg) {
+      var to = leg.takeoff || {};
+      var lift = fmtSpeeds(to.liftoff_ias_kt, to.liftoff_gs_kt);
+      if (lift) t.row(["Speed at lift-off", lift, "–", "for information", ""]);
+    }
     sec.appendChild(t.table);
     (ph.parts || []).forEach(function (p) {
       if (p.held) {
@@ -804,7 +811,7 @@
     var pg = leg.phase_grade || null;
     if (pg && pg.phases) {
       PHASES.forEach(function (ph) {
-        if (pg.phases[ph[0]]) box.appendChild(phaseSection(ph[0], ph[1], pg.phases[ph[0]]));
+        if (pg.phases[ph[0]]) box.appendChild(phaseSection(ph[0], ph[1], pg.phases[ph[0]], leg));
       });
     }
     var landing = landingSection(leg, pg);
