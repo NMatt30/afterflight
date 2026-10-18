@@ -951,6 +951,14 @@ def test_a_takeoff_and_a_landing_each_ask_for_their_runways():
         c.close()
 
 
+def test_a_clip_records_the_indicated_airspeed():
+    """So a landing's speeds come from the 10 Hz clip, not the 1 Hz track."""
+    s = sample(100.0, gs=61.0)
+    s["airspeed"] = 68.5
+    assert watcher.clip_point(s)["airspeed"] == 68.5
+    assert watcher.clip_point(s)["gs"] == 61.0
+
+
 def test_a_new_recording_never_lands_in_an_existing_file():
     """Whatever the count says, a clip already on disk is never appended to.
     A miscount costs a leg number, not a recording."""

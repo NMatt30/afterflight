@@ -589,6 +589,21 @@ before the threshold is never used, so a runway on a mesa is not moved down
 by the drop off its end. The height over the threshold is shown as
 information and graded nowhere.
 
+**Speeds, for information only.** Indicated airspeed and ground speed at
+three moments: lift-off (the first sample in the air after the takeoff
+roll), over the threshold (the same interpolated crossing the height is
+measured at), and touchdown (the first sample on the ground). Lift-off and
+touchdown need no runway; the threshold does. Ground speed comes from the
+event's 10 Hz clip. Indicated airspeed was never in the clip - only the
+1 Hz track carried it - so a clip recorded before it was added reads the
+track at the same moment, interpolated, within about a knot on a steady
+final; clips since carry it (`clip_point`), and each speed says which
+recording it came from (`*_ias_source`). The two are shown side by side and
+never subtracted into a "wind": at a high airport true airspeed, and with
+it ground speed in still air, runs above indicated. Nothing is graded on
+them, and they are not in any signature beyond the track and clip already
+there.
+
 ### The airport and runway at each end of a leg
 
 A leg recorded only coordinates for where it began and ended. The runway

@@ -69,7 +69,9 @@ are shown. Two switches in Settings, off to begin with, let them count toward
 the landing grade as well: a landing past the touchdown zone (a published
 criterion), or a float well beyond a normal 7-second flare (a published
 figure, with an allowance AfterFlight sets), is marked down.
-Helicopters are never graded on either.
+Helicopters are never graded on either. Each leg also shows your indicated
+airspeed and ground speed at lift-off, over the start of the runway and at
+touchdown - for information, never graded.
 
 **Names the airport and runway at each end.** A leg that departs from or
 lands on a runway the sim describes reads `KBFI 14R → KSEA 16L`; one that

@@ -58,9 +58,10 @@ SCHEMA = 2
 # Bumped for: markers at the leg events, jump-splitting, stop markers, and
 # not splitting a jump the aircraft plainly flew across, the landing float, the
 # touchdown point, one landing grade with the touchdown as a word, the
-# airport and runway at each end of a leg, a helicopter's helipad, and the
-# airport pavement it was on.
-BUILDER_VERSION = 41
+# airport and runway at each end of a leg, a helicopter's helipad, the
+# airport pavement it was on, and the speeds at lift-off, over the threshold
+# and at touchdown.
+BUILDER_VERSION = 42
 
 # What an end of a leg is called when the aircraft was on a runway the sim
 # describes AND inside a place named in places.json: the airport and runway
@@ -1114,6 +1115,41 @@ def helicopter_end(event, aircraft=None, category=None, vs0_kt=None, track=None)
     return None
 
 
+def _speed_points(clip_id, track):
+    """The recording speeds are read from: the event's 10 Hz clip when it
+    has one, the 1 Hz track otherwise. (points, fallback track or None,
+    what the points are)."""
+    pts = clip_points(clip_id) if clip_id else []
+    return (pts, track, "clip") if pts else (track or [], None, "track")
+
+
+def liftoff_speeds(clip_id, track, t_off):
+    """Ground speed and indicated airspeed as the wheels left the ground -
+    the first sample in the air after the takeoff roll - or None.
+    Information, never graded; needs no runway."""
+    if t_off is None:
+        return None
+    points, fallback, source = _speed_points(clip_id, track)
+    idx = liftoff_index(points, t_off) if points else None
+    if idx is None:
+        return None
+    if idx + 1 < len(points) and not points[idx + 1].get("on_ground"):
+        idx += 1
+    return grading.speeds_at(points, idx, 0.0, track=fallback, source=source)
+
+
+def touchdown_speeds(clip_id, track, t_land):
+    """Ground speed and indicated airspeed as the wheels touched - the first
+    sample on the ground - or None. Information, never graded."""
+    if t_land is None:
+        return None
+    points, fallback, source = _speed_points(clip_id, track)
+    idx = grading.landing_index(points, t_land) if points else None
+    if not idx:
+        return None
+    return grading.speeds_at(points, idx, 0.0, track=fallback, source=source)
+
+
 def runway_end(hit):
     """{airport, runway} of a matched runway, or None."""
     if not hit or not hit.get("airport"):
@@ -1189,6 +1225,13 @@ def landing_touchdown_point(clip_id, track, t_land, aircraft=None,
             hit["threshold_height_ft"] = grading.threshold_height(
                 points, t_land, past=past,
                 surface=landing_surface(clip_id, track, t_land, hit))
+            # And how fast, at the same moment - shown, never graded.
+            sp = grading.threshold_speeds(points, t_land, past=past,
+                                          track=track if source == "clip" else None,
+                                          source=source)
+            hit["threshold_gs_kt"] = (sp or {}).get("gs_kt")
+            hit["threshold_ias_kt"] = (sp or {}).get("ias_kt")
+            hit["threshold_ias_source"] = (sp or {}).get("ias_source")
             return hit
         return None
     return None
@@ -2118,6 +2161,14 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
                     # nothing anywhere saying why.
                     "clip_status": clip_status(to_clip) if to_clip else None,
                 }
+                try:
+                    sp = liftoff_speeds(to_clip, track, t0) or {}
+                except Exception as e:
+                    say("%s leg %d: lift-off speeds failed %r" % (sortie_id, i, e))
+                    sp = {}
+                leg["takeoff"].update(liftoff_gs_kt=sp.get("gs_kt"),
+                                      liftoff_ias_kt=sp.get("ias_kt"),
+                                      liftoff_ias_source=sp.get("ias_source"))
             if ld_e:
                 ld_ok = usable_fix(ld_e.get("lat"), ld_e.get("lon"))
                 leg["landing"] = {
@@ -2141,6 +2192,14 @@ def build(bake_maps=True, log=None, allow_network=True, force=False, should_abor
                     "contacts_derived": None,
                     "clip_id": ld_clip if clip_exists(ld_clip) else None,
                 }
+                try:
+                    sp = touchdown_speeds(ld_clip, track, t1) or {}
+                except Exception as e:
+                    say("%s leg %d: touchdown speeds failed %r" % (sortie_id, i, e))
+                    sp = {}
+                leg["landing"].update(touchdown_gs_kt=sp.get("gs_kt"),
+                                      touchdown_ias_kt=sp.get("ias_kt"),
+                                      touchdown_ias_source=sp.get("ias_source"))
 
             # A landing with no recorded bounce count still has the
             # evidence in the track; recover it rather than leave the leg

@@ -1856,6 +1856,99 @@ def test_a_helipad_found_later_rebuilds_that_sortie():
         t.close()
 
 
+# --------------------------------------------------------------------------
+# speeds at lift-off, over the threshold and at touchdown
+# --------------------------------------------------------------------------
+
+def _with_airspeed(tree, ias_minus_gs=10.0):
+    """Give the fixture's track an indicated airspeed: ground speed plus a
+    fixed amount, so each reading says which moment it came from."""
+    path, rows = _rows(tree)
+    with open(path, "w", encoding="utf-8") as f:
+        for r in rows:
+            r["airspeed"] = float(r.get("gs") or 0.0) + ias_minus_gs
+            f.write(json.dumps(r) + "\n")
+    return rows
+
+
+def test_value_at_interpolates_and_refuses_a_gap():
+    pts = [{"t": 0.0, "airspeed": 60.0}, {"t": 1.0, "airspeed": 70.0},
+           {"t": 5.0, "airspeed": 90.0}]
+    assert grading.value_at(pts, 0.25, "airspeed") == 62.5
+    assert grading.value_at(pts, 1.0, "airspeed") == 70.0
+    assert grading.value_at(pts, 3.0, "airspeed") is None, "read across a 4 s hole"
+    assert grading.value_at(pts, -1.0, "airspeed") is None
+    assert grading.value_at([{"t": 0.0, "gs": 5.0}], 0.0, "airspeed") is None
+
+
+def test_speeds_prefer_the_clip_and_say_where_the_airspeed_came_from():
+    clip = [{"t": 10.0, "gs": 60.0, "airspeed": 70.0}, {"t": 10.1, "gs": 62.0, "airspeed": 72.0}]
+    track = [{"t": 9.0, "airspeed": 99.0}, {"t": 11.0, "airspeed": 99.0}]
+    sp = grading.speeds_at(clip, 0, 0.5, track=track)
+    assert sp == {"gs_kt": 61.0, "ias_kt": 71.0, "ias_source": "clip"}, sp
+    old_clip = [{"t": 10.0, "gs": 60.0}, {"t": 10.1, "gs": 62.0}]
+    sp = grading.speeds_at(old_clip, 0, 0.5, track=[{"t": 9.0, "airspeed": 80.0},
+                                                     {"t": 11.0, "airspeed": 84.0}])
+    assert sp["ias_source"] == "track" and abs(sp["ias_kt"] - 82.1) < 0.01, sp
+    assert grading.speeds_at(old_clip, 0, 0.0)["ias_kt"] is None
+
+
+def test_a_leg_records_its_speeds_at_liftoff_threshold_and_touchdown():
+    """Information only: lift-off and touchdown speeds on every leg, and the
+    speed over the threshold beside its height, at the same moment."""
+    t = Tree()
+    try:
+        _flight(t, 1800.0)
+        t.runway()
+        rows = _with_airspeed(t)
+        leg = _leg(t)
+        to, ld, tp = leg["takeoff"], leg["landing"], leg["touchdown_point"]
+        # The fixture flies 120 kt and lands at 60, rolling at 0 kt until the
+        # takeoff event; airspeed is ground speed + 10 throughout.
+        assert to["liftoff_gs_kt"] == 120.0 and to["liftoff_ias_kt"] == 130.0, to
+        assert to["liftoff_ias_source"] == "track"
+        assert ld["touchdown_gs_kt"] == 60.0 and ld["touchdown_ias_kt"] == 70.0, ld
+        assert tp["threshold_height_ft"] is not None
+        assert tp["threshold_gs_kt"] == 120.0 and tp["threshold_ias_kt"] == 130.0, tp
+        # Nothing graded moved: the same leg without airspeed grades the same.
+        graded = (leg["grade"], leg["score"], leg["landing_grade"], leg["landing_score"])
+        _rows_path, rows = _rows(t)
+        with open(_rows_path, "w", encoding="utf-8") as f:
+            for r in rows:
+                r.pop("airspeed", None)
+                f.write(json.dumps(r) + "\n")
+        bare = _leg(t)
+        assert (bare["grade"], bare["score"], bare["landing_grade"], bare["landing_score"]) == graded
+        assert bare["landing"]["touchdown_ias_kt"] is None, "an airspeed appeared from nowhere"
+        assert bare["landing"]["touchdown_gs_kt"] == 60.0
+    finally:
+        t.close()
+
+
+def test_the_landing_clip_gives_the_speeds_when_it_has_them():
+    t = Tree()
+    try:
+        _flight(t, 1800.0)
+        t.runway()
+        rows = _with_airspeed(t)
+        td = next(i for i in range(25, len(rows)) if rows[i]["on_ground"])
+        pts = []
+        for r in rows[td - 40:td + 5]:
+            p = dict(r)
+            p["t"] = logbook_build.parse_ts(r["ts"])
+            p["airspeed"] = float(p.get("gs") or 0.0) + 3.0     # differs from the track's +10
+            pts.append(p)
+        with open(os.path.join(logbook_build.CLIPS_DIR, FID + "-leg1-landing.json"),
+                  "w", encoding="utf-8") as f:
+            json.dump({"id": FID + "-leg1-landing", "kind": "landing", "points": pts}, f)
+        leg = _leg(t)
+        assert leg["landing"]["touchdown_ias_kt"] == 63.0, leg["landing"]
+        assert leg["landing"]["touchdown_ias_source"] == "clip"
+        assert leg["touchdown_point"]["threshold_ias_source"] == "clip"
+    finally:
+        t.close()
+
+
 def test_search_covers_every_stop_of_a_sortie():
     """A sortie of three legs stops twice on the way. The search row carries
     every named end - the middle ones too - once each, and no coordinates."""

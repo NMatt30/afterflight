@@ -1418,6 +1418,11 @@ def clip_point(s):
         "pitch": s.get("pitch"),
         "bank": s.get("bank"),
         "gs": s.get("gs"),
+        # Indicated airspeed, so a landing's speed over the threshold and at
+        # touchdown, and a takeoff's at lift-off, come from the 10 Hz clip.
+        # Clips recorded before this carry none; the builder then reads the
+        # 1 Hz track at the same moment.
+        "airspeed": s.get("airspeed"),
         "vs": s.get("vs"),
         "on_ground": s.get("on_ground"),
         "gear": s.get("gear"),

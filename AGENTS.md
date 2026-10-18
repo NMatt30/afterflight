@@ -124,7 +124,8 @@ profiles. **The clock starts at the later of 50 ft and the threshold**: the
 AC assumes 50 ft over the threshold, and an arrival crossing lower had its
 approach counted as float. So the float needs the runway, and an
 off-airport landing has none. The height over the threshold is recorded
-beside it as information and graded nowhere.
+beside it as information and graded nowhere - and so are the indicated and
+ground speeds at lift-off, over the threshold and at touchdown.
 **Runways are not flat, and the sim gives them one elevation.** Heights for
 both - the threshold crossing and the float's 50 ft point - are above the
 runway's surface, read from PLANE ALT ABOVE GROUND as the aircraft passed

@@ -781,6 +781,78 @@ def threshold_height(points, t_land=None, past=None, surface=None):
     return round(alt - surface.at(0.0) - surface.ref, 1)
 
 
+# How far apart two track readings may be and still be interpolated between
+# for a speed. The track is written once a second; a gap wider than this is a
+# hole in the recording, and a speed read across it is a guess.
+SPEED_TRACK_GAP_S = 2.5
+
+
+def value_at(points, t, key, max_gap=SPEED_TRACK_GAP_S):
+    """points[key] at time t, linearly between the readings either side of
+    it, or None - no reading either side within max_gap, or a missing value."""
+    if not points or not _finite(t):
+        return None
+    before = after = None
+    for p in points:
+        pt = p.get("t")
+        if not _finite(pt) or not _finite(p.get(key)):
+            continue
+        if pt <= t:
+            before = p
+        else:
+            after = p
+            break
+    if before is not None and before["t"] == t:
+        return float(before[key])
+    if before is None or after is None or after["t"] - before["t"] > max_gap:
+        return None
+    frac = (t - before["t"]) / (after["t"] - before["t"])
+    return float(before[key]) + frac * (float(after[key]) - float(before[key]))
+
+
+def speeds_at(points, j, frac=0.0, track=None, source="clip"):
+    """Ground speed and indicated airspeed at a moment of a recording:
+    between points[j] and points[j + 1], frac of the way (frac 0: at
+    points[j]). {gs_kt, ias_kt, ias_source} - the airspeed from the same
+    recording when it carries one (ias_source is that recording, "clip" or
+    "track", as the caller names it), else from the track at that moment
+    ("track"), else None. Information, never graded."""
+    a = points[j]
+    b = points[j + 1] if frac and j + 1 < len(points) else a
+
+    def mix(key):
+        if not (_finite(a.get(key)) and _finite(b.get(key))):
+            return None
+        return float(a[key]) + frac * (float(b[key]) - float(a[key]))
+
+    t = mix("t")
+    gs = mix("gs")
+    ias = mix("airspeed")
+    source = source if ias is not None else None
+    if ias is None and track is not None and t is not None:
+        ias = value_at(track, t, "airspeed")
+        source = "track" if ias is not None else None
+    if gs is None and ias is None:
+        return None
+    return {"gs_kt": round(gs, 1) if gs is not None else None,
+            "ias_kt": round(ias, 1) if ias is not None else None,
+            "ias_source": source}
+
+
+def threshold_speeds(points, t_land=None, past=None, track=None, source="clip"):
+    """Speeds as the arrival crossed the landing threshold - the moment
+    threshold_height measures - or None. Information, not a grade."""
+    if not points or past is None:
+        return None
+    idx = landing_index(points, t_land)
+    if not idx:
+        return None
+    j, frac = _threshold_crossing(points, idx, past)
+    if not isinstance(j, int):
+        return None
+    return speeds_at(points, j, frac, track=track, source=source)
+
+
 def landing_float(points, t_land=None, source=None, past=None, surface=None):
     """How long the airplane was held off over the runway, or None.
 

@@ -63,6 +63,30 @@
     if (m) return m + "m " + sec + "s";
     return sec + "s";
   }
+  // "68 kt indicated, 61 kt ground" - either half alone when the other was
+  // not recorded, "" when neither was.
+  function fmtSpeeds(ias, gs) {
+    var bits = [];
+    if (typeof ias === "number") bits.push(Math.round(ias) + " kt indicated");
+    if (typeof gs === "number") bits.push(Math.round(gs) + " kt ground");
+    return bits.join(", ");
+  }
+  // What the two speeds are, for the tooltip. The gap between them is not
+  // only wind: the air is thinner higher up, so true airspeed - and with it
+  // ground speed in still air - runs above indicated at a high airport.
+  function speedsNote(what, source) {
+    return what + " Indicated airspeed is what the airspeed indicator read; "
+      + "ground speed is how fast you were moving over the ground. The gap "
+      + "between them is the wind, and also altitude - at a high airport ground "
+      + "speed runs above indicated even in still air."
+      + (source === "track"
+         ? " The airspeed here is from the once-a-second flight track, so it can "
+           + "be a knot or so off; flights recorded after this update read it ten "
+           + "times a second."
+         : "")
+      + " Shown for information, not graded.";
+  }
+
   function fmtNm(n) {
     return (n === null || n === undefined || !isFinite(n)) ? "—" : n.toFixed(2) + " nm";
   }
@@ -659,6 +683,15 @@
       t.row(["Height over runway start", Math.round(tp.threshold_height_ft) + " ft", "–",
              "for information", "Approach paths usually cross at about 50 ft"]);
     }
+    var overSpeed = tp ? fmtSpeeds(tp.threshold_ias_kt, tp.threshold_gs_kt) : "";
+    if (overSpeed) {
+      t.row(["Speed over runway start", overSpeed, "–", "for information", ""]);
+    }
+    var ld = leg.landing || {};
+    var tdSpeed = fmtSpeeds(ld.touchdown_ias_kt, ld.touchdown_gs_kt);
+    if (tdSpeed) {
+      t.row(["Speed at touchdown", tdSpeed, "–", "for information", ""]);
+    }
     ["touchdown_point", "float", "alignment"].forEach(function (k) {
       if (byKey[k]) t.part(byKey[k]);
     });
@@ -1128,6 +1161,13 @@
     row("Landing", leg.landing ? fmtTime(leg.landing.at) : "—");
     row("Airborne", fmtDuration(leg.airborne_s));
     row("Distance", fmtNm(leg.distance_nm));
+    var to = leg.takeoff || {};
+    var liftoff = fmtSpeeds(to.liftoff_ias_kt, to.liftoff_gs_kt);
+    if (liftoff) {
+      row("Lift-off speed", liftoff,
+          speedsNote("How fast you were going as the wheels left the ground.",
+                     to.liftoff_ias_source));
+    }
     row("Touchdown", leg.touchdown_word
           ? leg.touchdown_word + ", " + fmtRate(leg.landing_rate_fpm)
           : fmtRate(leg.landing_rate_fpm),
@@ -1160,6 +1200,20 @@
           + (tp.runway ? "runway " + tp.runway : "the runway")
           + ". Shown for information, not graded. Approach paths usually "
           + "cross at about 50 ft.");
+    }
+    var over = tp ? fmtSpeeds(tp.threshold_ias_kt, tp.threshold_gs_kt) : "";
+    if (over) {
+      row("Speed over runway start", over,
+          speedsNote("How fast you were going as you crossed the start of "
+                     + (tp.runway ? "runway " + tp.runway : "the runway") + ".",
+                     tp.threshold_ias_source));
+    }
+    var lnd = leg.landing || {};
+    var tds = fmtSpeeds(lnd.touchdown_ias_kt, lnd.touchdown_gs_kt);
+    if (tds) {
+      row("Touchdown speed", tds,
+          speedsNote("How fast you were going as the wheels touched.",
+                     lnd.touchdown_ias_source));
     }
     row("Max alt", leg.max_alt_ft != null ? Math.round(leg.max_alt_ft) + " ft" : "—");
     row("Max GS", leg.max_gs_kt != null ? Math.round(leg.max_gs_kt) + " kt" : "—");
